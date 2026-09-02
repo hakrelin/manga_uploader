@@ -74,8 +74,9 @@ DEFAULT_SETTINGS: dict[str, dict[str, Any]] = {
     "ehentai": {
         "category_label": "Manga",  # 按上传页选项文本模糊匹配
         "rating_label": "",
-        "language_label": "",  # 留空自动选择中文
+        "language_label": "Chinese",  # 汉化上传默认中文；原版/无字可改 Japanese / No Text
         "extra_tags": [],
+        "publish_after_upload": True,  # 上传文件后自动执行 Publish Gallery（False=只建草稿）
     },
     "zaimanhua": {
         "cate": "1",  # 1 原创作品 / 2 原创汉化 / 3 个人扫漫 / 4 转载作品

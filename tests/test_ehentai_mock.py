@@ -12,32 +12,54 @@ from manga_uploader.publishers import ehentai as eh_mod
 from manga_uploader.publishers.ehentai import EhentaiPublisher
 
 UPLOAD_HTML = """<!DOCTYPE html><html><body>
-<form method="post" enctype="multipart/form-data" action="/submit">
-  <input type="hidden" name="noscript" value="1">
-  <input type="text" name="name" maxlength="255">
-  <textarea name="comment"></textarea>
+<form id="uploadform" method="post" enctype="multipart/form-data" action="/upload">
+  <input type="hidden" name="MAX_FILE_SIZE" value="1258291200">
+  <input type="hidden" name="PHP_SESSION_UPLOAD_PROGRESS" value="sesstoken123">
+  <input type="hidden" name="do_save" value="1">
+  <input type="text" id="gname_en" name="gname_en" maxlength="500">
+  <input type="text" id="gname_jp" name="gname_jp" maxlength="500">
   <select name="category">
-    <option value="0">Doujinshi</option>
-    <option value="1">Manga</option>
+    <option value="2" selected>Doujinshi</option>
+    <option value="3">Manga</option>
+    <option value="9">Non-H</option>
   </select>
-  <select name="rating">
-    <option value="s">Safe</option>
+  <select name="langtag">
+    <option value="0" selected>Japanese / No Text</option>
+    <option value="3437">Chinese</option>
+    <option value="1058">English</option>
   </select>
-  <select name="language">
-    <option value="zh">Chinese (Simplified)</option>
+  <input type="radio" name="langtype" value="0" checked>
+  <input type="radio" name="langtype" value="1">
+  <input type="radio" name="langtype" value="2">
+  <input type="checkbox" name="langctl">
+  <select name="folderid">
+    <option value="1">个人文件夹</option>
+    <option value="0" selected>Unsorted</option>
   </select>
-  <input type="text" name="tags">
-  <input type="file" name="sfile[]" multiple>
+  <textarea name="ulcomment"></textarea>
+  <input type="text" name="some_unknown_field" value="do_not_copy_me">
+  <input type="checkbox" name="tos">
+  <input type="file" id="uploadfiles" name="files[]" multiple>
 </form>
 </body></html>"""
 
 SUCCESS_HTML = """<html><body><a href="https://e-hentai.org/g/abcdef0123456789/1/">view gallery</a></body></html>"""
 HOME_HTML = """<html><body><h1>E-Hentai Galleries</h1>
 <p>Found 1,609,366 results.</p></body></html>"""
+DRAFT_HTML = """<html><body>
+<form id="uploadform" action="/upload?ulgid=99999" method="post" enctype="multipart/form-data">
+<input type="hidden" name="do_save" value="1">
+<h2>测试漫画 第01话</h2>
+<td class="v">11</td>
+<td class="v">No (Unpublished)</td>
+</form>
+<div id="progress_readout"><p>Added <strong>5</strong> new images to the gallery.</p></div>
+</body></html>"""
 
 
 class _Handler(BaseHTTPRequestHandler):
     posts: list = []
+    gets: list = []
     page_html = UPLOAD_HTML
     redirect_url = ""
 
@@ -46,6 +68,15 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         cls = self.__class__
+        cls.gets.append(self.path)
+        if "act=publish" in self.path:
+            body = SUCCESS_HTML.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if self.path.startswith("/upload") and cls.redirect_url:
             self.send_response(302)
             self.send_header("Location", cls.redirect_url)
@@ -66,7 +97,7 @@ class _Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(length)
         self.__class__.posts.append({"path": self.path, "body": body})
-        out = SUCCESS_HTML.encode("utf-8")
+        out = DRAFT_HTML.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(out)))
@@ -109,6 +140,7 @@ class TestEhentaiPublisherMock(unittest.TestCase):
 
     def setUp(self):
         _Handler.posts = []
+        _Handler.gets = []
         _Handler.page_html = UPLOAD_HTML
         _Handler.redirect_url = ""
         self.tmp = tempfile.TemporaryDirectory()
@@ -120,7 +152,7 @@ class TestEhentaiPublisherMock(unittest.TestCase):
         cfg = PlatformConfig(
             name="ehentai",
             cookies={"ipb_member_id": "1", "ipb_pass_hash": "h"},
-            settings={"category_label": "Manga"},
+            settings={"category_label": "Manga", "language_label": "Chinese"},
         )
         publisher = EhentaiPublisher(cfg, CommonConfig(output_dir=str(Path(self.tmp.name) / "out")))
         result = publisher.publish(_make_chapter(Path(self.tmp.name)))
@@ -129,15 +161,91 @@ class TestEhentaiPublisherMock(unittest.TestCase):
 
         self.assertEqual(len(_Handler.posts), 1)
         body = _Handler.posts[0]["body"]
-        self.assertIn(b'name="name"', body)
+        self.assertIn(b'name="gname_en"', body)
         self.assertIn("测试漫画 第01话".encode("utf-8"), body)
+        self.assertIn(b'name="ulcomment"', body)
         self.assertIn("EH 简介".encode("utf-8"), body)
-        self.assertIn(b'name="sfile[]"', body)
-        self.assertEqual(body.count(b'name="sfile[]"'), 5)
-        self.assertIn(b"language:chinese", body)
-        self.assertIn(b"artist:someone", body)
-        # 分类选到 Manga 的 value=1
-        self.assertIn(b'name="category"\r\n\r\n1\r\n', body)
+        self.assertIn(b'name="files[]"', body)
+        self.assertEqual(body.count(b'name="files[]"'), 5)
+        # 真实字段：分类 Manga value=3；语言保留页面默认 Japanese/No Text；勾选 TOS
+        self.assertIn(b'name="category"\r\n\r\n3\r\n', body)
+        self.assertIn(b'name="langtag"\r\n\r\n3437\r\n', body)
+        # 汉化默认：langtype=1(Translated)，并勾选专业翻译者 langctl
+        self.assertIn(b'name="langtype"\r\n\r\n1\r\n', body)
+        self.assertIn(b'name="langctl"\r\n\r\non\r\n', body)
+        self.assertIn(b'name="tos"\r\n\r\non\r\n', body)
+        # 隐藏字段照常回传（会话进度、文件大小限制）
+        self.assertIn(b"sesstoken123", body)
+        self.assertIn(b"1258291200", body)
+        self.assertIn(b"do_save", body)
+        # 未映射的未知文本框不自动填默认值
+        self.assertNotIn(b'name="some_unknown_field"', body)
+        self.assertNotIn(b"do_not_copy_me", body)
+
+    def test_publish_custom_field_map_second_title(self):
+        chapter = _make_chapter(Path(self.tmp.name))
+        chapter.raw["platforms"] = {
+            "ehentai": {"title_jpn": "エロマンガ第01話", "category": "Manga"}
+        }
+        cfg = PlatformConfig(
+            name="ehentai",
+            cookies={"ipb_member_id": "1", "ipb_pass_hash": "h"},
+            settings={
+                "category_label": "Manga",
+                "field_map": [
+                    {"label": "英文标题", "field": "gname_en", "source": "title"},
+                    {"label": "日文标题", "field": "gname_jp", "source": "meta:title_jpn"},
+                    {"label": "上传者评论", "field": "ulcomment", "source": "description"},
+                    {"label": "同意条款", "field": "tos", "source": "text:on"},
+                ],
+            },
+        )
+        publisher = EhentaiPublisher(
+            cfg, CommonConfig(output_dir=str(Path(self.tmp.name) / "out"))
+        )
+        result = publisher.publish(chapter)
+        self.assertEqual(result.status, "ok", result.message)
+        body = _Handler.posts[0]["body"]
+        self.assertIn(b'name="gname_en"', body)
+        self.assertIn(b'name="gname_jp"', body)
+        self.assertIn("エロマンガ第01話".encode("utf-8"), body)
+        self.assertIn(b'name="tos"\r\n\r\non\r\n', body)
+        # 未映射的未知文本框不再被自动填入默认值
+        self.assertNotIn(b'name="some_unknown_field"', body)
+        self.assertNotIn(b"do_not_copy_me", body)
+
+    def test_publish_draft_only_when_disabled(self):
+        cfg = PlatformConfig(
+            name="ehentai",
+            cookies={"ipb_member_id": "1", "ipb_pass_hash": "h"},
+            settings={
+                "category_label": "Manga",
+                "language_label": "Chinese",
+                "publish_after_upload": False,
+            },
+        )
+        publisher = EhentaiPublisher(
+            cfg, CommonConfig(output_dir=str(Path(self.tmp.name) / "out"))
+        )
+        result = publisher.publish(_make_chapter(Path(self.tmp.name)))
+        self.assertEqual(result.status, "ok", result.message)
+        self.assertIn("ulgid=99999", result.url)
+        self.assertIn("草稿", result.message)
+        self.assertFalse(any("act=publish" in path for path in _Handler.gets))
+
+    def test_publish_auto_publishes_draft(self):
+        cfg = PlatformConfig(
+            name="ehentai",
+            cookies={"ipb_member_id": "1", "ipb_pass_hash": "h"},
+            settings={"category_label": "Manga", "language_label": "Chinese"},
+        )
+        publisher = EhentaiPublisher(
+            cfg, CommonConfig(output_dir=str(Path(self.tmp.name) / "out"))
+        )
+        result = publisher.publish(_make_chapter(Path(self.tmp.name)))
+        self.assertEqual(result.status, "ok", result.message)
+        self.assertEqual(result.url, "https://e-hentai.org/g/abcdef0123456789/1")
+        self.assertTrue(any("act=publish" in path for path in _Handler.gets))
 
     def test_check_dumps_mismatched_page(self):
         _Handler.page_html = "<html><body>这是一个新版页面，没有上传表单</body></html>"

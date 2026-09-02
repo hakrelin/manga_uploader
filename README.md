@@ -17,7 +17,7 @@
   B站支持扫码登录
 - 自动读取 `manga.json`：标题、作者、简介、标签、封面，及各平台专属配置
 - 上传前自动压缩/缩放图片（Pillow），**超过 10MB（可配）的图片自动压小**，
-  保留格式时零拷贝
+  保留格式时零拷贝；全程只等比缩放，**不会裁剪画面**
 - B站默认把每话发成**一篇专栏文章**（超过单篇上限自动拆多篇），贴吧超过
   50 张自动拆帖；旧版图文动态模式可配置保留
 - 支持系统代理/手动代理（e-hentai 等海外站连不上时启用）
@@ -183,11 +183,41 @@ GUI 里每个 Cookie（如 `SESSDATA`、`bili_jct`、`BDUSS`、`token`）都单�
 
 1. 打开 `https://upload.e-hentai.org/managegallery?act=new` 并解析上传表单
    （字段名随页面走）；
-2. 按选项文本匹配分类/评分/语言，自动补 `language:chinese` 标签；
-3. multipart 一次上传全部页面，成功则返回画廊链接。
+2. 按选项文本匹配分类、语言（`langtag`），汉化默认中文 +
+   `langtype=1`（Translated）；
+3. multipart 一次上传全部页面（自动勾选服务条款、汉化 `langtype=1` 与
+   专业翻译者 `langctl`）；
+4. 站点会先返回“草稿画廊”管理页（`ulgid=…`，状态 Unpublished），程序会
+   识别为上传成功并**自动执行 Publish Gallery**；若在 config 里把
+   `publish_after_upload` 设为 false，则只建草稿，由你在 My Uploads 手动发布。
 
 e-hentai 对账号上传资格与内容分类要求较多，失败时先读页面提示
 （程序会保留在 `output/debug/`）。
+
+**表单字段填写可自定义**：上传页常同时有中文/日文等多个标题框，
+自动匹配容易填错，程序默认只填明确认识的字段（主标题/简介/标签/
+分类/语言/评分），不再乱填未知输入框。已按真实上传页
+（`managegallery?act=new`）核对默认字段：`gname_en`（英文/罗马字标题）、
+`gname_jp`（日文原标题）、`ulcomment`（上传者评论），并自动勾选 `tos`
+服务条款、保留页面默认分类/语言/文件夹与语言类型单选。GUI 在 e-hentai
+平台卡片点
+“上传表单填写…”，按一行一个输入框配置：
+
+- 页面字段名：填页面上输入框的 `name`（F12 查看），可留空自动识别；
+- 内容来源：章节标题 / 系列名 / 作者 / 简介 / 标签 /
+  manga.json 字段 / 固定文本，下拉框可选手动“选项匹配”；
+- manga.json 字段示例：在 `platforms.ehentai` 写
+  `"title_jpn": "エロ漫画 第1話"`，来源选“manga.json/config 字段”
+  并填 `title_jpn`（默认已映射到 `gname_jp`）。
+
+画廊语言 `langtag`、语言类型 `langtype`（0=官方/无字、1=汉化、2=改写）、
+分类等也提供了独立的 config/GUI 字段（`language_label`、`langtype`、
+`category_label`）。汉化上传默认：语言=Chinese、`langtype=1`（Translated），
+并自动勾选 `langctl`（“由专业翻译者翻译”），避免被标成机翻/渣翻；
+上传原版/无字内容时把 `langtype` 改成 0、语言改成 Japanese / No Text 即可。
+
+配置会保存到 `config.yaml` 的 `platforms.ehentai.settings.field_map`，
+也可直接手改（见 `config.example.yaml` 注释示例）。
 
 ### 再漫画（投稿）
 

@@ -135,6 +135,7 @@ def prepare_page(
     规则：
     - 保留扩展名在 allowed_exts 内且无需缩放、未超限时，直接返回原文件（零拷贝）；
     - 其他情况用 Pillow 重压缩/转换并输出到 out_dir；
+    - 全程只做等比缩放/重压缩，不裁剪画面（透明图转 JPEG 时按原尺寸铺白底）；
     - allowed_exts 为空表示不限制格式。
     """
     out_dir.mkdir(parents=True, exist_ok=True)

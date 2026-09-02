@@ -149,6 +149,47 @@ class TestHelpers(unittest.TestCase):
             out = prepare_page(src, tmp_path / "out", allowed_exts={".png"})
             self.assertEqual(out.path, src)
 
+    def test_prepare_page_never_crops(self):
+        """等比缩放：超宽图按最长边限制只缩小，不裁成方形。"""
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            src = tmp_path / "wide.png"
+            Image.new("RGB", (1000, 400), "red").save(src)
+            item = prepare_page(
+                src,
+                tmp_path / "out",
+                allowed_exts={".jpg"},
+                max_width=200,
+                max_height=200,
+                max_bytes=0,
+                quality=80,
+            )
+            self.assertEqual((item.width, item.height), (200, 80))  # 1000:400 = 5:2
+
+    def test_prepare_page_alpha_fill_keeps_full_frame(self):
+        """带透明通道的 PNG 转 JPEG 只铺白底，尺寸与构图不变（不裁剪）。"""
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            src = tmp_path / "alpha.png"
+            img = Image.new("RGBA", (300, 500), (255, 0, 0, 0))
+            for x in range(50, 250):
+                for y in range(100, 400):
+                    img.putpixel((x, y), (0, 0, 255, 255))
+            img.save(src)
+            out = prepare_page(
+                src,
+                tmp_path / "out",
+                allowed_exts={".jpg"},
+                max_bytes=0,
+            )
+            self.assertEqual((out.width, out.height), (300, 500))
+            with Image.open(out.path) as converted:
+                self.assertEqual(converted.size, (300, 500))
+
     def test_prepare_page_auto_compresses_over_limit(self):
         from PIL import Image
 

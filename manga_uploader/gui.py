@@ -41,6 +41,7 @@ from .config import (
     find_config_file,
 )
 from .models import Chapter
+from .publishers.ehentai import DEFAULT_FIELD_ROWS
 from .publishers.zaimanhua import CATE_LABELS
 from .runner import PLATFORM_CLASSES, Runner
 from .util import get_logger, human_size, is_image, natural_sort_key, setup_logging
@@ -79,7 +80,13 @@ PLATFORM_CARDS: list[dict[str, Any]] = [
         ],
         "hint": "登录 e-hentai 后复制 Cookie 里的 ipb_member_id 与 ipb_pass_hash。"
         "上传入口：upload.e-hentai.org/managegallery?act=new；通常需要代理直连。",
-        "extras": [("category_label", "默认分类（留空用 config：Manga）")],
+        "extras": [
+            ("category_label", "默认分类（如 Manga / Doujinshi）"),
+            ("language_label", "语言（留空用页面默认 Japanese/No Text，如 Chinese）"),
+            ("langtype", "0=官方/无字 1=汉化 2=改写（汉化上传默认 1）"),
+            ("title_jpn", "默认日文原标题（可被每话 manga.json 覆盖）"),
+        ],
+        "field_map": True,
     },
     {
         "key": "zaimanhua",
@@ -215,6 +222,7 @@ class UploaderApp:
         self.cookie_vars: dict[str, dict[str, tk.StringVar]] = {}
         self.status_vars: dict[str, tk.StringVar] = {}
         self.extra_vars: dict[str, dict[str, tk.Variable]] = {}
+        self.field_maps: dict[str, list[dict[str, Any]]] = {}
         self.comic_dir_var = tk.StringVar()
         self.chapter_list: Optional[tk.Listbox] = None
         self.meta_var = tk.StringVar()
@@ -429,8 +437,19 @@ class UploaderApp:
                 ttk.Button(head, text="扫码登录", command=self._bilibili_qr_login).pack(
                     side="right", padx=(4, 0)
                 )
+            if card.get("field_map"):
+                ttk.Button(
+                    head,
+                    text="上传表单填写…",
+                    command=lambda k=key: self._open_field_map_editor(k),
+                ).pack(side="right", padx=(4, 0))
 
             cookies = (cfg.cookies if cfg else {}) or {}
+            saved_rows = (cfg.settings.get("field_map") if cfg else None) or []
+            self.field_maps[key] = copy.deepcopy(
+                [r for r in saved_rows if isinstance(r, dict)]
+                or DEFAULT_FIELD_ROWS
+            )
             ttk.Button(
                 frame,
                 text="粘贴整段 Cookie（自动拆分）…",
@@ -507,6 +526,176 @@ class UploaderApp:
                 filled.append(name)
         self._log(f"已把 {len(filled)} 个 Cookie 填到 {key}：{', '.join(filled)}")
 
+    # ---- 上传表单字段填写配置（e-hentai 等表单平台） ----
+
+    _FIELD_SOURCE_CHOICES: list[tuple[str, str]] = [
+        ("章节标题", "title"),
+        ("系列名", "series"),
+        ("作者", "author"),
+        ("简介", "description"),
+        ("标签", "tags"),
+        ("manga.json/config 字段", "meta:"),
+        ("固定文本", "text:"),
+        ("下拉框：分类（按选项文本匹配）", "category"),
+        ("下拉框：语言（按选项文本匹配）", "language"),
+        ("下拉框：评分（按选项文本匹配）", "rating"),
+    ]
+
+    def _open_field_map_editor(self, key: str) -> None:
+        card = next((c for c in PLATFORM_CARDS if c["key"] == key), {})
+        rows = copy.deepcopy(self.field_maps.get(key) or DEFAULT_FIELD_ROWS)
+        win = tk.Toplevel(self.root)
+        win.title(f"{card.get('label', key)} - 上传表单填写配置")
+        win.geometry("1060x620")
+        win.transient(self.root)
+
+        hint = (
+            "每个表单输入框一行：\n"
+            "• 页面字段名：浏览器打开上传页后 F12 查看输入框的 name（如 name / name_jpn / comment），可留空自动识别；\n"
+            "• 内容来源：章节标题 / 简介 / manga.json 字段 / 固定文本等；下拉框选对应“选项匹配”。\n"
+            "manga.json 字段示例：platforms.ehentai 里写 title_jpn: \"原作日文标题\"，来源选 manga.json 字段并填 title_jpn。"
+        )
+        ttk.Label(win, text=hint, wraplength=1020, justify="left").pack(
+            anchor="w", padx=10, pady=(8, 2)
+        )
+
+        body = ttk.Frame(win)
+        body.pack(fill="both", expand=True, padx=10)
+        body.rowconfigure(0, weight=1)
+        body.columnconfigure(0, weight=1)
+        scroll = _ScrollFrame(body)
+        scroll.grid(row=0, column=0, sticky="nsew")
+        inner = scroll.inner
+
+        heads = ["用途说明", "页面字段名(name)", "内容来源", "参数(字段键/固定文本)", ""]
+        for col, text in enumerate(heads):
+            ttk.Label(inner, text=text, font=("", 9, "bold")).grid(
+                row=0, column=col, sticky="w", padx=4, pady=4
+            )
+
+        row_data: list[dict] = []
+
+        def _redraw() -> None:
+            for record in row_data:
+                for widget in record["widgets"]:
+                    widget.destroy()
+            row_data.clear()
+            for index, row in enumerate(rows, start=1):
+                _add_row(index, row)
+
+        def _add_row(index: int, row: dict) -> None:
+            label_var = tk.StringVar(value=str(row.get("label") or ""))
+            field_var = tk.StringVar(value=str(row.get("field") or ""))
+            source = str(row.get("source") or "title")
+            base = source
+            param = ""
+            for label, token in self._FIELD_SOURCE_CHOICES:
+                if source == token or (token.endswith(":") and source.startswith(token)):
+                    base = token
+                    if token.endswith(":"):
+                        param = source[len(token):]
+                    break
+            display = next(
+                (label for label, token in self._FIELD_SOURCE_CHOICES if token == base),
+                base,
+            )
+            source_var = tk.StringVar(value=display)
+            param_var = tk.StringVar(value=param)
+
+            widgets = []
+            label_entry = ttk.Entry(inner, textvariable=label_var, width=14)
+            label_entry.grid(row=index, column=0, sticky="ew", padx=4, pady=2)
+            widgets.append(label_entry)
+            field_entry = ttk.Entry(inner, textvariable=field_var, width=18)
+            field_entry.grid(row=index, column=1, sticky="ew", padx=4, pady=2)
+            widgets.append(field_entry)
+            combo = ttk.Combobox(
+                inner,
+                textvariable=source_var,
+                values=[label for label, _ in self._FIELD_SOURCE_CHOICES],
+                width=30,
+                state="readonly",
+            )
+            combo.grid(row=index, column=2, sticky="ew", padx=4, pady=2)
+            widgets.append(combo)
+            param_entry = ttk.Entry(inner, textvariable=param_var, width=24)
+            param_entry.grid(row=index, column=3, sticky="ew", padx=4, pady=2)
+            widgets.append(param_entry)
+
+            def _refresh_param_state(*_args) -> None:
+                label = str(source_var.get())
+                needs = any(
+                    token.endswith(":") and shown == label
+                    for shown, token in self._FIELD_SOURCE_CHOICES
+                )
+                param_entry.configure(state="normal" if needs else "disabled")
+
+            source_var.trace_add("write", _refresh_param_state)
+            _refresh_param_state()
+
+            delete_btn = ttk.Button(
+                inner, text="删除", command=lambda: _delete_row(row)
+            )
+            delete_btn.grid(row=index, column=4, padx=4, pady=2)
+            widgets.append(delete_btn)
+            row_data.append(
+                {
+                    "row": row,
+                    "label_var": label_var,
+                    "field_var": field_var,
+                    "source_var": source_var,
+                    "param_var": param_var,
+                    "widgets": widgets,
+                }
+            )
+
+        def _delete_row(row: dict) -> None:
+            if row in rows:
+                rows.remove(row)
+            _redraw()
+
+        for idx, row in enumerate(rows, start=1):
+            _add_row(idx, row)
+
+        buttons = ttk.Frame(win)
+        buttons.pack(fill="x", padx=10, pady=8)
+
+        def _add_new() -> None:
+            rows.append({"label": "", "field": "", "source": "title"})
+            _redraw()
+
+        def _save() -> None:
+            result: list[dict[str, str]] = []
+            for record in row_data:
+                source_label = str(record["source_var"].get())
+                token = next(
+                    (t for label, t in self._FIELD_SOURCE_CHOICES if label == source_label),
+                    "",
+                )
+                if token.endswith(":"):
+                    param = str(record["param_var"].get()).strip()
+                    if not param:
+                        self._warn("manga.json 字段/固定文本需要填写参数")
+                        return
+                    source = token + param
+                else:
+                    source = token
+                result.append(
+                    {
+                        "label": str(record["label_var"].get()).strip(),
+                        "field": str(record["field_var"].get()).strip(),
+                        "source": source,
+                    }
+                )
+            self.field_maps[key] = result
+            self._log(f"已保存 {key} 的上传表单字段映射：{len(result)} 行")
+            win.destroy()
+            self._save_config()
+
+        ttk.Button(buttons, text="取消", command=win.destroy).pack(side="right", padx=4)
+        ttk.Button(buttons, text="添加一行", command=_add_new).pack(side="right", padx=4)
+        ttk.Button(buttons, text="保存配置", command=_save).pack(side="right", padx=4)
+
     def _build_extra_fields(self, frame: tk.Widget, card: dict[str, Any]) -> None:
         key = card["key"]
         cfg = self.app.platforms.get(key)
@@ -514,9 +703,14 @@ class UploaderApp:
         for extra_key, placeholder in card.get("extras", []):
             row = ttk.Frame(frame)
             row.pack(fill="x", pady=2)
-            label = {"forum": "目标吧名", "category_label": "默认分类", "cate": "作品类型"}.get(
-                extra_key, extra_key
-            )
+            label = {
+                "forum": "目标吧名",
+                "category_label": "默认分类",
+                "cate": "作品类型",
+                "language_label": "画廊语言",
+                "langtype": "语言类型",
+                "title_jpn": "默认日文标题",
+            }.get(extra_key, extra_key)
             ttk.Label(row, text=f"{label}：").pack(side="left")
             if extra_key == "cate":
                 cate_value = str(settings.get("cate", "1"))
@@ -582,7 +776,7 @@ class UploaderApp:
         parent.columnconfigure(1, weight=1)
         rows = [
             ("单张上限 (MB)", self.max_mb_var, "0 = 不限制；平台常限制 10MB"),
-            ("最长边 (px)", self.max_width_var, "0 = 不缩放"),
+            ("最长边 (px)", self.max_width_var, "0 = 不缩放；只等比缩小，不裁剪画面"),
             ("质量 (JPEG/WebP)", self.quality_var, "45–95"),
         ]
         for index, (label, var, hint) in enumerate(rows):
@@ -708,6 +902,8 @@ class UploaderApp:
                 if extra_key == "cate":
                     value = value.split(" - ")[0].strip()
                 settings[extra_key] = value
+            if key in self.field_maps and self.field_maps[key]:
+                settings["field_map"] = copy.deepcopy(self.field_maps[key])
             platforms[key] = PlatformConfig(
                 name=key,
                 enabled=self.enabled_vars[key].get(),
@@ -1364,7 +1560,23 @@ class UploaderApp:
             item.setdefault("settings", {})
             if isinstance(item["settings"], dict):
                 item["settings"].update(
-                    {k: v for k, v in cfg.settings.items() if k in ("forum", "cate", "work_name", "category_label")}
+                    {
+                        k: v
+                        for k, v in cfg.settings.items()
+                        if k
+                        in (
+                            "forum",
+                            "cate",
+                            "work_name",
+                            "chapter_name",
+                            "category_label",
+                            "language_label",
+                            "langtype",
+                            "title_jpn",
+                            "publish_after_upload",
+                            "field_map",
+                        )
+                    }
                 )
             raw["platforms"][key] = item
         try:

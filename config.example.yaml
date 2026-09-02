@@ -3,7 +3,7 @@ common:
   timeout: 30          # 单次请求超时（秒）
   retries: 3           # 网络错误重试次数
   interval_seconds: 1  # 平台间请求间隔（秒，0 为不限制）
-  max_width: 2400      # 上传前图片最长边（0 = 不缩放）
+  max_width: 2400      # 上传前图片最长边（0 = 不缩放；只等比缩小，不裁剪）
   max_height: 0
   quality: 88          # JPEG/WebP 压缩质量
   max_bytes_mb: 10     # 单张图片大小上限（MB，超限自动压缩；再漫画强制 10MB）
@@ -51,8 +51,26 @@ platforms:
     settings:
       category_label: "Manga"           # 按上传页选项文本匹配
       rating_label: ""                  # 例如 Safe / Questionable / Adult
-      language_label: ""                # 留空自动选中文
+      language_label: "Chinese"         # 汉化上传默认中文；原版/无字改 Japanese / No Text
       extra_tags: []
+      publish_after_upload: true       # 上传后自动正式发布；false=只建草稿到 My Uploads
+      title_jpn: ""                     # 日文/原标题（供 field_map 的 meta:title_jpn 使用）
+      langtype: "1"                     # 汉化上传默认 1=Translated；原版/无字改 0，改写改 2
+      # langctl（“由专业翻译者翻译”）会在 langtype=1 时自动勾选，避免被标成机翻/渣翻
+      # 上传表单字段映射（默认已按真实上传页核对；GUI 平台卡片“上传表单填写…”会写入这里）
+      # field_map:
+      #   - label: 英文/罗马字标题
+      #     field: gname_en      # 页面上输入框的 name
+      #     source: title
+      #   - label: 日文原标题
+      #     field: gname_jp
+      #     source: meta:title_jpn
+      #   - label: 上传者评论
+      #     field: ulcomment
+      #     source: description
+      #   - label: 同意服务条款
+      #     field: tos
+      #     source: text:on
 
   zaimanhua:
     enabled: true
