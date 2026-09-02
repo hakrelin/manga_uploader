@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+
+# 敏感配置不要提交
+config.yaml
+config.local.yaml
+
+# 运行产物
+output/
+report-*.json
+
+# 虚拟环境
+.venv/
+.venv*/
+venv/

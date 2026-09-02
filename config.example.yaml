@@ -1,0 +1,66 @@
+# 复制为 config.yaml 后填写（config.yaml 已被 .gitignore 忽略）
+common:
+  timeout: 30          # 单次请求超时（秒）
+  retries: 3           # 网络错误重试次数
+  interval_seconds: 1  # 平台间请求间隔（秒，0 为不限制）
+  max_width: 2400      # 上传前图片最长边（0 = 不缩放）
+  max_height: 0
+  quality: 88          # JPEG/WebP 压缩质量
+  max_bytes_mb: 10     # 单张图片大小上限（MB，超限自动压缩；再漫画强制 10MB）
+  output_dir: output   # 报告/调试文件目录
+  confirm: true        # 发布前二次确认
+  parallel: false      # 多个章节并行发布
+  proxy_url: ""        # 手动代理，如 http://127.0.0.1:7890（留空则直连）
+  use_system_proxy: false  # true 时自动读取 Windows 系统代理；海外站连不上再开
+
+platforms:
+  bilibili:
+    enabled: true
+    # 获取方式见 README「Cookie 获取」
+    cookies:
+      SESSDATA: ""
+      bili_jct: ""
+      buvid3: ""       # 建议填写，能避免分享弹窗
+    settings:
+      publish_mode: article     # article = 发专栏文章；dynamic = 图文动态（旧）
+      tid: 4                    # 4 = 单图封面模板；3 = 三图封面
+      category: 0               # 专栏分类 id，0 = 默认
+      original: 1               # 1 = 声明原创（授权转载请按平台要求设为 0）
+      reprint: 0                # 0 = 原创；1 = 转载
+      max_article_pages: 100    # 单篇专栏最多放多少张图，超出自动拆成多篇
+      image_category: draw      # daily / draw / cos
+      max_pages_per_post: 9     # 仅图文动态模式：单条最多 9 张，超出自动拆条
+      topics: ["原创漫画"]      # 仅图文动态模式：动态话题，可多个
+
+  tieba:
+    enabled: true
+    cookies:
+      BDUSS: ""
+    settings:
+      forum: ""                 # 目标吧名，例如 "漫画吧"
+      fid: 0                    # 吧 ID；留 0 自动解析，解析失败再手动填
+      max_pages_per_post: 50
+      upload_sleep: 1.0         # 每张图上传间隔（秒），防频控
+      title_suffix: "【漫画】"
+
+  ehentai:
+    enabled: true
+    cookies:
+      ipb_member_id: ""
+      ipb_pass_hash: ""
+    settings:
+      category_label: "Manga"           # 按上传页选项文本匹配
+      rating_label: ""                  # 例如 Safe / Questionable / Adult
+      language_label: ""                # 留空自动选中文
+      extra_tags: []
+
+  zaimanhua:
+    enabled: true
+    cookies:
+      token: ""                         # 登录再漫画后 Cookie 里的 token（JWT）
+      clientId: ""                      # 可选
+    settings:
+      cate: "1"                         # 1 原创作品 / 2 原创汉化 / 3 个人扫漫 / 4 转载作品
+      work_name: ""                     # 作品名，留空用 manga.json 的 title
+      chapter_name: ""                  # 章节名，留空用章节标题
+      max_pages_per_upload: 500         # 单次提交上限（再漫画固定 500 张）

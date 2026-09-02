@@ -1,0 +1,46 @@
+{
+  "title": "示例漫画",
+  "author": "作者名",
+  "description": "这里是漫画简介：讲了一个在多个平台同时连载的故事。",
+  "tags": [
+    "原创漫画",
+    "示例"
+  ],
+  "cover": "cover.png",
+  "chapters": [
+    {
+      "folder": "ch01",
+      "title": "示例漫画 第01话 开场",
+      "description": "第一话：主角登场。"
+    },
+    {
+      "folder": "ch02",
+      "title": "示例漫画 第02话 转折",
+      "description": "第二话：剧情推进。"
+    }
+  ],
+  "platforms": {
+    "bilibili": {
+      "caption": "每日更新，欢迎三连关注～",
+      "topics": [
+        "原创漫画"
+      ],
+      "image_category": "draw"
+    },
+    "tieba": {
+      "forum": "请改成你的目标吧名"
+    },
+    "ehentai": {
+      "category": "Manga",
+      "language": "Chinese (Simplified)",
+      "rating": "Safe",
+      "extra_tags": [
+        "parody:original"
+      ]
+    },
+    "zaimanhua": {
+      "cate": "1",
+      "work_name": ""
+    }
+  }
+}
