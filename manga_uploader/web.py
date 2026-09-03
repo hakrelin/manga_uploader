@@ -15,6 +15,7 @@ import mimetypes
 import re
 import secrets
 import socket
+import sys
 import threading
 import time
 import webbrowser
@@ -806,6 +807,16 @@ class MangaServer(ThreadingHTTPServer):
         super().__init__(addr, WebHandler)
         self.state = state
         self.csrf_token = secrets.token_urlsafe(16)
+
+    def handle_error(self, request: Any, client_address: Any) -> None:
+        """浏览器中途取消连接（拖拽/上传/SSE/刷新）是常态，不打整段 traceback。"""
+        exc = sys.exc_info()[1]
+        if isinstance(
+            exc, (ConnectionAbortedError, ConnectionResetError, BrokenPipeError, TimeoutError)
+        ):
+            get_logger("web").debug("客户端断开连接：%r", exc)
+        else:
+            super().handle_error(request, client_address)
 
 
 def _find_free_port(
