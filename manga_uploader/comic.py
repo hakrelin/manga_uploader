@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .models import Chapter
-from .util import is_image, sort_images
+from .util import is_image, natural_sort_key, sort_images
 
 META_FILES = ("manga.json", "manga.yaml", "manga.yml", "comic.json", "comic.yaml")
 SKIP_DIRS = {
@@ -71,6 +71,33 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
 
 def _image_files(folder: Path) -> list[Path]:
     return sort_images(folder.iterdir() if folder.is_dir() else [])
+
+
+def _resolve_pages(folder: Path, explicit_pages) -> list[Path]:
+    """按显式页序解析页面文件；无显式页序时回退文件名自然排序。
+
+    explicit_pages 为有序文件名列表（manga.json 章节条目的 pages 字段）：
+    按列表顺序取存在的文件（大小写不敏感兜底），未列出的图片文件按自然排序
+    接在末尾；缺失/非法项静默跳过，列表引用失效时优雅降级。
+    """
+    images = {p.name: p for p in _image_files(folder)}
+    if not explicit_pages:
+        return list(images.values())
+    ordered: list[Path] = []
+    for name in explicit_pages:
+        name = str(name).strip()
+        if not name:
+            continue
+        page = images.pop(name, None)
+        if page is None:
+            lower = name.lower()
+            page = next((p for k, p in images.items() if k.lower() == lower), None)
+            if page is not None:
+                images.pop(page.name, None)
+        if page is not None:
+            ordered.append(page)
+    ordered.extend(sorted(images.values(), key=natural_sort_key))
+    return ordered
 
 
 def _to_list(value: Any) -> list[str]:
@@ -159,7 +186,16 @@ def load_chapters(
         if only_chapters and key not in only_chapters and folder.name not in only_chapters:
             continue
 
-        pages = _image_files(folder)
+        # 显式页序：章节条目(merged 由 listed_meta 提供)或章节目录自身 meta 的 pages 字段；
+        # 只读章节级，不读 root 顶层，避免多话时串扰
+        explicit_pages = None
+        if isinstance(folder_meta, dict):
+            explicit_pages = folder_meta.get("pages")
+        if not explicit_pages and isinstance(listed_meta, dict):
+            explicit_pages = listed_meta.get("pages")
+        if not isinstance(explicit_pages, list):
+            explicit_pages = None
+        pages = _resolve_pages(folder, explicit_pages)
         if not pages:
             if strict:
                 raise ComicError(f"章节目录没有图片：{folder}")

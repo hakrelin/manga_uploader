@@ -49,10 +49,12 @@ from .webui import (
     import_staging_base,
     insert_page,
     looks_like_full_comic,
+    rename_numeric,
     replace_page,
     save_config,
     stage_images,
     unwrap_single_dir,
+    write_page_order,
     write_quick_meta,
     bilibili_qr_new,
     bilibili_qr_poll,
@@ -796,6 +798,10 @@ class WebHandler(BaseHTTPRequestHandler):
             self._api_page_upload("replace")
         elif path == "/api/delete":
             self._api_page_delete()
+        elif path == "/api/reorder":
+            self._api_reorder()
+        elif path == "/api/rename":
+            self._api_rename()
         else:
             self._json(404, {"error": f"未知接口：{path}"})
 
@@ -1151,7 +1157,7 @@ class WebHandler(BaseHTTPRequestHandler):
             if mode == "replace":
                 count = replace_page(comic_dir, chapter_key, index, data, ext)
             else:
-                count = insert_page(comic_dir, chapter_key, index, data, ext)
+                count = insert_page(comic_dir, chapter_key, index, data, name)
         except Exception as exc:
             verb = "替换" if mode == "replace" else "插入"
             self._json(500, {"error": f"{verb}失败：{exc}"})
@@ -1184,6 +1190,54 @@ class WebHandler(BaseHTTPRequestHandler):
         )
         self._json(200, {"ok": True, "pages": count})
 
+    def _api_reorder(self) -> None:
+        """按新页序重排章节（只写 manga.json 的 pages，不移动/重命名文件）。"""
+        data = self._read_json()
+        comic_dir = str(data.get("dir") or "").strip()
+        chapter_key = str(data.get("chapter") or "").strip() or "root"
+        pages = data.get("pages")
+        if not comic_dir:
+            self._json(400, {"error": "缺少漫画目录"})
+            return
+        if not isinstance(pages, list):
+            self._json(400, {"error": "缺少 pages 列表"})
+            return
+        try:
+            chapters = load_chapters(comic_dir, strict=False)
+            chapter = next((c for c in chapters if c.key == chapter_key), None)
+            if chapter is None:
+                raise ValueError(f"找不到章节：{chapter_key}")
+            valid = {p.name for p in chapter.pages}
+            names = [str(p) for p in pages]
+            if not names or set(names) != valid:
+                raise ValueError("pages 必须恰好是当前章节的全部页面文件")
+            write_page_order(comic_dir, chapter_key, names)
+        except Exception as exc:
+            self._json(500, {"error": f"重排失败：{exc}"})
+            return
+        self.server.state.ring.append(
+            "INFO", f"已重排页序：{Path(comic_dir).name}（{chapter_key}，{len(names)} 页）"
+        )
+        self._json(200, {"ok": True, "pages": len(names)})
+
+    def _api_rename(self) -> None:
+        """把章节按当前页序重命名为 001.ext / 002.ext…。"""
+        data = self._read_json()
+        comic_dir = str(data.get("dir") or "").strip()
+        chapter_key = str(data.get("chapter") or "").strip() or "root"
+        if not comic_dir:
+            self._json(400, {"error": "缺少漫画目录"})
+            return
+        try:
+            count = rename_numeric(comic_dir, chapter_key)
+        except Exception as exc:
+            self._json(500, {"error": f"重命名失败：{exc}"})
+            return
+        self.server.state.ring.append(
+            "INFO", f"已重命名为 001…：{Path(comic_dir).name}（{chapter_key}，{count} 页）"
+        )
+        self._json(200, {"ok": True, "pages": count})
+
 
 def _preview_struct(preview) -> list[dict[str, Any]]:
     """把全文预览结果转成前端通用的发布示意图结构(不解析平台专属内容)。"""
@@ -1196,6 +1250,7 @@ def _preview_struct(preview) -> list[dict[str, Any]]:
                 "author": chapter.author,
                 "description": chapter.description,
                 "page_count": len(chapter.pages),
+                "pages": [p.name for p in chapter.pages],
                 "platforms": [
                     {"key": name, "lines": [str(line) for line in lines]}
                     for name, lines in rows

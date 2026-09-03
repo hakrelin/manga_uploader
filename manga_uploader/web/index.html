@@ -233,19 +233,26 @@ try {
                     <span class="pv-avatar">{{ (((summary.meta||{}).author || ch.author) || "?")[0] }}</span>{{ (summary.meta||{}).author || ch.author }}
                   </div>
                   <p v-if="metaForm.description || ch.description" class="pv-post-desc">{{ metaForm.description || ch.description }}</p>
-                  <div class="pv-flow">
-                    <figure v-for="n in ch.page_count" :key="n" class="pv-fig">
-                      <img :src="pageUrl(ch.key, n - 1)" loading="lazy" alt="">
-                      <figcaption>
-                        <span>P{{ n }}</span>
-                        <button class="pv-page-btn" title="用本地图片替换这一页"
-                                @click.stop="startReplace(ch, n)">⟳替换</button>
-                        <button class="pv-page-btn danger" title="删除这一页"
-                                @click.stop="startDeletePage(ch, n)">🗑删</button>
-                      </figcaption>
-                    </figure>
+                  <div class="pv-flow"
+                       @dragover="onFlowDragOver($event, ch)"
+                       @drop="onFlowDrop($event, ch)">
+                    <template v-for="row in flowRows(ch)" :key="row.key">
+                      <div v-if="row.slot" class="pv-drop-slot"></div>
+                      <figure v-else class="pv-fig" draggable="true"
+                              @dragstart="onPageDragStart($event, ch, row.i)"
+                              @dragend="onPageDragEnd">
+                        <img :src="pageUrl(ch.key, row.i)" loading="lazy" alt="" draggable="false">
+                        <figcaption>
+                          <span>P{{ row.i + 1 }}</span>
+                          <button class="pv-page-btn" title="用本地图片替换这一页"
+                                  @click.stop="startReplace(ch, row.i + 1)">⟳替换</button>
+                          <button class="pv-page-btn danger" title="删除这一页"
+                                  @click.stop="startDeletePage(ch, row.i + 1)">🗑删</button>
+                        </figcaption>
+                      </figure>
+                    </template>
                   </div>
-                  <!-- 插入页操作：选位置 + 快捷按钮 -->
+                  <!-- 插入页操作：选位置 + 快捷按钮 + 命名工具 -->
                   <div class="pv-page-ops">
                     <span class="pv-page-ops-label">📥 插入页</span>
                     <input type="number" min="1" :max="ch.page_count + 1"
@@ -256,6 +263,8 @@ try {
                     <button class="btn btn-ghost btn-sm" @click="startInsert(ch, 'custom')">插入</button>
                     <button class="btn btn-ghost btn-sm" @click="startInsert(ch, 'second')">插入第二页</button>
                     <button class="btn btn-ghost btn-sm" @click="startInsert(ch, 'last')">插入尾页</button>
+                    <button class="btn btn-ghost btn-sm" @click="startRenameNumeric(ch)"
+                            title="按当前页序重命名为 001.ext / 002.ext…">🔢 001 重命名</button>
                   </div>
                 </div>
 
@@ -273,6 +282,12 @@ try {
                     </details>
                   </div>
                 </div>
+              </div>
+              <!-- 垃圾槽：拖页上来即删除（固定远离页流的位，拖得远本身就是防误操作） -->
+              <div v-if="dragState.mode === 'page'" class="pv-trash" :class="{ over: trashOver }"
+                   @dragover.prevent="trashOver = true"
+                   @drop.prevent="onTrashDrop">
+                <span class="pv-trash-ico">🗑</span> 拖到这里删除
               </div>
             </template>
             <pre v-else class="preview-text">{{ previewText }}</pre>

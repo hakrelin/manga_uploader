@@ -325,13 +325,12 @@ def insert_page(
     chapter_key: str,
     index: int,
     data: bytes,
-    ext: str,
+    name: str,
 ) -> int:
-    """把一张新图插入漫画某章节的 index 位置（0-based），全章重排为连续数字名。
+    """把一张新图插入漫画某章节的 index 位置（0-based），不重命名已有文件。
 
-    只重排图片文件（按自然排序），保留各自扩展名；非图片文件（manga.json 等）不动。
-    新图先经 Pillow 解码校验，坏图直接报错不落盘。manga.json 里显式 cover 若指向
-    被重命名的页，会同步改成新文件名，避免封面静默丢失。返回章节新的页数。
+    新文件以原名（净化路径、保留图片扩展名）写入章节目录，重名加 _1/_2 后缀；
+    新文件名按 index 插入页序并写入 manga.json（排序与文件名解耦）。返回新页数。
     """
     from io import BytesIO
 
@@ -350,51 +349,30 @@ def insert_page(
         raise ValueError(f"找不到章节：{chapter_key}")
     folder = chapter.source_dir
 
-    pages = sort_images(folder.iterdir())
-    index = max(0, min(index, len(pages)))
-    final_count = len(pages) + 1
-    width = max(3, len(str(final_count)))
-    ext = ext if ext in IMAGE_EXTS else ".jpg"
+    # 净化文件名：取 basename（兼容 C:\\fakepath\\），去非法字符，保留图片扩展名
+    raw = name.replace("\\", "/").rsplit("/", 1)[-1]
+    stem = Path(raw).stem
+    ext = Path(raw).suffix.lower()
+    if ext not in IMAGE_EXTS:
+        raise ValueError(f"不支持的图片格式：{ext or '(无扩展名)'}")
+    safe = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", stem).strip() or "page"
+    safe = safe[:80]
 
-    def new_pos(i: int) -> int:
-        return i + 1 if i < index else i + 2
+    new_name = f"{safe}{ext}"
+    existing = {p.name for p in sort_images(folder.iterdir())}
+    n = 1
+    while new_name in existing:
+        new_name = f"{safe}_{n}{ext}"
+        n += 1
 
-    # 两段重命名避免冲突：先把旧图全部挪到临时名，再写新图并按序落到最终数字名
-    temps: list[tuple[Path, Path]] = []
-    for p in pages:
-        tmp = folder / f".mu_tmp_{time.time_ns()}_{p.name}"
-        p.rename(tmp)
-        temps.append((p, tmp))
+    (folder / new_name).write_bytes(data)
 
-    try:
-        (folder / f"{index + 1:0{width}d}{ext}").write_bytes(data)
-        for i, (_old, tmp) in enumerate(temps):
-            tmp.rename(folder / f"{new_pos(i):0{width}d}{tmp.suffix.lower()}")
-    except Exception:
-        # 失败尽量回滚：删掉已写入的新图，把还能还原的临时名改回去
-        target = folder / f"{index + 1:0{width}d}{ext}"
-        if target.exists() and all(target.name != old.name for old, _ in temps):
-            try:
-                target.unlink()
-            except Exception:
-                pass
-        for old, tmp in temps:
-            if tmp.exists() and not old.exists():
-                try:
-                    tmp.rename(old)
-                except Exception:
-                    pass
-        raise
-
-    rename_map = {
-        old.name: f"{new_pos(i):0{width}d}{old.suffix.lower()}"
-        for i, (old, _tmp) in enumerate(temps)
-    }
-    _sync_cover_refs(folder, rename_map)
-    root = Path(comic_dir)
-    if root != folder:
-        _sync_cover_refs(root, rename_map)
-    return final_count
+    # 页序：当前顺序里把新文件插到 index（无显式页序时用自然序，插入后落盘为显式序）
+    current = [p.name for p in chapter.pages]
+    index = max(0, min(index, len(current)))
+    current.insert(index, new_name)
+    write_page_order(comic_dir, chapter_key, current)
+    return len(current)
 
 
 def replace_page(
@@ -419,7 +397,7 @@ def replace_page(
     chapter = next((c for c in chapters if c.key == chapter_key), None)
     if chapter is None:
         raise ValueError(f"找不到章节：{chapter_key}")
-    pages = sort_images(chapter.source_dir.iterdir())
+    pages = chapter.pages  # 用解析后的页序（显式或自然），与前端展示一致
     if index < 0 or index >= len(pages):
         raise ValueError(f"找不到第 {index + 1} 页（共 {len(pages)} 页）")
     target = pages[index]
@@ -434,41 +412,116 @@ def delete_page(
     chapter_key: str,
     index: int,
 ) -> int:
-    """删除漫画某章节第 index 页（0-based），并把后续页重排为连续数字名。
+    """删除漫画某章节第 index 页（0-based），不重排其他文件，只从磁盘删 + 页序移除。
 
-    至少保留 1 页，删到空会被拒绝，避免章节/单本失去可发布结构。
-    返回章节剩余页数。
+    至少保留 1 页，删到空会被拒绝。返回章节剩余页数。
     """
     chapters = load_chapters(comic_dir, strict=False)
     chapter = next((c for c in chapters if c.key == chapter_key), None)
     if chapter is None:
         raise ValueError(f"找不到章节：{chapter_key}")
-    folder = chapter.source_dir
-    pages = sort_images(folder.iterdir())
+    pages = chapter.pages
     if index < 0 or index >= len(pages):
         raise ValueError(f"找不到第 {index + 1} 页（共 {len(pages)} 页）")
     if len(pages) <= 1:
         raise ValueError("至少要保留 1 页，不能把整章删空")
 
     target = pages[index]
-    final_count = len(pages) - 1
-    width = max(3, len(str(final_count)))
+    target.unlink()
+    remaining = [p.name for p in pages if p is not target]
+    write_page_order(comic_dir, chapter_key, remaining)
+    return len(remaining)
 
-    # 两段重命名：其余页先挪到临时名，再删目标页，最后按紧凑序号落位
+
+def write_page_order(
+    comic_dir: str | Path,
+    chapter_key: str,
+    pages: list[str],
+) -> None:
+    """把章节的显式页序写进 manga.json 的 chapters 条目。
+
+    - 页序与文件名自然排序一致（或为空）时省略 pages 字段，保持文件干净；
+    - 单本 root 条目用 folder:"root"，多话用目录名，与 load_chapters 约定一致；
+    - 只改 pages 字段，manga.json 其余字段（元数据/平台内容）原样保留。
+    """
+    root = Path(comic_dir)
+    chapters = load_chapters(comic_dir, strict=False)
+    chapter = next((c for c in chapters if c.key == chapter_key), None)
+    if chapter is None:
+        raise ValueError(f"找不到章节：{chapter_key}")
+
+    meta_file = find_meta_file(root)
+    data = read_meta(meta_file) if meta_file else {}
+    if not isinstance(data, dict):
+        data = {}
+
+    entries = data.get("chapters")
+    if not isinstance(entries, list):
+        entries = []
+        data["chapters"] = entries
+    entry = next(
+        (
+            e
+            for e in entries
+            if isinstance(e, dict)
+            and str(e.get("folder") or e.get("key") or e.get("name")) == chapter_key
+        ),
+        None,
+    )
+    if entry is None:
+        entry = {"folder": chapter_key}
+        entries.append(entry)
+
+    names = [str(n) for n in (pages or [])]
+    natural = [p.name for p in sort_images(chapter.source_dir.iterdir())]
+    if names and names != natural:
+        entry["pages"] = names
+    else:
+        entry.pop("pages", None)
+
+    meta_file = meta_file or (root / "manga.json")
+    if meta_file.suffix.lower() in (".yaml", ".yml"):
+        import yaml
+
+        meta_file.write_text(
+            yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8"
+        )
+    else:
+        meta_file.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+
+
+def rename_numeric(
+    comic_dir: str | Path,
+    chapter_key: str,
+) -> int:
+    """把章节按当前页序重命名为 001.ext / 002.ext…（保留各自扩展名）。
+
+    重命名后自然排序即等于页序，清掉 manga.json 的 pages 字段；显式 cover 引用
+    同步到新文件名。非图片文件不动。返回章节页数。
+    """
+    chapters = load_chapters(comic_dir, strict=False)
+    chapter = next((c for c in chapters if c.key == chapter_key), None)
+    if chapter is None:
+        raise ValueError(f"找不到章节：{chapter_key}")
+    folder = chapter.source_dir
+    pages = chapter.pages
+    count = len(pages)
+    width = max(3, len(str(count)))
+
+    # 两段重命名避免冲突：先把所有页挪到临时名，再按序落到最终数字名
     temps: list[tuple[Path, Path]] = []
     for p in pages:
-        if p is target:
-            continue
         tmp = folder / f".mu_tmp_{time.time_ns()}_{p.name}"
         p.rename(tmp)
         temps.append((p, tmp))
 
     try:
-        target.unlink()
-        for i, (_old, tmp) in enumerate(temps):
-            tmp.rename(folder / f"{i + 1:0{width}d}{tmp.suffix.lower()}")
+        for i, (old, tmp) in enumerate(temps):
+            tmp.rename(folder / f"{i + 1:0{width}d}{old.suffix.lower()}")
     except Exception:
-        # 失败尽量回滚：把还能还原的临时名改回去（被删页无法恢复）
+        # 失败尽量回滚：把还能还原的临时名改回去
         for old, tmp in temps:
             if tmp.exists() and not old.exists():
                 try:
@@ -485,7 +538,8 @@ def delete_page(
     root = Path(comic_dir)
     if root != folder:
         _sync_cover_refs(root, rename_map)
-    return final_count
+    write_page_order(comic_dir, chapter_key, [])
+    return count
 
 
 def _sync_cover_refs(meta_dir: Path, rename_map: dict[str, str]) -> None:

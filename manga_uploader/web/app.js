@@ -184,6 +184,10 @@ createApp({
     const editPos = reactive({});
     const pendingPageEdit = ref(null); // { key, index, mode: 'insert'|'replace' }
     const pageEditFile = ref(null);
+    // 拖拽编排：mode = page(页拖动) | file(本地图拖入) | null
+    // key=来源章节（拖出页所属），slotKey=当前悬停的章节（可能不同，跨章节不落位）
+    const dragState = reactive({ mode: null, key: null, page: null, index: null, slot: null, slotKey: null });
+    const trashOver = ref(false);
 
     const logLines = ref([]);
     const logBox = ref(null);
@@ -860,16 +864,182 @@ createApp({
     }
 
     function startDeletePage(ch, pageNo) {
-      if (!window.confirm(`确认删除第 ${pageNo} 页？\n\n后续页码会重排，且删除不可撤销。`)) return;
+      if (!window.confirm(`确认删除第 ${pageNo} 页？\n\n删除不可撤销。`)) return;
+      deletePageDirect(ch, pageNo - 1);
+    }
+
+    // 直接删除（垃圾槽用）：不确认，拖到垃圾槽本身已是明确动作
+    async function deletePageDirect(ch, index) {
       busy.value = true;
-      api("/api/delete", {
+      try {
+        const r = await api("/api/delete", {
+          method: "POST", json: true,
+          body: JSON.stringify({ dir: comicDir.value.trim(), chapter: ch.key, index }),
+        });
+        toastMsg(`已删除第 ${index + 1} 页，剩 ${r.pages} 页`);
+        await loadComic();
+      } catch (err) {
+        toastMsg("删除失败：" + err.message);
+      } finally {
+        busy.value = false;
+      }
+    }
+
+    // ---------------- 拖拽编排（重排 / 拖入 / 垃圾槽） ----------------
+
+    // 按 dragState.slot 在页流里插一个出让插槽（flex 自然把后续项挤开）
+    function flowRows(ch) {
+      const n = (ch.pages || []).length;
+      const rows = [];
+      const slot = (dragState.mode === "page" || dragState.mode === "file")
+        && dragState.slotKey === ch.key ? dragState.slot : null;
+      for (let i = 0; i < n; i++) {
+        if (slot !== null && slot === i) rows.push({ slot: true, key: ch.key + ":slot:" + i });
+        rows.push({ i, key: ch.key + ":" + i });
+      }
+      if (slot !== null && slot === n) rows.push({ slot: true, key: ch.key + ":slot:end" });
+      return rows;
+    }
+
+    function onPageDragStart(e, ch, i) {
+      const name = (ch.pages || [])[i];
+      dragState.mode = "page";
+      dragState.key = ch.key; // 来源章节（垃圾槽删除用）
+      dragState.page = name;
+      dragState.index = i;
+      dragState.slot = null;
+      dragState.slotKey = ch.key;
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", name); // 部分浏览器必须 setData 才开始拖拽
+    }
+
+    function onPageDragEnd() {
+      resetDrag();
+    }
+
+    function computeSlot(e, ch) {
+      const figs = Array.from(e.currentTarget.querySelectorAll(".pv-fig"));
+      let slot = 0;
+      for (let i = 0; i < figs.length; i++) {
+        const r = figs[i].getBoundingClientRect();
+        if (e.clientY > r.top + r.height / 2) slot = i + 1;
+      }
+      dragState.slotKey = ch.key;
+      dragState.slot = slot;
+    }
+
+    function onFlowDragOver(e, ch) {
+      e.preventDefault(); // 允许 drop
+      const isFile = Array.from(e.dataTransfer.types || []).includes("Files");
+      if (isFile) {
+        if (dragState.mode !== "file") dragState.mode = "file";
+        e.dataTransfer.dropEffect = "copy";
+        computeSlot(e, ch);
+      } else if (dragState.mode === "page") {
+        e.dataTransfer.dropEffect = "move";
+        computeSlot(e, ch);
+      }
+    }
+
+    async function onFlowDrop(e, ch) {
+      e.preventDefault();
+      const files = Array.from(e.dataTransfer.files || []);
+      if (files.length) {
+        const slot = dragState.slotKey === ch.key && Number.isFinite(dragState.slot)
+          ? dragState.slot : (ch.pages || []).length;
+        resetDrag();
+        await doFileInsert(ch, slot, files);
+        return;
+      }
+      // 只在「悬停章节 == 来源章节」时落位（跨章节拖动不重排）
+      if (dragState.mode === "page" && dragState.slotKey === ch.key
+          && dragState.key === ch.key && dragState.page) {
+        const slot = Number.isFinite(dragState.slot) ? dragState.slot : (ch.pages || []).length;
+        const page = dragState.page;
+        resetDrag();
+        await doReorder(ch, slot, page);
+        return;
+      }
+      resetDrag();
+    }
+
+    async function doReorder(ch, slot, page) {
+      const list = (ch.pages || []).slice();
+      const from = list.indexOf(page);
+      if (from < 0) return;
+      list.splice(from, 1);
+      list.splice(slot - (from < slot ? 1 : 0), 0, page);
+      busy.value = true;
+      try {
+        await api("/api/reorder", {
+          method: "POST", json: true,
+          body: JSON.stringify({ dir: comicDir.value.trim(), chapter: ch.key, pages: list }),
+        });
+        toastMsg(`已重排：${page} → 第 ${list.indexOf(page) + 1} 页`);
+        await loadComic();
+      } catch (err) {
+        toastMsg("重排失败：" + err.message);
+      } finally {
+        busy.value = false;
+      }
+    }
+
+    async function doFileInsert(ch, slot, files) {
+      const file = files && files[0];
+      if (!file || !/\.(jpg|jpeg|png|gif|webp)$/i.test(file.name)) {
+        toastMsg("拖入的必须是图片文件（jpg/png/gif/webp）");
+        return;
+      }
+      busy.value = true;
+      try {
+        const fd = new FormData();
+        fd.append("dir", comicDir.value.trim());
+        fd.append("chapter", ch.key);
+        fd.append("index", String(slot));
+        fd.append("file", file);
+        const r = await api("/api/insert", { method: "POST", body: fd });
+        toastMsg(`已插入第 ${slot + 1} 页，共 ${r.pages} 页`);
+        editPos[ch.key] = r.pages + 1;
+        await loadComic();
+      } catch (err) {
+        toastMsg("插入失败：" + err.message);
+      } finally {
+        busy.value = false;
+      }
+    }
+
+    function onTrashDrop(e) {
+      e.preventDefault();
+      if (dragState.mode === "page" && dragState.key != null && dragState.page) {
+        const ch = previewChapters.value.find((c) => c.key === dragState.key);
+        const idx = ch ? (ch.pages || []).indexOf(dragState.page) : -1;
+        if (ch && idx >= 0) deletePageDirect(ch, idx);
+      }
+      resetDrag();
+    }
+
+    function resetDrag() {
+      dragState.mode = null;
+      dragState.key = null;
+      dragState.page = null;
+      dragState.index = null;
+      dragState.slot = null;
+      dragState.slotKey = null;
+      trashOver.value = false;
+    }
+
+    // 命名工具：按当前页序重命名为 001.ext / 002.ext…
+    function startRenameNumeric(ch) {
+      if (!window.confirm(`确认把「${ch.title || ch.key}」全部页面重命名为 001.ext / 002.ext…？\n\n按当前页序发号，重命名不可撤销。`)) return;
+      busy.value = true;
+      api("/api/rename", {
         method: "POST", json: true,
-        body: JSON.stringify({ dir: comicDir.value.trim(), chapter: ch.key, index: pageNo - 1 }),
-      }).then((r) => {
-        toastMsg(`已删除第 ${pageNo} 页，剩 ${r.pages} 页`);
+        body: JSON.stringify({ dir: comicDir.value.trim(), chapter: ch.key }),
+      }).then(() => {
+        toastMsg(`已重命名为 001…（${ch.key}）`);
         return loadComic();
       }).catch((err) => {
-        toastMsg("删除失败：" + err.message);
+        toastMsg("重命名失败：" + err.message);
       }).finally(() => {
         busy.value = false;
       });
@@ -972,6 +1142,8 @@ createApp({
       nav, navItems, version, note, running, busy, cards, config, statuses, expanded,
       comicDir, summary, metaForm, dragOver, previewText, previewChapters, previewMode,
       editPos, pageEditFile, startInsert, startReplace, startDeletePage, onPageEditPicked,
+      dragState, trashOver, flowRows, onPageDragStart, onPageDragEnd,
+      onFlowDragOver, onFlowDrop, onTrashDrop, startRenameNumeric,
       resetPick, saveMeta,
       logLines, logBox, logOpen, logNew, clearLog, toast, modal, lanAddr,
       theme, themeLabel, themeIcon, cycleTheme,

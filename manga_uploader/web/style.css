@@ -800,6 +800,46 @@ html, body {
 .pv-page-ops-input { width: 84px; flex: none; }
 .pv-page-ops-hint { font-size: 11px; color: var(--text-3); margin-right: auto; }
 
+/* 页卡可拖拽 */
+.pv-fig { cursor: grab; }
+.pv-fig:active { cursor: grabbing; }
+
+/* 拖拽时的出让插槽 */
+.pv-drop-slot {
+  height: 22px;
+  margin: 3px 0;
+  border: 2px dashed var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--accent-weak);
+}
+
+/* 垃圾槽：固定底部、远离页流，拖上去即删除 */
+.pv-trash {
+  position: fixed;
+  bottom: 28px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 300;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 26px;
+  border-radius: 999px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #fff;
+  background: rgba(229, 72, 77, 0.92);
+  border: 2px dashed rgba(255, 255, 255, 0.75);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
+  user-select: none;
+  transition: transform 0.15s, background 0.15s;
+}
+.pv-trash .pv-trash-ico { font-size: 20px; }
+.pv-trash.over {
+  background: #c0392b;
+  transform: translateX(-50%) scale(1.08);
+}
+
 /* 各平台发布参数 */
 .pv-platforms {
   margin-top: 12px;
