@@ -14,7 +14,10 @@ e-hentai 没有公开的上传 API，本模块的策略是：
 from __future__ import annotations
 
 import mimetypes
+import os
 import re
+import time
+import zipfile
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urljoin, urlsplit
@@ -489,37 +492,83 @@ class EhentaiPublisher(BasePublisher):
             data = self._fill(form, chapter)
             pages = self.prepare_pages(chapter, max_bytes=0)
             action = urljoin(UPLOAD_PAGE_URL, form.action or UPLOAD_PAGE_URL)
-
-            # 文件用元组列表以支持同名多文件字段（sfile[]）
-            files: list[tuple[str, tuple[str, object, str]]] = []
-            handles: list = []
-            try:
-                for index, page_item in enumerate(pages, 1):
-                    mime = mimetypes.guess_type(page_item.path.name)[0] or "application/octet-stream"
-                    handle = open(page_item.path, "rb")
-                    handles.append(handle)
-                    files.append(
-                        (
-                            file_name,
-                            (f"{index:04d}_{page_item.path.name}", handle, mime),
-                        )
-                    )
-
-                self.log.info("POST 上传 %d 个文件到 %s", len(files), action)
-                resp = self.http.post(
-                    action,
-                    data=data,
-                    files=files,
-                    headers={"Referer": UPLOAD_PAGE_URL},
-                    allow_redirects=True,
-                )
-            finally:
-                for handle in handles:
-                    handle.close()
-
+            resp = self._upload_files(action, data, file_name, pages)
             return self._interpret_response(resp, chapter, len(pages))
         finally:
             self.cleanup_prepared(chapter)
+
+    def _upload_files(
+        self,
+        action: str,
+        data: dict[str, str],
+        file_name: str,
+        pages,
+    ):
+        """按配置上传：zip（推荐，站点支持归档整包）或逐张多文件（旧行为）。"""
+        mode = str(self.cfg.get("upload_mode") or "").strip().lower()
+        if mode not in ("files", "individual"):
+            return self._upload_zip(action, data, file_name, pages)
+        # files：逐张多文件（兼容站点旧流程与本地测试）
+        files: list[tuple[str, tuple[str, object, str]]] = []
+        handles: list = []
+        try:
+            for index, page_item in enumerate(pages, 1):
+                mime = mimetypes.guess_type(page_item.path.name)[0] or "application/octet-stream"
+                handle = open(page_item.path, "rb")
+                handles.append(handle)
+                files.append(
+                    (
+                        file_name,
+                        (f"{index:04d}_{page_item.path.name}", handle, mime),
+                    )
+                )
+            self.log.info("POST 上传 %d 个文件到 %s", len(files), action)
+            return self.http.post(
+                action,
+                data=data,
+                files=files,
+                headers={"Referer": UPLOAD_PAGE_URL},
+                allow_redirects=True,
+            )
+        finally:
+            for handle in handles:
+                handle.close()
+
+    def _upload_zip(
+        self,
+        action: str,
+        data: dict[str, str],
+        file_name: str,
+        pages,
+    ):
+        """把页面打包成单个 ZIP 归档后上传（e-hentai 官方接受 Archive 格式）。
+
+        规则（按 ehwiki）：单层无子目录、文件名全局唯一、Deflate/Store、不加密。
+        """
+        import tempfile
+
+        fd, zip_path = tempfile.mkstemp(suffix=".zip", prefix="ehentai_")
+        os.close(fd)  # zipfile 会用路径重新打开，fd 只占资源
+        try:
+            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                for index, page_item in enumerate(pages, 1):
+                    # 站点按归档内文件名生成页码，只保留页序名（对齐人工 zip 上传的 01.png）
+                    arcname = f"{index:02d}{Path(page_item.path.name).suffix.lower()}"
+                    zf.write(page_item.path, arcname=arcname)
+            self.log.info("POST 上传 zip（%d 页，%s）到 %s", len(pages), zip_path, action)
+            with open(zip_path, "rb") as fh:
+                return self.http.post(
+                    action,
+                    data=data,
+                    files=[(file_name, ("gallery.zip", fh, "application/zip"))],
+                    headers={"Referer": UPLOAD_PAGE_URL},
+                    allow_redirects=True,
+                )
+        finally:
+            try:
+                Path(zip_path).unlink(missing_ok=True)
+            except OSError:
+                pass
 
     def _interpret_response(self, resp, chapter: Chapter, page_count: int) -> PublishResult:
         final_url = resp.url
@@ -574,37 +623,52 @@ class EhentaiPublisher(BasePublisher):
         if not match:
             return None
         ulgid = match.group(1)
-        added = re.search(
-            r"Added\s*<strong>\s*\d+\s*</strong>\s*new images",
-            text,
-            re.I,
-        )
-        if not added:
-            # 页面里有 ulgid 但没有“新增图片”提示，不是上传完成页
+        # e-hentai 文件入库是异步的：响应页可能先报 “too small/仍在处理”，
+        # 稍后页数才出现。以“管理页实际在册页数”为准，而不是瞬时提示。
+        manage_url = self._manage_url_for(resp, ulgid, text)
+        if manage_url is None:
             return None
-        # 草稿管理地址以返回页的 form action 为准（兼容真实站点与本地测试）
-        action = re.search(r'<form[^>]*\saction="([^"]+)"', text, re.I)
-        if action:
-            manage_url = urljoin(resp.url, re.sub(r"&amp;", "&", action.group(1)))
-        else:
-            manage_url = urljoin(UPLOAD_PAGE_URL, f"managegallery?ulgid={ulgid}")
-        if "ulgid=" not in manage_url:
-            manage_url = urljoin(resp.url, f"managegallery?ulgid={ulgid}")
+        # 在册页数 = 管理页上 pagesel_* 输入框数量
+        count = self._count_registered_pages(manage_url, text)
+        if count == 0:
+            # 首页面里就有页码选择框也算已入册；完全没有则等待异步入库
+            deadline = time.time() + float(self.cfg.get("upload_wait", 90) or 90)
+            while time.time() < deadline:
+                time.sleep(4)
+                count = self._count_registered_pages(manage_url)
+                if count > 0:
+                    break
+        if count == 0:
+            return PublishResult.failed(
+                self.key,
+                chapter,
+                "e-hentai 上传后草稿里仍没有图片（站点可能拒绝了文件，"
+                "如 too small / 格式限制）。可改用 zip 整包上传，或手动在浏览器上传后重试。",
+                draft_ulgid=ulgid,
+            )
+        if count < page_count:
+            self.log.warning(
+                "e-hentai 草稿 %s 在册 %d/%d 页（部分可能被站点拒绝）",
+                ulgid,
+                count,
+                page_count,
+            )
+        actual_pages = count
         if not self.cfg.get("publish_after_upload", True):
             return PublishResult.ok(
                 self.key,
                 chapter,
                 url=manage_url,
                 message=(
-                    f"已创建草稿并上传 {page_count} 页（未发布）。"
+                    f"已创建草稿并上传 {actual_pages}/{page_count} 页（未发布）。"
                     "可在 My Uploads 中手动发布："
                     + manage_url
                 ),
-                pages=page_count,
+                pages=actual_pages,
                 draft_ulgid=ulgid,
             )
 
-        self.log.info("文件上传成功，继续正式发布草稿 %s", ulgid)
+        self.log.info("草稿 %s 在册 %d/%d 页，继续正式发布", ulgid, actual_pages, page_count)
         separator = "&" if "?" in manage_url else "?"
         publish_url = manage_url + separator + "act=publish&from=gallery"
         try:
@@ -622,7 +686,8 @@ class EhentaiPublisher(BasePublisher):
                     f"图片已上传到草稿（ulgid={ulgid}），但发布请求失败：{exc}。"
                     "请到 My Uploads 手动发布"
                 ),
-                pages=page_count,
+                pages=actual_pages,
+                draft_ulgid=ulgid,
             )
         pub_text = pub.text
         gallery = re.search(
@@ -636,8 +701,8 @@ class EhentaiPublisher(BasePublisher):
                 self.key,
                 chapter,
                 url=url,
-                message=f"上传并发布完成，共 {page_count} 页",
-                pages=page_count,
+                message=f"上传并发布完成，共 {actual_pages} 页",
+                pages=actual_pages,
                 draft_ulgid=ulgid,
             )
         pub_plain = _plain_text(pub_text)
@@ -648,9 +713,10 @@ class EhentaiPublisher(BasePublisher):
                 url=manage_url,
                 message=(
                     f"已上传并触发发布（ulgid={ulgid}），最终链接以 My Uploads 为准，"
-                    f"共 {page_count} 页"
+                    f"在册 {actual_pages} 页"
                 ),
-                pages=page_count,
+                pages=actual_pages,
+                draft_ulgid=ulgid,
             )
         # 发布后的页面形态未能识别：图片已上传成功，保留管理页链接
         self.http._dump(pub, tag="ehentai-publish")
@@ -663,8 +729,47 @@ class EhentaiPublisher(BasePublisher):
                 "（已保存 output/debug，文件名含 ehentai-publish）。"
                 "请到 My Uploads 检查并手动发布"
             ),
-            pages=page_count,
+            pages=actual_pages,
+            draft_ulgid=ulgid,
         )
+
+    def _manage_url_for(
+        self, resp, ulgid: str, text: str
+    ) -> str | None:
+        """草稿管理地址：返回页 form action 优先，其次按 ulgid 拼接。"""
+        action = re.search(r'<form[^>]*\saction="([^"]+)"', text, re.I)
+        if action:
+            manage_url = urljoin(resp.url, re.sub(r"&amp;", "&", action.group(1)))
+        else:
+            manage_url = urljoin(UPLOAD_PAGE_URL, f"managegallery?ulgid={ulgid}")
+        if "ulgid=" not in manage_url:
+            manage_url = urljoin(resp.url, f"managegallery?ulgid={ulgid}")
+        return manage_url
+
+    def _count_registered_pages(
+        self, manage_url: str, first_text: str | None = None
+    ) -> int:
+        """统计管理页里已在册的页数（pagesel_* 输入框数量）。"""
+        import html.parser
+
+        def _count(text: str) -> int:
+            return len(
+                re.findall(
+                    r'<input[^>]*\sid="pagesel_[^"]*"[^>]*>',
+                    text,
+                    re.I,
+                )
+            )
+
+        count = _count(first_text) if first_text else 0
+        if count:
+            return count
+        try:
+            page = self.http.get(manage_url, headers={"Referer": manage_url})
+        except Exception as exc:  # 网络抖动不算失败，返回 0 让上层继续轮询
+            self.log.warning("查询草稿管理页失败：%s", exc)
+            return 0
+        return _count(page.text)
 
 
 def _parse_upload_page(html_text: str) -> _Form | None:

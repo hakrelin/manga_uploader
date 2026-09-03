@@ -52,6 +52,11 @@ DRAFT_HTML = """<html><body>
 <h2>测试漫画 第01话</h2>
 <td class="v">11</td>
 <td class="v">No (Unpublished)</td>
+<input id="pagesel_1" name="pagesel_1" type="text" value="1">
+<input id="pagesel_2" name="pagesel_2" type="text" value="2">
+<input id="pagesel_3" name="pagesel_3" type="text" value="3">
+<input id="pagesel_4" name="pagesel_4" type="text" value="4">
+<input id="pagesel_5" name="pagesel_5" type="text" value="5">
 </form>
 <div id="progress_readout"><p>Added <strong>5</strong> new images to the gallery.</p></div>
 </body></html>"""
@@ -152,7 +157,11 @@ class TestEhentaiPublisherMock(unittest.TestCase):
         cfg = PlatformConfig(
             name="ehentai",
             cookies={"ipb_member_id": "1", "ipb_pass_hash": "h"},
-            settings={"category_label": "Manga", "language_label": "Chinese"},
+            settings={
+                "category_label": "Manga",
+                "language_label": "Chinese",
+                "upload_mode": "files",  # 逐张上传路径的回归测试
+            },
         )
         publisher = EhentaiPublisher(cfg, CommonConfig(output_dir=str(Path(self.tmp.name) / "out")))
         result = publisher.publish(_make_chapter(Path(self.tmp.name)))
@@ -181,6 +190,25 @@ class TestEhentaiPublisherMock(unittest.TestCase):
         # 未映射的未知文本框不自动填默认值
         self.assertNotIn(b'name="some_unknown_field"', body)
         self.assertNotIn(b"do_not_copy_me", body)
+
+    def test_publish_default_zip_single_archive(self):
+        cfg = PlatformConfig(
+            name="ehentai",
+            cookies={"ipb_member_id": "1", "ipb_pass_hash": "h"},
+            settings={"category_label": "Manga", "language_label": "Chinese"},
+        )
+        publisher = EhentaiPublisher(cfg, CommonConfig(output_dir=str(Path(self.tmp.name) / "out")))
+        result = publisher.publish(_make_chapter(Path(self.tmp.name)))
+        self.assertEqual(result.status, "ok", result.message)
+        self.assertEqual(len(_Handler.posts), 1)
+        body = _Handler.posts[0]["body"]
+        # zip 模式：只发一个 files[] 归档（application/zip），内含 5 张页面
+        self.assertEqual(body.count(b'name="files[]"'), 1)
+        self.assertIn(b"application/zip", body)
+        self.assertIn(b'filename="gallery.zip"', body)
+        # 归档内按页序命名（01.png … 05.png）
+        self.assertIn(b"01.png", body)
+        self.assertIn(b"05.png", body)
 
     def test_publish_platform_override_second_title(self):
         chapter = _make_chapter(Path(self.tmp.name))

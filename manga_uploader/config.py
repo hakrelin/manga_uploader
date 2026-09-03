@@ -89,6 +89,8 @@ DEFAULT_SETTINGS: dict[str, dict[str, Any]] = {
         "language_label": "Chinese",  # 汉化上传默认中文；原版/无字可改 Japanese / No Text
         "extra_tags": [],
         "publish_after_upload": True,  # 上传文件后自动执行 Publish Gallery（False=只建草稿）
+        # zip = 打包单归档上传（推荐，站点稳定接受）；files = 逐张多文件（旧路径）
+        "upload_mode": "zip",
     },
     "zaimanhua": {
         "cate": "1",  # 1 原创作品 / 2 原创汉化 / 3 个人扫漫 / 4 转载作品
