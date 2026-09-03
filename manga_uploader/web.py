@@ -19,12 +19,10 @@ import sys
 import threading
 import time
 import webbrowser
-from email.parser import BytesParser
-from email.policy import default as email_policy
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Optional
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from . import __version__
 from .comic import load_chapters
@@ -658,37 +656,19 @@ class WebHandler(BaseHTTPRequestHandler):
             self._json(400, {"error": "缺少 multipart boundary"})
             return
         boundary = boundary_match.group(1) or boundary_match.group(2)
-        length = int(self.headers.get("Content-Length") or 0)
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = 0
         if length <= 0 or length > 1024 * 1024 * 1024:
             self._json(400, {"error": "请求体大小异常"})
             return
         body = self.rfile.read(length)
         try:
-            # email 解析需要 multipart 头（HTTP 请求体本身不含），补上后按整消息解析
-            head = (
-                f"Content-Type: multipart/form-data; boundary={boundary}\r\n"
-                "MIME-Version: 1.0\r\n\r\n"
-            ).encode("utf-8")
-            msg = BytesParser(policy=email_policy).parsebytes(head + body)
-        except Exception as exc:
+            fields, files = _split_multipart(body, boundary)
+        except ValueError as exc:
             self._json(400, {"error": f"解析上传失败：{exc}"})
             return
-
-        fields: dict[str, str] = {}
-        files: list[tuple[str, bytes]] = []
-        for part in msg.iter_parts():
-            if part.is_multipart():
-                continue
-            name = part.get_param("name", header="content-disposition")
-            filename = part.get_param("filename", header="content-disposition")
-            payload_bytes = part.get_payload(decode=True)
-            if payload_bytes is None:
-                continue
-            if filename:
-                files.append((filename, payload_bytes))
-            elif name:
-                fields[name] = payload_bytes.decode("utf-8", errors="replace").strip()
-
         if not files:
             self._json(400, {"error": "没有收到任何文件"})
             return
@@ -737,6 +717,50 @@ def _format_plan_text(plan) -> str:
             for row in rows:
                 lines.append(f"      - {row}")
     return "\n".join(lines)
+
+
+def _split_multipart(
+    body: bytes, boundary: str
+) -> tuple[dict[str, str], list[tuple[str, bytes]]]:
+    """轻量 multipart 解析：按 boundary 切分，避开 email 全量建树的慢与内存膨胀。
+
+    兼容中文文件名的 filename*=utf-8''… 编码。返回 (普通字段, [(文件名, 内容)])。
+    """
+    delim = f"--{boundary}".encode()
+    parts = body.split(delim)
+    fields: dict[str, str] = {}
+    files: list[tuple[str, bytes]] = []
+    for seg in parts[1:]:
+        if seg.startswith(b"--"):  # 结束分隔符 "--\r\n"
+            break
+        seg = seg.lstrip(b"\r\n")
+        hi = seg.find(b"\r\n\r\n")
+        if hi < 0:
+            continue
+        head = seg[:hi]
+        content = seg[hi + 4:]
+        if content.endswith(b"\r\n"):
+            content = content[:-2]
+        cd = ""
+        for hline in head.decode("utf-8", "replace").split("\r\n"):
+            hname, _, hval = hline.partition(":")
+            if hname.strip().lower() == "content-disposition":
+                cd = hval
+                break
+        name_m = re.search(r'name="([^"]*)"', cd)
+        fn_m = re.search(r'filename="([^"]*)"', cd)
+        fn_star = re.search(r"filename\*=(?:UTF-8|utf-8)''([^;\r\n]*)", cd)
+        filename = None
+        if fn_star:
+            filename = unquote(fn_star.group(1))
+        elif fn_m:
+            filename = fn_m.group(1)
+        if filename is not None:
+            files.append((filename, content))
+        elif name_m:
+            value = content.decode("utf-8", errors="replace").strip()
+            fields[name_m.group(1)] = value
+    return fields, files
 
 
 def _import_files(fields: dict[str, str], files: list[tuple[str, bytes]]) -> Path:

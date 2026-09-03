@@ -293,6 +293,19 @@ html, body {
 }
 .dropzone:hover { border-color: var(--accent); }
 .drop-ico { font-size: 26px; margin-bottom: 8px; }
+.dropzone.is-busy { border-color: var(--accent); background: var(--accent-weak); cursor: wait; }
+.spin {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--accent);
+  border-top-color: transparent;
+  border-radius: 50%;
+  vertical-align: -2px;
+  margin-right: 6px;
+  animation: rotate 0.8s linear infinite;
+}
+@keyframes rotate { to { transform: rotate(360deg); } }
 .drop-title { font-size: 14px; color: var(--text-2); }
 .drop-sub { font-size: 12px; margin-top: 5px; }
 .drop-hint { font-size: 15px; color: var(--accent); font-weight: 600; }

@@ -70,11 +70,12 @@ try {
         <div class="card-body">
           <!-- 空状态 -->
           <div v-if="!summary" class="empty">
-            <div class="dropzone"
+            <div class="dropzone" :class="{ 'is-busy': busy }"
               @dragover.prevent="dragOver = true"
               @dragleave.prevent="dragOver = false"
-              @drop.prevent="onDrop">
-              <div v-if="dragOver" class="drop-hint">松开以导入</div>
+              @drop.prevent="busy || onDrop()">
+              <div v-if="busy" class="drop-hint"><span class="spin"></span>正在导入，请稍候…</div>
+              <div v-else-if="dragOver" class="drop-hint">松开以导入</div>
               <template v-else>
                 <div class="drop-ico">🗂️</div>
                 <div class="drop-title">拖入 ZIP / CBZ 压缩包或图片</div>
