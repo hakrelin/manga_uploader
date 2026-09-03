@@ -144,25 +144,19 @@ class BilibiliPublisher(BasePublisher):
                     lines.append("  " + part)
             else:
                 lines.append("（无简介文本，正文只有插图）")
-            prepared = self.prepare_pages(
-                chapter,
-                allowed_exts=ARTICLE_ALLOWED_EXTS,
-                max_bytes=ARTICLE_MAX_BYTES,
+            # 预览只列索引与原文件信息，不真实跑图片压缩（发布时才处理，慢且改图）
+            pages = chapter.pages
+            lines.append(
+                f"正文插图共 {len(pages)} 张（每张 1 个 figure，按此顺序插入）："
             )
-            try:
+            for index, page in enumerate(pages, 1):
                 lines.append(
-                    f"正文插图共 {len(prepared)} 张（每张 1 个 figure，按此顺序插入）："
+                    f"  [{index:>3}] {page.name}（{human_size(page.stat().st_size)}，"
+                    "上传时自动压缩至 5MB 内）"
                 )
-                for index, page in enumerate(prepared, 1):
-                    lines.append(
-                        f"  [{index:>3}] {page.path.name}（处理后 "
-                        f"{human_size(page.size_bytes)}，{page.width}x{page.height}）"
-                    )
-                if prepared:
-                    lines.append("HTML 结构示例（每页相同，仅 src 换成上传后地址）：")
-                    lines.append("  " + self._figure_html("…上传后返回的图片地址…"))
-            finally:
-                self.cleanup_prepared(chapter)
+            if pages:
+                lines.append("HTML 结构示例（每页相同，仅 src 换成上传后地址）：")
+                lines.append("  " + self._figure_html("…上传后返回的图片地址…"))
         else:
             lines.append("动态文案（单条正文，含话题）：")
             for part in str(self._caption(chapter)).splitlines() or [""]:
