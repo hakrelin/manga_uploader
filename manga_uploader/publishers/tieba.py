@@ -48,11 +48,6 @@ TIEBA_PC_SIGN_SECRET = "36770b1f34c9bbf2e7d1a99d2b82fa9e"
 # 服务端按 chunk 实际内容去重/入库，因此同一用户连续传多图不会冲突。
 TIEBA_FILE_STRING = "[object File]"
 
-# 真正需要人机验证的错误码 / 标识。need_vcode 必须显式为 1 才触发，
-# 仅仅响应里带 vcode 字段不算。
-VCODE_NEEDED_CODES = {"220901"}
-
-
 def _fmt_error(code: object, message: str) -> str:
     """把贴吧 error_code 转成用户能看懂的中文。"""
     code_str = str(code or "").strip()
