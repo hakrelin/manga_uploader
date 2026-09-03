@@ -51,6 +51,8 @@ POST_URL = "/bbs/app/api/link/post"
 DELETE_URL = "/bbs/app/link/delete"
 EDIT_INFO_URL = "/bbs/app/link/edit/info"
 TOPIC_SELECT_URL = "/bbs/app/api/post_editor/topic_selection/index"
+DRAFTS_URL = "/bbs/app/link/drafts"
+DRAFT_BOX_REFERER = f"{WEB}/creator/draft"
 
 _CHARSET = "AB45STUVWZEFGJ6CH01D237IXYPQRKLMN89"
 _DEFAULT_DEVICE_ID = "2c2fef8385ccef915e3b3caf94e3aa06"
@@ -217,11 +219,31 @@ class XiaoheihePublisher(BasePublisher):
         cookie_text = str(cfg.cookies.get("cookie") or "").strip()
         if cookie_text:
             self.http.session.headers["Cookie"] = cookie_text
+            # 草稿箱/草稿详情等接口要求 x-xhh-token-id 头（值来自 Cookie 的
+            # x_xhh_tokenid）；不带会返回“非法的请求”，看起来像内容被删。
+            token_id = self._cookie_value(cookie_text, "x_xhh_tokenid")
+            if token_id:
+                self.http.session.headers["x-xhh-token-id"] = token_id
             self.log.info(
-                "已加载小黑盒 Cookie（长度 %s，前段 %s）",
+                "已加载小黑盒 Cookie（长度 %s，前段 %s%s）",
                 len(cookie_text),
                 mask_secret(cookie_text[:32]),
+                "，已带上 x-xhh-token-id" if token_id else "，未找到 x_xhh_tokenid",
             )
+
+    def _ref(self, path: str) -> str:
+        """按接口类型给正确 Referer：草稿相关必须指草稿箱页。"""
+        if path in (DRAFTS_URL, EDIT_INFO_URL) or path.startswith("/bbs/app/link/change/status"):
+            return DRAFT_BOX_REFERER
+        return EDITOR_URL
+
+    @staticmethod
+    def _cookie_value(cookie_text: str, name: str) -> str:
+        for part in cookie_text.split(";"):
+            key, _, value = part.strip().partition("=")
+            if key == name:
+                return value.strip()
+        return ""
 
     @property
     def max_pages_per_post(self) -> int:
@@ -443,9 +465,41 @@ class XiaoheihePublisher(BasePublisher):
                         raise PublisherError(
                             f"小黑盒 发布响应缺少 link_id：{payload}"
                         )
-                    url = f"{WEB}/app/bbs/link/{link_id}"
+                    if self.cfg.get("publish_draft", False):
+                        # 草稿只存在于创作中心“草稿箱”，公开帖子链接打不开。
+                        # 主动读一次草稿箱确认草稿真的在（而不是“建完即消失”）。
+                        try:
+                            draft_payload = self.http.get_json(
+                                self._signed(
+                                    DRAFTS_URL,
+                                    {"offset": 0, "limit": 40, "no_more": "false"},
+                                ),
+                                headers={"Referer": DRAFT_BOX_REFERER},
+                            )
+                            draft_ids = [
+                                str(l.get("linkid") or l.get("link_id") or "")
+                                for l in ((draft_payload.get("result") or {}).get("links") or [])
+                            ]
+                            if draft_payload.get("status") == "ok" and link_id in draft_ids:
+                                self.log.info(
+                                    "已在草稿箱确认草稿 %s 存在", link_id
+                                )
+                            else:
+                                self.log.warning(
+                                    "创建返回 %s 但草稿箱未立即列出（平台异步，稍后可在草稿箱查看）",
+                                    link_id,
+                                )
+                        except Exception as exc:  # 仅影响提示，不阻塞发布结果
+                            self.log.debug("读取草稿箱确认失败：%s", exc)
+                        url = f"{WEB}/creator/draft"
+                    else:
+                        url = f"{WEB}/app/bbs/link/{link_id}"
                     published.append(url)
-                    self.log.info("小黑盒 发布成功：%s", url)
+                    self.log.info(
+                        "小黑盒 %s：%s",
+                        "已保存草稿" if self.cfg.get("publish_draft", False) else "发布成功",
+                        url,
+                    )
                 except PublisherError as exc:
                     errors.append(f"第 {index} 帖失败：{exc}")
                     self.log.error("小黑盒 第 %d 帖失败：%s", index, exc)
@@ -463,7 +517,7 @@ class XiaoheihePublisher(BasePublisher):
                     draft=bool(self.cfg.get("publish_draft", False)),
                 )
             note = (
-                f"已存草稿 {len(published)} 条"
+                f"已存入小黑盒草稿箱 {len(published)} 条"
                 if self.cfg.get("publish_draft", False)
                 else (f"已拆成 {len(published)} 条图文" if len(published) > 1 else "已发布图文")
             )
