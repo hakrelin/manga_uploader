@@ -91,9 +91,6 @@ const EXTRA_LABELS = {
   language_label: "画廊语言",
   langtype: "语言类型",
   title_jpn: "默认日文标题",
-  image_text_max_pages: "图文阈值（≤N 页发图文）",
-  article_max_pages: "文章单帖上限",
-  publish_draft: "只存草稿（true/false）",
   topic_ids: "关联社区 id（逗号分隔）",
   hashtags: "关联话题（逗号分隔）",
   source: "站外转载来源",
@@ -334,6 +331,15 @@ createApp({
     const publishTargetsText = computed(() => {
       const names = cards.value.filter(connected).map((c) => c.label.split("（")[0]);
       return "发布到：" + (names.length ? names.join("、") : "（未配置，去「平台账号」连接）");
+    });
+    // 小黑盒发布快捷设置：让工作台的开关/下拉直接改 config.platforms.xiaoheihe.settings
+    const xhSettings = computed(() => {
+      const p = config.platforms.xiaoheihe;
+      if (!p) return null;
+      if (!p.settings) p.settings = {};
+      if (p.settings.publish_mode === undefined) p.settings.publish_mode = "auto";
+      if (p.settings.publish_draft === undefined) p.settings.publish_draft = false;
+      return p.settings;
     });
 
     function platShort(card) { return card.label.split("（")[0]; }
@@ -893,7 +899,7 @@ createApp({
       PLAT_LABELS, pageUrl, META_EXTRA, META_EXTRA_EXTRA, PLATFORM_CONTENT_SCHEMA, platformContent,
       SOURCE_CHOICES, CATE_OPTIONS,
       markPlatformTouched,
-      anyUnconfigured, publishTargetsText,
+      anyUnconfigured, publishTargetsText, xhSettings,
       platShort, platStatus, connected, extrasOf, extraLabel,
       saveConfig, openAccount, toggleExpand, openLogin,
       checkOne, checkAll, pasteCookie, qrLogin, detectProxy,

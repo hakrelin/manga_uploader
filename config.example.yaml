@@ -88,7 +88,8 @@ platforms:
       # 的 Cookie 头（含 pkey/user_pkey/heybox_id/session_token 等）
       cookie: ""
     settings:
-      # 自动选形式：≤30 页发图文，>30 页发文章（文章单帖上限 100，超出拆帖）
+      # 发布形式：auto 自动（≤30页图文 / >30页文章）；image_text 强制图文；article 强制文章
+      publish_mode: "auto"
       image_text_max_pages: 30
       article_max_pages: 100
       publish_draft: false     # true = 只保存草稿，可在创作中心草稿箱检查后再发布

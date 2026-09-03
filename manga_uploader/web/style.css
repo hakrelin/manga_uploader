@@ -577,6 +577,20 @@ html, body {
 }
 .switch input:checked + .switch-track { background: var(--accent); }
 .switch input:checked + .switch-track::after { transform: translateX(14px); }
+
+.publish-options {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  background: var(--bg-soft, rgba(127,127,127,0.08));
+  border: 1px solid var(--border, rgba(127,127,127,0.25));
+  border-radius: 8px;
+}
+.publish-options .option-label { font-size: 13px; color: var(--text-dim, #777); }
+.publish-options .option-select { width: auto; min-width: 230px; }
 .switch-label { font-size: 13px; color: var(--text-2); }
 
 /* ============ 日志 ============ */

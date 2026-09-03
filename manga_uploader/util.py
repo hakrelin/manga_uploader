@@ -6,6 +6,7 @@ import io
 import logging
 import re
 import sys
+import threading
 from pathlib import Path
 from typing import Iterable, Optional
 
@@ -14,6 +15,11 @@ from .models import PreparedPage
 LOGGER_NAME = "manga_uploader"
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+
+# prepared 结果进程级缓存：同一 source + 规格只压缩一次，跨平台共享。
+# key: (源文件绝对路径, 规格签名) -> PreparedPage
+_PREPARE_CACHE: dict[tuple[str, str], "PreparedPage"] = {}
+_PREPARE_LOCK = threading.Lock()
 
 
 def get_logger(name: str) -> logging.Logger:
@@ -232,3 +238,56 @@ def prepare_page(
         height=height,
         size_bytes=last_size,
     )
+
+
+def prepare_page_cached(
+    src: Path,
+    out_dir: Path,
+    *,
+    allowed_exts: set[str] | None = None,
+    max_width: int = 0,
+    max_height: int = 0,
+    quality: int = 88,
+    max_bytes: int = 0,
+) -> PreparedPage:
+    """prepare_page 的去重包装：同源、同规格只真正处理一次。
+
+    多平台同时发布时，同一张图（如 2000x3000/8MB jpg）会被多个发布器
+    各自调用 prepare_page：即使参数一致也会重新解码+压缩 N 次。这里按
+    （源文件路径, 完整处理参数）做进程级缓存；BasePublisher 用统一
+    “规格桶”目录，同规格平台会命中同一份处理结果。
+    """
+    src = Path(src)
+    key = (
+        str(src.resolve()),
+        "|".join(
+            [
+                ",".join(sorted(ext.lower() for ext in (allowed_exts or IMAGE_EXTS))),
+                str(int(max_width or 0)),
+                str(int(max_height or 0)),
+                str(int(quality or 0)),
+                str(int(max_bytes or 0)),
+            ]
+        ),
+    )
+    with _PREPARE_LOCK:
+        hit = _PREPARE_CACHE.get(key)
+        if hit is not None and Path(hit.path).is_file():
+            return hit
+        page = prepare_page(
+            src,
+            out_dir,
+            allowed_exts=allowed_exts,
+            max_width=max_width,
+            max_height=max_height,
+            quality=quality,
+            max_bytes=max_bytes,
+        )
+        _PREPARE_CACHE[key] = page
+        return page
+
+
+def clear_prepare_cache() -> None:
+    """清空进程级图片处理缓存（发布结束/调试用）。"""
+    with _PREPARE_LOCK:
+        _PREPARE_CACHE.clear()

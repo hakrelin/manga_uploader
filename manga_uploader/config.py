@@ -93,8 +93,9 @@ DEFAULT_SETTINGS: dict[str, dict[str, Any]] = {
         "upload_mode": "zip",
     },
     "xiaoheihe": {
-        # 自动选择发布形式：≤30 页 → 图文（link_tag=27）；
-        # >30 页 → 文章（link_tag=11）。文章单帖上限 100 张，超出继续拆帖。
+        # 发布形式：auto 自动选择（≤30 页图文 / >30 页文章）；
+        # image_text 强制图文；article 强制文章
+        "publish_mode": "auto",
         "image_text_max_pages": 30,
         "article_max_pages": 100,
         # true = 只保存草稿（创作中心可见，可人工检查后再发布）

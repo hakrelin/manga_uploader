@@ -273,7 +273,11 @@ class XiaoheihePublisher(BasePublisher):
         return max(1, int(self.cfg.get("article_max_pages", DEFAULT_ARTICLE_MAX_PAGES)))
 
     def mode_for(self, page_count: int) -> str:
-        """≤image_text_max_pages 页 → image_text；更多 → article。"""
+        """发布形式：publish_mode=auto 时按页数自动选；否则强制指定。"""
+        mode = str(self.cfg.get("publish_mode") or "auto").strip().lower()
+        if mode in ("image_text", "article"):
+            return mode
+        # auto：≤image_text_max_pages 页 → 图文；更多 → 文章
         return "image_text" if page_count <= self.image_text_max_pages else "article"
 
     def mode_limit(self, mode: str) -> int:
@@ -311,6 +315,13 @@ class XiaoheihePublisher(BasePublisher):
     def _description(self, chapter: Chapter) -> str:
         """小黑盒正文：与 B站一致的作者/社团/简介组合。"""
         return composer.platform_body(chapter, self.key)
+
+    def _publish_draft(self) -> bool:
+        """草稿开关：兼容 config 里 true/false（bool 或字符串）。"""
+        value = self.cfg.get("publish_draft", False)
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in ("1", "true", "yes", "on")
 
     def _topic_ids(self) -> str:
         """关联社区 topic_ids（逗号分隔 id 或名称均可；默认东方双社区）。"""
@@ -410,7 +421,7 @@ class XiaoheihePublisher(BasePublisher):
             f"共 {pages} 张图，预计拆成 {posts} 条{mode_label}",
             f"正文：{(self._description(chapter)[:80] + '…') if len(self._description(chapter)) > 80 else self._description(chapter)}",
         ]
-        if not self.cfg.get("publish_draft", False):
+        if not self._publish_draft():
             rows.append("发布后为公开内容（可在小黑盒删除）；如需先存草稿请设置 publish_draft=true")
         return rows
 
@@ -521,7 +532,7 @@ class XiaoheihePublisher(BasePublisher):
                         body["declaration"] = decl["declaration"]
                     if hashtags:
                         body["hashtags"] = hashtags
-                    if self.cfg.get("publish_draft", False):
+                    if self._publish_draft():
                         body["draft"] = 1
                     resp = self.http.post(
                         self._signed(POST_URL),
@@ -547,7 +558,7 @@ class XiaoheihePublisher(BasePublisher):
                         raise PublisherError(
                             f"小黑盒 发布响应缺少 link_id：{payload}"
                         )
-                    if self.cfg.get("publish_draft", False):
+                    if self._publish_draft():
                         # 草稿只存在于创作中心“草稿箱”，公开帖子链接打不开。
                         # 主动读一次草稿箱确认草稿真的在（而不是“建完即消失”）。
                         try:
@@ -580,7 +591,7 @@ class XiaoheihePublisher(BasePublisher):
                     self.log.info(
                         "小黑盒[%s] %s：%s",
                         mode_label,
-                        "已保存草稿" if self.cfg.get("publish_draft", False) else "发布成功",
+                        "已保存草稿" if self._publish_draft() else "发布成功",
                         url,
                     )
                 except PublisherError as exc:
@@ -597,11 +608,11 @@ class XiaoheihePublisher(BasePublisher):
                     urls=published,
                     mode=mode,
                     pages=len(pages),
-                    draft=bool(self.cfg.get("publish_draft", False)),
+                    draft=self._publish_draft(),
                 )
             note = (
                 f"已存入小黑盒草稿箱 {len(published)} 条"
-                if self.cfg.get("publish_draft", False)
+                if self._publish_draft()
                 else (
                     f"已拆成 {len(published)} 条{mode_label}"
                     if len(published) > 1
