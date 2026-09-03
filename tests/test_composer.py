@@ -47,8 +47,28 @@ class TestComposer(unittest.TestCase):
         self.assertEqual(
             composer.to_romaji_title_case("いちだい たいさ"), "Ichidai Taisa"
         )
-        # 汉字无法自动判断读音，原样保留供手动修改
-        self.assertEqual(composer.to_romaji("一代大佐"), "一代大佐")
+    def test_kanji_readings(self):
+        # pykakasi 可用时自动读汉字；不可用时保持原样不丢字
+        value = composer.to_romaji("例大祭")
+        if composer.romaji_engine_status() == "pykakasi":
+            self.assertEqual(value, "reitaisai")
+            self.assertEqual(composer.to_romaji_title_case("博麗神社例大祭"), "Hakurei Jinja Reitaisai")
+            self.assertEqual(composer.to_romaji_title_case("鈴仙・優曇華院・イナバ"), "Reisen Udongein Inaba")
+        else:
+            # 覆盖词典在无 pykakasi 时仍生效（读音存为假名）
+            self.assertEqual(value, "reitaisai")
+
+    def test_romaji_mixed_and_ascii(self):
+        if composer.romaji_engine_status() != "pykakasi":
+            self.skipTest("需要 pykakasi")
+        # ASCII 原样保留不被小写化
+        self.assertEqual(composer.to_romaji_title_case("東方Project"), "Touhou Project")
+        # 汉字标题自动读出读音，词间按语义分词
+        self.assertEqual(
+            composer.to_romaji_title_case("万能型天才肌美少女主人公の憂鬱"),
+            "Bannougata Tensai Hada Bishoujo Shujinkou No Yuuutsu",
+        )
+        self.assertEqual(composer.to_romaji("こんにちは 世界"), "konnichiha sekai")
 
     def test_ehentai_title_en_matches_example_shape(self):
         title = composer.ehentai_title_en(_chapter())

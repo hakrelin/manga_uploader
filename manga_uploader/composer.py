@@ -30,13 +30,199 @@ manga.json 支持的通用键：
 from __future__ import annotations
 
 import re
+import json
+from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 from .comic import platform_meta
 from .models import Chapter
 
 
-# ---------- 日文假名 → 罗马音（无音调记号的 ASCII 风格，如 とうきょう→toukyou） ----------
+# ---------- 日文 → 罗马音 ----------
+#
+# 两层引擎：
+#   1) pykakasi（可选依赖）：内置词典，能把汉字读音、分词，输出与本站点约定一致的
+#      ASCII/Hepburn 风格（とうきょう→toukyou、しゃしん→shashin、きって→kitte）。
+#      未安装时回退到下面的本地假名表，汉字部分仍会保留原文。
+#   2) 覆盖词典 data/romaji_overrides.json：pykakasi 会把同人专有名词（例大祭、
+#      红魔郷、博麗神社等）逐字读错，此处按“最长原文匹配”先切块再统一转写。
+
+_CJK_OR_KANA = re.compile(r"[\u3040-\u30ff\u4e00-\u9fff\uf900-\ufaff\u3400-\u4dbf]")
+_KANA_ONLY = re.compile(r"[\u3040-\u30ff]")
+# 需要独立成块的日文标点/分隔符（pykakasi 无法与两侧词合读；ー是长音记号不算）
+_JP_SEPARATOR = re.compile(r"[\u30fb・—～]")
+
+
+def _rom_loader() -> dict[str, str]:
+    """加载内置覆盖词典（原文→假名读音）。"""
+    path = Path(__file__).resolve().parent / "data" / "romaji_overrides.json"
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except Exception:
+        return {}
+    out: dict[str, str] = {}
+    for key, value in data.items():
+        if key.startswith("_") or not isinstance(key, str) or not isinstance(value, str):
+            continue
+        value = value.strip()
+        if value:
+            out[key] = value
+    return out
+
+
+_OVERRIDES: dict[str, str] = _rom_loader()
+
+
+def _has_jp(text: str) -> bool:
+    return bool(_CJK_OR_KANA.search(text))
+
+
+@lru_cache(maxsize=1)
+def _pykakasi():
+    """惰性导入 pykakasi；不可用时返回 None。"""
+    try:
+        import pykakasi  # type: ignore
+
+        return pykakasi.kakasi()
+    except Exception:
+        return None
+
+
+def romaji_engine_status() -> str:
+    """给 GUI 用的引擎状态文案。"""
+    return "pykakasi" if _pykakasi() is not None else "basic"
+
+
+def _normalize_width(text: str) -> str:
+    """全角英数/空格归一为半角。"""
+    return text.replace("　", " ").translate(
+        str.maketrans(
+            "０１２３４５６７８９ＡＢＣＤＥＦＧＨＩＪＫＬＭＮＯＰＱＲＳＴＵＶＷＸＹＺ"
+            "ａｂｃｄｅｆｇｈｉｊｋｌｍｎｏｐｑｒｓｔｕｖｗｘｙｚ",
+            "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz",
+        )
+    )
+
+
+def _capitalize_word(word: str) -> str:
+    """首字母大写（已大写/数字开头则原样）。"""
+    if word and word[:1].isalpha() and word[:1].islower():
+        return word[:1].upper() + word[1:]
+    return word
+
+
+def _convert_jp_chunk(chunk: str, pykk) -> str:
+    """一个日文块的转换：优先 pykakasi；命中词典的整词用覆盖读音；否则回退本地表。"""
+    if pykk is not None:
+        try:
+            tokens = pykk.convert(chunk)
+            converted = [tok["hepburn"].strip() or tok["orig"] for tok in tokens]
+            roma = " ".join(p for p in converted if p)
+            if roma:
+                return roma
+        except Exception:
+            pass
+    # 回退：词典整词 / 逐字词典 / 本地表（汉字仍原样保留，不丢字）
+    if chunk in _OVERRIDES:
+        return _to_romaji_local(_OVERRIDES[chunk])
+    if _KANA_ONLY.search(chunk):
+        return _to_romaji_local(chunk)
+    if _OVERRIDES:
+        parts: list[str] = []
+        for char in chunk:
+            if char in _OVERRIDES:
+                parts.append(_to_romaji_local(_OVERRIDES[char]))
+            else:
+                parts.append(char)
+        return "".join(parts)
+    return _to_romaji_local(chunk)
+
+
+def _to_romaji_impl(text: str, title_case: bool) -> str:
+    """按“日文块 / 非日文块”分段，分别转换后合并。"""
+    if not text:
+        return ""
+    normalized = _normalize_width(text)
+    pykk = _pykakasi()
+    keys = sorted((k for k in _OVERRIDES if k in normalized), key=len, reverse=True)
+    parts: list[str] = []
+    i = 0
+    n = len(normalized)
+    while i < n:
+        hit = ""
+        for key in keys:
+            if normalized.startswith(key, i):
+                hit = key
+                break
+        if hit:
+            reading = _OVERRIDES[hit]
+            if _has_jp(reading):
+                if _CJK_OR_KANA.search(reading) and not _KANA_ONLY.fullmatch(reading):
+                    # reading 含汉字：递归转换
+                    value = _to_romaji_impl(reading, title_case)
+                else:
+                    # reading 为纯假名：用本地表整词转写，避免被再分词
+                    value = _to_romaji_local(reading)
+                    if title_case:
+                        value = _capitalize_word(value)
+            else:
+                value = reading
+            parts.append(value)
+            i += len(hit)
+            continue
+        ch = normalized[i]
+        is_jp = _CJK_OR_KANA.match(ch) is not None
+        j = i + 1
+        while j < n:
+            nxt = normalized[j]
+            if _JP_SEPARATOR.fullmatch(ch) or _JP_SEPARATOR.match(nxt):
+                break
+            if _CJK_OR_KANA.match(nxt) is not None:
+                if not is_jp:
+                    break
+            elif is_jp:
+                break
+            # 若后续某词典键从这里开始，也先停在此处让外层处理
+            if any(normalized.startswith(k, j) for k in keys):
+                break
+            j += 1
+        block = normalized[i:j]
+        if block.isspace() or _JP_SEPARATOR.fullmatch(block):
+            parts.append(" ")
+        elif is_jp:
+            parts.append(_convert_jp_chunk(block, pykk))
+        else:
+            parts.append(block)
+        i = j
+    joined = re.sub(r"\s+", " ", " ".join(parts)).strip()
+    if title_case:
+        out: list[str] = []
+        for part in re.split(r"(\s+|-+)", joined):
+            if part and part[:1].isalpha() and part[:1].islower():
+                out.append(part[:1].upper() + part[1:])
+            else:
+                out.append(part)
+        return "".join(out)
+    return joined
+
+
+def to_romaji(text: str) -> str:
+    """日文 → 罗马音（ASCII 风格，小写；如 とうきょう→toukyou、例大祭→reitaisai）。
+
+    - pykakasi 可用：汉字读音、分词（万能型→bannougata）
+    - 未安装：仅本地假名表；词典外的汉字保留原样
+    """
+    return _to_romaji_impl(text, title_case=False)
+
+
+def to_romaji_title_case(text: str) -> str:
+    """转罗马音并把每个词/连字符段首字母大写（例：たいさんち→Taisanchi、例大祭→Reitaisai）。"""
+    return _to_romaji_impl(text, title_case=True)
+
+
+# ---------- 本地假名 → 罗马音（无 pykakasi 时的回退；表 とうきょう→toukyou） ----------
 
 _BASE: dict[str, str] = {
     # 平假名
@@ -139,14 +325,8 @@ def _geminate(next_roma: str) -> str:
     return ""
 
 
-def to_romaji(text: str) -> str:
-    """把日文假名/假名音节转成 ASCII 罗马音。
-
-    - 拗音按音节合并（しゃ→sha、きょう→kyou），促音按规范双写
-      （きって→kitte、いっち→itchi），ん 在元音/や行前加撇号。
-    - 汉字无法自动判断读音，会原样保留，请按站点习惯手动改成罗马音
-      （例如 万能型 → Bannou-gata、例大祭 → Reitaisai）。
-    """
+def _to_romaji_local(text: str) -> str:
+    """本地假名表回退实现：只处理假名音节，汉字/无法识别字保留原样。"""
     if not text:
         return ""
     # 全角英数/空格归一
@@ -214,16 +394,6 @@ def to_romaji(text: str) -> str:
     result = "".join(out)
     result = re.sub(r"\s+", " ", result).strip()
     return result
-
-
-def to_romaji_title_case(text: str) -> str:
-    """转罗马音并把每个单词/连字符段首字母大写（如 たいさんち→Taisanchi）。"""
-    roma = to_romaji(text)
-    parts = re.split(r"(\s+|-)", roma)
-    for index, part in enumerate(parts):
-        if part and part[0].isalpha():
-            parts[index] = part[0].upper() + part[1:]
-    return "".join(parts)
 
 
 # ---------- 读取元数据 ----------

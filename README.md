@@ -132,6 +132,18 @@ RAR / 7z 请先解压成文件夹再导入。
 优先级：`chapter.json` > `manga.json` 中 `chapters` 对应条目 > 全局字段。
 平台配置里没写的字段会用 `config.yaml` 中的默认值。
 
+### 日文 → 罗马音自动转换
+
+“漫画信息”页的“展会/作者/社团 → 罗马音”和“日文标题 → 罗马音标题”
+会把日文/假名自动转成 ASCII 罗马音（首字母大写，供 e-hentai 英文标题等使用）：
+
+- 装了 `pykakasi`（`requirements.txt` 已包含）时会自动读取汉字读音并按语义分词，
+  如 `例大祭 → Reitaisai`、`万能型天才肌美少女主人公の憂鬱 → Bannougata Tensai
+  Hada Bishoujo Shujinkou No Yuuutsu`；未安装则回退基础假名表，汉字保留原样。
+- 同人专有读法（例大祭、紅楼夢、博麗、輝針城 等）放在
+  `manga_uploader/data/romaji_overrides.json`，GUI 里有“编辑罗马音词典”按钮，
+  格式为 `"原文": "假名读音"`，可自行增补；转换结果仍可在文本框里手动微调。
+
 ## Cookie 获取
 
 打开对应网站并登录，按 F12 → Network（网络）→ 刷新页面 → 点任意请求 →

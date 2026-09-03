@@ -858,11 +858,37 @@ class UploaderApp:
             text="保存漫画信息",
             command=self._save_comic_meta,
         ).pack(side="left", padx=4)
+        ttk.Button(
+            buttons,
+            text="编辑罗马音词典",
+            command=self._open_romaji_dict,
+        ).pack(side="left", padx=4)
+        engine = composer.romaji_engine_status()
+        engine_text = (
+            "汉字读音引擎：pykakasi（已启用）"
+            if engine == "pykakasi"
+            else "汉字读音引擎：未安装 pykakasi（汉字无法自动转读音，可 pip install pykakasi）"
+        )
+        ttk.Label(body, text=engine_text, foreground="#888").grid(
+            row=row_index + 3, column=0, columnspan=4, sticky="w", pady=(2, 0)
+        )
         ttk.Label(
             body,
             text="（保存后自动按新信息重新生成各平台发布内容）",
             foreground="#888",
-        ).grid(row=row_index + 3, column=0, columnspan=4, sticky="w", pady=(0, 6))
+        ).grid(row=row_index + 4, column=0, columnspan=4, sticky="w", pady=(0, 6))
+
+    def _open_romaji_dict(self) -> None:
+        """用系统默认编辑器打开可增补的罗马音覆盖词典。"""
+        path = Path(__file__).resolve().parent / "data" / "romaji_overrides.json"
+        try:
+            os.startfile(str(path))  # type: ignore[attr-defined]
+        except Exception:
+            messagebox.showinfo(
+                "词典位置",
+                f"请用任意编辑器打开该文件后补充条目：\n{path}",
+                parent=self.root,
+            )
 
     def _meta_value(self, key: str) -> str:
         var = self.meta_vars.get(key)
