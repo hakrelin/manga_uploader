@@ -94,7 +94,7 @@ platforms:
       publish_draft: false     # true = 只保存草稿，可在创作中心草稿箱检查后再发布
       # 关联社区（最多 2 个）：默认 东方夜雀食堂 + 东方冰之勇者记
       topic_ids: "431327,477625"
-      hashtags: ""             # 关联话题（一般不填），逗号分隔的话题名
+      hashtags: "东方project,东方同人"  # 关联话题（话题 tag），逗号分隔
       # 内容声明：漫画搬运（有授权）默认 转载/已授权/站外 bilibili
       original: 0              # 1 原创 / 0 转载
       declaration: 1           # 转载授权：1 已授权 / 2 未授权

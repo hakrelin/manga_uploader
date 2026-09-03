@@ -123,6 +123,7 @@ PLATFORM_CARDS: list[dict[str, Any]] = [
             ("article_max_pages", "文章单帖上限（默认 100）"),
             ("publish_draft", "true=只存草稿（不公开）"),
             ("topic_ids", "关联社区（默认 431327,477625）"),
+            ("hashtags", "关联话题（默认 东方project,东方同人）"),
             ("source", "站外转载来源（默认 bilibili）"),
         ],
     },
@@ -140,6 +141,7 @@ EXTRA_OPTIONS: dict[str, Any] = {
     "article_max_pages": None,
     "publish_draft": None,
     "topic_ids": None,
+    "hashtags": None,
     "source": None,
 }
 

@@ -95,6 +95,7 @@ const EXTRA_LABELS = {
   article_max_pages: "文章单帖上限",
   publish_draft: "只存草稿（true/false）",
   topic_ids: "关联社区 id（逗号分隔）",
+  hashtags: "关联话题（逗号分隔）",
   source: "站外转载来源",
 };
 
