@@ -104,6 +104,25 @@ PLATFORM_CARDS: list[dict[str, Any]] = [
         "hint": "登录再漫画后复制 Cookie 里的 token（JWT），可选 clientId。投稿页：manhua.zaimanhua.com/uploadShows",
         "extras": [("cate", "作品类型")],
     },
+    {
+        "key": "xiaoheihe",
+        "label": "小黑盒（图文发布）",
+        "login_url": "https://www.xiaoheihe.cn/creator/editor/draft/image_text",
+        "cookie_fields": [
+            {
+                "name": "cookie",
+                "required": True,
+                "hint": "整段 Cookie（含 pkey/user_pkey/heybox_id 等）",
+            }
+        ],
+        "hint": "打开 xiaoheihe.cn 并登录后，按 F12 → Network → 复制任意请求的 Cookie 头整段粘贴。"
+        "每帖最多 30 张图，超出自动拆帖；发布到 PC游戏 社区。",
+        "extras": [
+            ("max_pages_per_post", "单帖图片上限（默认 30）"),
+            ("publish_draft", "true=只存草稿（不公开）"),
+            ("topic_id", "发布社区 id（默认 1=PC游戏）"),
+        ],
+    },
 ]
 
 EXTRA_OPTIONS: dict[str, Any] = {
@@ -114,6 +133,9 @@ EXTRA_OPTIONS: dict[str, Any] = {
     "langtype": None,
     "title_jpn": None,
     "forum": None,
+    "max_pages_per_post": None,
+    "publish_draft": None,
+    "topic_id": None,
 }
 
 

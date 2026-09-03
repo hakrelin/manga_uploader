@@ -78,6 +78,10 @@ const PLATFORM_CONTENT_SCHEMA = {
     { key: "introduction", label: "简介", kind: "textarea" },
     { key: "cate", label: "作品类型（1原创/2汉化/3扫漫/4转载）", kind: "text" },
   ],
+  xiaoheihe: [
+    { key: "title", label: "标题（≤30 字）", kind: "text" },
+    { key: "description", label: "正文（默认 作者/社团/简介）", kind: "textarea" },
+  ],
 };
 
 const EXTRA_LABELS = {
@@ -87,6 +91,9 @@ const EXTRA_LABELS = {
   language_label: "画廊语言",
   langtype: "语言类型",
   title_jpn: "默认日文标题",
+  max_pages_per_post: "单帖图片上限（默认 30）",
+  publish_draft: "只存草稿（true/false）",
+  topic_id: "发布社区 id（默认 1=PC游戏）",
 };
 
 const NAV_ITEMS = [
@@ -99,6 +106,7 @@ const PLAT_LABELS = {
   bilibili: "B站",
   tieba: "贴吧",
   ehentai: "e-hentai",
+  xiaoheihe: "小黑盒",
   zaimanhua: "再漫画",
 };
 
@@ -809,6 +817,17 @@ createApp({
         const keys = Object.keys(parsed);
         if (!keys.length) { toastMsg("没有解析到任何 Cookie（格式：k=v; k2=v2）"); return; }
         const p = config.platforms[m.key].cookies;
+        // 小黑盒：整段 Cookie 原样保存（含登录态与设备标识），不做字段拆分
+        if (m.key === "xiaoheihe") {
+          const only = m.text.replace(/^[\s;]+|[\s;]+$/g, "").trim();
+          if (!only) { toastMsg("Cookie 内容为空"); return; }
+          p.cookie = only;
+          // 顺带解析 heybox_id（可选，便于诊断）
+          if (parsed.heybox_id && !("heybox_id" in p)) p.heybox_id = parsed.heybox_id;
+          toastMsg("已保存小黑盒整段 Cookie（长度 " + only.length + "）");
+          modal.value = null;
+          return;
+        }
         let filled = 0;
         keys.forEach((k) => { if (k in p) { p[k] = parsed[k]; filled++; } });
         toastMsg(`已填 ${filled} 个 Cookie 到 ${m.key}`);

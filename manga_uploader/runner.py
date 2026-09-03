@@ -15,6 +15,7 @@ from .publishers.base import BasePublisher, PublisherError
 from .publishers.bilibili import BilibiliPublisher
 from .publishers.ehentai import EhentaiPublisher
 from .publishers.tieba import TiebaPublisher
+from .publishers.xiaoheihe import XiaoheihePublisher
 from .publishers.zaimanhua import ZaimanhuaPublisher
 from .util import get_logger, human_size
 
@@ -22,6 +23,7 @@ PLATFORM_CLASSES: dict[str, type[BasePublisher]] = {
     "bilibili": BilibiliPublisher,
     "tieba": TiebaPublisher,
     "ehentai": EhentaiPublisher,
+    "xiaoheihe": XiaoheihePublisher,
     "zaimanhua": ZaimanhuaPublisher,
 }
 

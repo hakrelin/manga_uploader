@@ -324,6 +324,10 @@ def _book_to_compose(comic_dir: str, book: dict[str, Any]) -> dict[str, Any]:
             ((data.get("platforms") or {}).get("zaimanhua") or {}).get("cate") or ""
         ),
     }
+    composed["xiaoheihe"] = {
+        "title": composer.xiaoheihe_title(chapter),
+        "description": composer.xiaoheihe_body(chapter),
+    }
     return {
         "platforms_content": composed,
         "romaji": romaji,

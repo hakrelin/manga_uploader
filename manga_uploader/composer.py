@@ -763,6 +763,27 @@ def zaim_introduction(chapter: Chapter) -> str:
     return "\n".join(lines)
 
 
+# ---------- 小黑盒 ----------
+
+def xiaoheihe_title(chapter: Chapter) -> str:
+    """小黑盒标题：中文标题（平台覆盖优先），服务端上限 30 字。"""
+    meta = platform_meta(chapter, "xiaoheihe")
+    if str(meta.get("title") or "").strip():
+        return str(meta.get("title") or "").strip()
+    f = fields(chapter, "xiaoheihe")
+    title = str(f["title"]) or chapter.title
+    return title[:30]
+
+
+def xiaoheihe_body(chapter: Chapter) -> str:
+    """小黑盒正文：作者/社团/简介（平台有整段覆盖时原样使用）。"""
+    meta = platform_meta(chapter, "xiaoheihe")
+    if str(meta.get("description") or "").strip():
+        return str(meta.get("description") or "").strip()
+    f = fields(chapter, "xiaoheihe")
+    return build_credit_lines(f["author"], f["circle"], f["description"])
+
+
 # 供 GUI 展示的结构化字段（每个平台按上传表单陈列）
 PLATFORM_SCHEMA: dict[str, list[dict[str, str]]] = {
     "ehentai": [
@@ -787,5 +808,9 @@ PLATFORM_SCHEMA: dict[str, list[dict[str, str]]] = {
         {"key": "chapter_name", "label": "章节名（默认短篇）", "kind": "text"},
         {"key": "introduction", "label": "简介（tag/作者/简介）", "kind": "textarea"},
         {"key": "cate", "label": "作品类型", "kind": "select"},
+    ],
+    "xiaoheihe": [
+        {"key": "title", "label": "标题（≤30 字）", "kind": "text"},
+        {"key": "description", "label": "正文（作者/社团/简介）", "kind": "textarea"},
     ],
 }

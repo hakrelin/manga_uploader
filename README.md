@@ -1,7 +1,7 @@
 # 一键漫画多平台发布器
 
 把一部漫画（图片 + 简介）一次发布到 **B站（专栏文章）**、**百度贴吧（图帖）**、
-**e-hentai（图库）**、**再漫画（投稿）** 等多个平台。提供命令行与**图形界面
+**e-hentai（图库）**、**再漫画（投稿）**、**小黑盒（图文）** 等多个平台。提供命令行与**图形界面
 （GUI）**两种用法，基于各平台网页登录态
 （Cookie）操作，不做验证码绕过，不采集他人作品。
 
@@ -27,6 +27,7 @@
   重复页与文件名漏号，防止格式错误和缺页，全程不联网
 - 每次发布生成 JSON 报告，失败响应自动转存 `output/debug/`
 - e-hentai 上传页表单动态解析，站点改版不易写死失效
+- 小黑盒：网页创作中心同款签名接口 + COS 直传，单帖 30 张自动拆帖，可先存草稿
 
 ## 安装
 
@@ -98,7 +99,9 @@ python -m manga_uploader publish examples\my_comic --parallel                  #
 ## ⚠ 状态声明
 
 浏览器前端（Web UI）与本次对齐 GUI 能力的改动（漫画信息全字段、罗马音/AI、各平台发布内容编辑）**尚未经过完整的人工测试**：
-自动化测试（67 项）全部通过，但真实发布链路未在 Windows 上逐平台验证。使用中遇到问题请把界面提示与 `output/debug/` 下的转储发出来排查。
+自动化测试全部通过；B站/贴吧/e-hentai/再漫画/小黑盒已在 2026-09 实测发布
+（小黑盒默认 `publish_draft=true` 只存草稿，核对无误后再改 false 公开发布）。
+使用中遇到问题请把界面提示与 `output/debug/` 下的转储发出来排查。
 
 ## 运行测试
 
@@ -192,11 +195,23 @@ Request Headers（请求标头）里的 `Cookie:` 复制对应键值填入 `conf
 | 贴吧 | `BDUSS` | 发帖权限受账号/吧等级限制 |
 | e-hentai | `ipb_member_id`、`ipb_pass_hash` | 账号需满足站方上传资格；通常还需能直连外网 |
 | 再漫画 | `token`（建议 `clientId`） | 登录 www.zaimanhua.com 后从 Cookie 取 `token`；投稿页 manhua.zaimanhua.com/uploadShows |
+| 小黑盒 | 整段 `Cookie` | 登录 www.xiaoheihe.cn 后复制任意请求的 Cookie 头**整段**填入 `cookies.cookie`（需含 `pkey`、`heybox_id`、`user_pkey` 等登录态） |
 
 Cookie 会过期（B站 SESSDATA 常见数月），失效时 `check` 会提示，重新复制即可。
 GUI 里每个 Cookie（如 `SESSDATA`、`bili_jct`、`BDUSS`、`token`）都单独一行，
 也可以在“粘贴整段 Cookie（自动拆分）”窗口里粘整段（`k=v; k2=v2`）自动填到
-各字段。B站可用“扫码登录”直接获取（需 `pip install qrcode[pil]`）。
+各字段。**小黑盒比较特殊：在“粘贴整段 Cookie”里粘入后整段原样保存**（不做
+字段拆分），再点“检查登录”确认。B站可用“扫码登录”直接获取（需
+`pip install qrcode[pil]`）。
+
+### 小黑盒（图文）
+
+- 登录态：整段 Cookie；发布社区默认 `topic_id=1`（PC游戏）。
+- 图文正文与图片按网页编辑器结构提交（text 为 JSON 数组，图片自动转站内图床）。
+- 单帖最多 30 张（站点硬上限），漫画页数更多会自动拆成多条；`common.interval_seconds`
+  可调大以降低“发帖频率过快”被拒概率。
+- `publish_draft=true` 时只保存草稿，可在 xiaoheihe.cn 创作中心检查后再手动发布；
+  确认无误后改为 `false` 即为直接公开（也可在界面“平台账号 → 小黑盒”里修改）。
 
 ## 各平台发布逻辑
 

@@ -92,6 +92,17 @@ DEFAULT_SETTINGS: dict[str, dict[str, Any]] = {
         # zip = 打包单归档上传（推荐，站点稳定接受）；files = 逐张多文件（旧路径）
         "upload_mode": "zip",
     },
+    "xiaoheihe": {
+        # 图文单帖上限（站点实测 30）；页数超出自动拆成多帖
+        "max_pages_per_post": 30,
+        # true = 只保存草稿（创作中心可见，可人工检查后再发布）
+        "publish_draft": False,
+        # 发布到哪个社区：1 = PC游戏（默认盒友推荐流常用社区）
+        "topic_id": 1,
+        "device_id": "",  # 留空用内置设备号；被风控时可换
+        "use_system_proxy": False,  # 国内站默认直连
+        "proxy_url": "",
+    },
     "zaimanhua": {
         "cate": "1",  # 1 原创作品 / 2 原创汉化 / 3 个人扫漫 / 4 转载作品
         "work_name": "",  # 作品(系列)名，留空用 manga.json 的 title
@@ -107,6 +118,7 @@ REQUIRED_COOKIES: dict[str, list[str]] = {
     "bilibili": ["SESSDATA", "bili_jct"],
     "tieba": ["BDUSS"],
     "ehentai": ["ipb_member_id", "ipb_pass_hash"],
+    "xiaoheihe": ["cookie"],
     "zaimanhua": ["token"],
 }
 

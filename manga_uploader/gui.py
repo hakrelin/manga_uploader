@@ -92,6 +92,20 @@ PLATFORM_CARDS: list[dict[str, Any]] = [
         ],
         "hint": "登录再漫画后复制 Cookie 里的 token（JWT），可选 clientId。投稿页：manhua.zaimanhua.com/uploadShows",
     },
+    {
+        "key": "xiaoheihe",
+        "label": "小黑盒（图文发布）",
+        "login_url": "https://www.xiaoheihe.cn/creator/editor/draft/image_text",
+        "cookie_fields": [
+            {
+                "name": "cookie",
+                "required": True,
+                "hint": "整段 Cookie（含 pkey/user_pkey/heybox_id 等）",
+            }
+        ],
+        "hint": "登录 xiaoheihe.cn 后按 F12 → Network，复制任意请求的 Cookie 头整段粘贴。"
+        "每帖最多 30 张图，超出自动拆帖。",
+    },
 ]
 
 
@@ -635,11 +649,16 @@ class UploaderApp:
         result: dict[str, str] = {}
 
         def _ok() -> None:
-            parsed = parse_cookie_text(text.get("1.0", "end"))
+            raw = text.get("1.0", "end").strip()
+            parsed = parse_cookie_text(raw)
             if not parsed:
                 self._warn("没有解析到任何 Cookie（格式：k=v; k2=v2）")
                 return
-            result.update(parsed)
+            if key == "xiaoheihe":
+                # 小黑盒需要整段 Cookie 原样保存（含 HttpOnly 登录态）
+                result["__whole__"] = raw
+            else:
+                result.update(parsed)
             win.destroy()
 
         buttons = ttk.Frame(win)
@@ -648,6 +667,14 @@ class UploaderApp:
         ttk.Button(buttons, text="填入", command=_ok).pack(side="right", padx=6)
         win.wait_window()
         if not result:
+            return
+        if "__whole__" in result and key == "xiaoheihe":
+            name = "cookie"
+            if name in self.cookie_vars.get(key, {}):
+                self.cookie_vars[key][name].set(result["__whole__"])
+                self._log(
+                    f"已保存小黑盒整段 Cookie（长度 {len(result['__whole__'])}）"
+                )
             return
         filled = []
         for name in self.cookie_vars.get(key, {}):
@@ -1312,12 +1339,16 @@ class UploaderApp:
                     if "ehentai" in self.app.platforms
                     else "Doujinshi",
                 )
-        elif key in ("bilibili", "tieba"):
+        elif key in ("bilibili", "tieba", "xiaoheihe"):
             meta_override.pop("title", None)
             meta_override.pop("description", None)
             chapter.raw["platforms"][key] = meta_override
-            self._set_platform_value(key, "title", composer.platform_title(chapter, key))
-            self._set_platform_value(key, "description", composer.platform_body(chapter, key))
+            if key == "xiaoheihe":
+                self._set_platform_value(key, "title", composer.xiaoheihe_title(chapter))
+                self._set_platform_value(key, "description", composer.xiaoheihe_body(chapter))
+            else:
+                self._set_platform_value(key, "title", composer.platform_title(chapter, key))
+                self._set_platform_value(key, "description", composer.platform_body(chapter, key))
         elif key == "zaimanhua":
             meta_override.pop("work_name", None)
             meta_override.pop("chapter_name", None)
@@ -1574,6 +1605,10 @@ class UploaderApp:
                 "introduction": temp and composer.zaim_introduction(temp) or "",
                 "cate": self.app.platforms.get("zaimanhua", None).get("cate", "1")
                 if self.app.platforms.get("zaimanhua") else "1",
+            },
+            "xiaoheihe": {
+                "title": temp and composer.xiaoheihe_title(temp) or "",
+                "description": temp and composer.xiaoheihe_body(temp) or "",
             },
         }
         for key in composer.PLATFORM_SCHEMA:
