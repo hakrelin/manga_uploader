@@ -14,6 +14,7 @@ import logging
 import mimetypes
 import re
 import secrets
+import shutil
 import socket
 import sys
 import threading
@@ -25,7 +26,7 @@ from typing import Any, Optional
 from urllib.parse import parse_qs, unquote, urlparse
 
 from . import __version__
-from .comic import load_chapters
+from .comic import find_meta_file, load_chapters, read_meta
 from .config import (
     AppConfig,
     CommonConfig,
@@ -168,34 +169,70 @@ def _enabled_with_cookie(payload: dict[str, Any]) -> list[str]:
 
 
 def _chapter_summary(comic_dir: str) -> dict[str, Any]:
+    root = Path(comic_dir)
     chapters = load_chapters(comic_dir, strict=False)
+    meta_file = find_meta_file(root)
+    top = read_meta(meta_file) if meta_file else {}
     first = chapters[0] if chapters else None
+    total_pages = sum(len(c.pages) for c in chapters)
+    total_bytes = sum(p.stat().st_size for c in chapters for p in c.pages)
     over = sum(
         1
         for chapter in chapters
         for p in chapter.pages
         if p.stat().st_size > 10 * 1024 * 1024
     )
-    items = []
-    for chapter in chapters:
-        size = sum(p.stat().st_size for p in chapter.pages)
-        items.append(
-            {
-                "key": chapter.key,
-                "title": chapter.title,
-                "pages": len(chapter.pages),
-                "size": human_size(size),
-            }
-        )
     return {
-        "chapters": items,
-        "series": (first.raw.get("series_title") or first.raw.get("title") or comic_dir)
-        if first else comic_dir,
-        "author": (first.raw.get("author") or "未填") if first else "",
-        "count": len(chapters),
+        "title": str(top.get("title") or root.name),
+        "author": str(top.get("author") or ""),
+        "description": str(top.get("description") or ""),
+        "chapters": len(chapters),
+        "pages": total_pages,
+        "size": human_size(total_bytes),
         "over_10mb": over,
         "dir": comic_dir,
+        "_first_title": first.title if first else "",
     }
+
+
+def _save_comic_meta(comic_dir: str, book: dict[str, Any]) -> Path:
+    """把整本 标题/作者/简介 写回漫画目录的 manga.json（不存在则创建）。"""
+    root = Path(comic_dir)
+    meta_file = find_meta_file(root)
+    data: dict[str, Any] = {}
+    if meta_file:
+        try:
+            data = read_meta(meta_file)
+        except Exception:
+            data = {}
+    if not isinstance(data, dict):
+        data = {}
+    changed = False
+    for key in ("title", "author", "description"):
+        if key in book:
+            value = str(book[key] or "").strip()
+            if data.get(key) != value:
+                data[key] = value
+                changed = True
+    if not changed:
+        return meta_file or (root / "manga.json")
+    # 单本导入生成的 chapters 里 folder="root" 的那一条同步标题/简介
+    chapters = data.get("chapters")
+    if isinstance(chapters, list):
+        for entry in chapters:
+            if isinstance(entry, dict) and str(entry.get("folder")) == "root":
+                if "title" in book:
+                    entry["title"] = str(book["title"] or "").strip()
+                if "description" in book:
+                    entry["description"] = str(book["description"] or "").strip()
+    path = meta_file or (root / "manga.json")
+    if path.suffix.lower() in (".yaml", ".yml"):
+        import yaml
+
+        path.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    else:
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    return path
 
 
 # ---------------------------------------------------------------- HTTP 服务
@@ -331,7 +368,7 @@ class WebHandler(BaseHTTPRequestHandler):
         elif path == "/api/qr/status":
             self._qr_status(parse_qs(parsed.query))
         elif path == "/api/pick":
-            self._pick_dir()
+            self._pick_dir((parse_qs(parsed.query).get("kind") or ["dir"])[0])
         elif path == "/api/page":
             self._api_page(parse_qs(parsed.query))
         else:
@@ -415,12 +452,13 @@ class WebHandler(BaseHTTPRequestHandler):
         self._json(200, result)
 
     def _api_page(self, query: dict[str, list[str]]) -> None:
-        """返回某章节第 index 页的缩略图（通用预览示意图用）。"""
+        """返回某章节第 index 页。max<=0/缺省 → 原图直发（流式，不经内存）；max>0 → 缩略。"""
         try:
             comic_dir = (query.get("dir") or [""])[0]
             chapter_key = (query.get("chapter") or [""])[0]
             index = int((query.get("index") or ["0"])[0])
-            max_px = min(720, max(120, int((query.get("max") or ["360"])[0])))
+            raw_max = (query.get("max") or [""])[0]
+            max_px = int(raw_max) if str(raw_max).strip() else 0
         except ValueError:
             self._json(400, {"error": "参数错误"})
             return
@@ -436,12 +474,31 @@ class WebHandler(BaseHTTPRequestHandler):
         if chapter is None or index < 0 or index >= len(chapter.pages):
             self._json(404, {"error": "页面不存在"})
             return
+        path = chapter.pages[index]
+
+        if max_px <= 0:
+            # 原图直发：流式写回，不整读进内存、不做任何压缩
+            ctype = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+            size = path.stat().st_size
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(size))
+            self.send_header("Cache-Control", "public, max-age=3600")
+            self.end_headers()
+            try:
+                with open(path, "rb") as fh:
+                    shutil.copyfileobj(fh, self.wfile, 256 * 1024)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            return
+
         from io import BytesIO
 
         from PIL import Image
 
+        max_px = min(720, max(120, max_px))
         try:
-            with Image.open(chapter.pages[index]) as img:
+            with Image.open(path) as img:
                 img.thumbnail((max_px, max_px))
                 buf = BytesIO()
                 img.convert("RGB").save(buf, "JPEG", quality=80)
@@ -456,7 +513,8 @@ class WebHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _pick_dir(self) -> None:
+    def _pick_dir(self, kind: str = "dir") -> None:
+        """kind=dir → 弹目录框；kind=file → 弹文件框（ZIP/CBZ/图片）并直接导入。"""
         try:
             import tkinter as tk
             from tkinter import filedialog
@@ -464,15 +522,44 @@ class WebHandler(BaseHTTPRequestHandler):
             root = tk.Tk()
             root.withdraw()
             root.attributes("-topmost", True)
-            path = filedialog.askdirectory(title="选择漫画目录（子目录=各话，或直接放图片）")
+            if kind == "file":
+                path = filedialog.askopenfilename(
+                    title="选择漫画压缩包或图片（ZIP / CBZ / JPG / PNG / GIF / WEBP）",
+                    filetypes=[
+                        ("压缩包 / 图片", "*.zip *.cbz *.jpg *.jpeg *.png *.gif *.webp"),
+                        ("压缩包", "*.zip *.cbz"),
+                        ("图片", "*.jpg *.jpeg *.png *.gif *.webp"),
+                        ("所有文件", "*.*"),
+                    ],
+                )
+            else:
+                path = filedialog.askdirectory(
+                    title="选择漫画文件夹（子目录=各话，或直接放图片）"
+                )
             root.destroy()
         except Exception as exc:
-            self._json(200, {"ok": False, "error": f"无法弹出目录选择框：{exc}"})
+            self._json(200, {"ok": False, "error": f"无法弹出选择框：{exc}"})
             return
         if not path:
             self._json(200, {"ok": False, "picked": ""})
             return
-        self._json(200, {"ok": True, "picked": str(Path(path).resolve())})
+        path = str(Path(path).resolve())
+        if kind == "file":
+            suffix = Path(path).suffix.lower()
+            try:
+                if suffix in (".zip", ".cbz"):
+                    comic = _import_archive_path(path)
+                elif suffix in (".jpg", ".jpeg", ".png", ".gif", ".webp"):
+                    comic = _import_single_image(path)
+                else:
+                    self._json(200, {"ok": False, "error": "请选择 ZIP / CBZ 压缩包或图片"})
+                    return
+            except Exception as exc:
+                self._json(200, {"ok": False, "error": f"导入失败：{exc}"})
+                return
+            self._json(200, {"ok": True, "dir": str(comic)})
+            return
+        self._json(200, {"ok": True, "picked": path})
 
     # ---------- POST API ----------
 
@@ -490,6 +577,10 @@ class WebHandler(BaseHTTPRequestHandler):
             self._api_publish()
         elif path == "/api/load":
             self._api_load()
+        elif path == "/api/meta":
+            self._api_meta()
+        elif path == "/api/import-path":
+            self._api_import_path()
         elif path == "/api/import":
             self._api_import()
         else:
@@ -647,6 +738,42 @@ class WebHandler(BaseHTTPRequestHandler):
             return
         self._json(200, summary)
 
+    def _api_meta(self) -> None:
+        data = self._read_json()
+        comic_dir = str(data.get("dir") or "").strip()
+        book = data.get("book")
+        if not comic_dir or not isinstance(book, dict):
+            self._json(400, {"error": "缺少参数"})
+            return
+        try:
+            path = _save_comic_meta(comic_dir, book)
+        except Exception as exc:
+            self._json(500, {"error": f"保存失败：{exc}"})
+            return
+        self.server.state.ring.append("INFO", f"已保存漫画内容：{path}")
+        self._json(200, {"ok": True, "path": str(path)})
+
+    def _api_import_path(self) -> None:
+        """按本地 .zip/.cbz 路径直接导入（供路径输入框用）。"""
+        data = self._read_json()
+        raw_path = str(data.get("path") or "").strip()
+        if not raw_path:
+            self._json(400, {"error": "缺少路径"})
+            return
+        if Path(raw_path).suffix.lower() not in (".zip", ".cbz"):
+            self._json(400, {"error": "路径不是 ZIP / CBZ 压缩包"})
+            return
+        if not Path(raw_path).is_file():
+            self._json(404, {"error": f"文件不存在：{raw_path}"})
+            return
+        try:
+            comic = _import_archive_path(raw_path)
+        except Exception as exc:
+            self._json(500, {"error": f"导入失败：{exc}"})
+            return
+        self.server.state.ring.append("INFO", f"已从压缩包导入：{raw_path}")
+        self._json(200, {"ok": True, "dir": str(comic)})
+
     # ---------- 漫画导入（multipart 上传） ----------
 
     def _api_import(self) -> None:
@@ -717,6 +844,39 @@ def _format_plan_text(plan) -> str:
             for row in rows:
                 lines.append(f"      - {row}")
     return "\n".join(lines)
+
+
+def _import_archive_path(archive_path: str) -> Path:
+    """本地 ZIP/CBZ 直接解压进导入缓存：完整漫画原样用，否则按单本暂存补 manga.json。"""
+    from .util import is_image
+
+    base = import_staging_base()
+    archive = Path(archive_path)
+    work = base / f"import_{int(time.time_ns() % 10**9)}"
+    work.mkdir(parents=True, exist_ok=False)
+    extracted = extract_zip(archive, work / "unpacked")
+    extracted = unwrap_single_dir(extracted)
+    if looks_like_full_comic(extracted):
+        return extracted
+    images = sorted(
+        (p for p in extracted.iterdir() if p.is_file() and is_image(p)),
+        key=lambda p: p.stem.lower(),
+    )
+    if not images:
+        raise ValueError("压缩包里没有找到漫画图片（jpg/png/gif/webp）")
+    staged = stage_images(images, title_hint=archive.stem)
+    write_quick_meta(
+        staged, {"title": archive.stem, "author": "", "description": ""}
+    )
+    return staged
+
+
+def _import_single_image(image_path: str) -> Path:
+    """单张图片当单本导入（暂存 + 补 manga.json，标题先取文件名，可再编辑）。"""
+    src = Path(image_path)
+    staged = stage_images([src], title_hint=src.stem)
+    write_quick_meta(staged, {"title": src.stem, "author": "", "description": ""})
+    return staged
 
 
 def _split_multipart(

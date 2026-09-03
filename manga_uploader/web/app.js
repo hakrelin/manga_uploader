@@ -96,7 +96,7 @@ createApp({
 
     const comicDir = ref("");
     const summary = ref(null);
-    const selectedChapters = ref([]);
+    const metaForm = reactive({ title: "", author: "", description: "" });
     const dragOver = ref(false);
     const previewText = ref("");
     const previewChapters = ref([]);
@@ -104,6 +104,8 @@ createApp({
 
     const logLines = ref([]);
     const logBox = ref(null);
+    const logOpen = ref(false);
+    const logNew = ref(0);
     const toast = ref("");
 
     const modal = ref(null);
@@ -155,7 +157,7 @@ createApp({
       cards.value.some((c) => !connected(c)));
     const publishTargetsText = computed(() => {
       const names = cards.value.filter(connected).map((c) => c.label.split("（")[0]);
-      return names.length ? names.join("、") : "（无，请先到「平台账号」启用并填 Cookie）";
+      return "发布到：" + (names.length ? names.join("、") : "（未配置，去「平台账号」连接）");
     });
 
     function platShort(card) { return card.label.split("（")[0]; }
@@ -213,6 +215,7 @@ createApp({
         if (logLines.value.length > 2000) logLines.value.splice(0, logLines.value.length - 2000);
         if (d.msg && /开始发布到/.test(d.msg)) running.value = true;
         if (d.msg && /发布完成：/.test(d.msg)) running.value = false;
+        if (!logOpen.value) logNew.value += 1;
         scrollLog();
       };
       es.onerror = () => { /* EventSource 自动重连 */ };
@@ -223,6 +226,7 @@ createApp({
         if (logBox.value) logBox.value.scrollTop = logBox.value.scrollHeight;
       });
     }
+    function clearLog() { logLines.value = []; }
 
     // ---------------- 保存配置 ----------------
 
@@ -368,18 +372,61 @@ createApp({
       }).catch((e) => toastMsg("浏览失败：" + e.message));
     }
 
+    function pickZip() {
+      api("/api/pick?kind=file").then((r) => {
+        if (r.ok && r.dir) { comicDir.value = r.dir; return loadComic(); }
+        if (r.error) toastMsg(r.error);
+      }).catch((e) => toastMsg("导入失败：" + e.message));
+    }
+
     async function loadComic() {
-      if (!comicDir.value.trim()) { toastMsg("请先填写漫画目录路径"); return; }
+      let raw = comicDir.value.trim();
+      if (!raw) { toastMsg("请先填写漫画目录路径"); return; }
       busy.value = true;
       try {
+        if (/\.(zip|cbz)$/i.test(raw)) {
+          // 路径是压缩包 → 先自动导入（解压到导入缓存）再按目录加载
+          const imp = await api("/api/import-path", {
+            method: "POST", json: true, body: JSON.stringify({ path: raw }),
+          });
+          comicDir.value = imp.dir || raw;
+          raw = comicDir.value.trim();
+        }
         const r = await api("/api/load", {
-          method: "POST", json: true, body: JSON.stringify({ dir: comicDir.value.trim() }),
+          method: "POST", json: true, body: JSON.stringify({ dir: raw }),
         });
         summary.value = r;
-        selectedChapters.value = [];
+        metaForm.title = r.title || "";
+        metaForm.author = r.author || "";
+        metaForm.description = r.description || "";
+        await previewFull(); // 加载后自动弹出发布预览
       } catch (e) {
         summary.value = null;
         toastMsg("加载失败：" + e.message);
+      } finally {
+        busy.value = false;
+      }
+    }
+
+    function resetPick() {
+      summary.value = null;
+      comicDir.value = "";
+      previewChapters.value = [];
+      previewText.value = "";
+    }
+
+    async function saveMeta() {
+      if (!comicDir.value.trim()) return;
+      busy.value = true;
+      try {
+        const r = await api("/api/meta", {
+          method: "POST", json: true,
+          body: JSON.stringify({ dir: comicDir.value.trim(), book: { ...metaForm } }),
+        });
+        toastMsg("内容已保存");
+        await loadComic();
+      } catch (e) {
+        toastMsg("保存失败：" + e.message);
       } finally {
         busy.value = false;
       }
@@ -431,9 +478,10 @@ createApp({
     async function previewFull() { await runPreview("/api/preview", "全文预览失败"); }
 
     function pageUrl(chapterKey, index) {
+      // max=0 → 后端原图直发（流式，不压缩不裁剪），逐页原样展示供核对
       return "/api/page?dir=" + encodeURIComponent(comicDir.value.trim()) +
         "&chapter=" + encodeURIComponent(chapterKey) +
-        "&index=" + index + "&max=360";
+        "&index=" + index + "&max=0";
     }
 
     async function runPreview(endpoint, errPrefix) {
@@ -442,11 +490,7 @@ createApp({
       try {
         const r = await api(endpoint, {
           method: "POST", json: true,
-          body: JSON.stringify({
-            dir: comicDir.value.trim(),
-            config: payload(),
-            chapters: selectedChapters.value.length ? selectedChapters.value : undefined,
-          }),
+          body: JSON.stringify({ dir: comicDir.value.trim(), config: payload() }),
         });
         previewText.value = r.text || "";
         previewChapters.value = r.chapters || [];
@@ -463,16 +507,25 @@ createApp({
       if (!comicDir.value.trim()) { toastMsg("请先加载漫画目录"); return; }
       const names = cards.value.filter(connected).map((c) => c.label.split("（")[0]);
       if (!names.length) { toastMsg("没有已连接的平台，请先到「平台账号」配置 Cookie"); return; }
+      // 先把当前编辑内容落盘，保证发布的标题/正文与预览一致
+      try {
+        await api("/api/meta", {
+          method: "POST", json: true,
+          body: JSON.stringify({
+            dir: comicDir.value.trim(),
+            book: { title: metaForm.title, author: metaForm.author, description: metaForm.description },
+          }),
+        });
+      } catch (e) {
+        toastMsg("保存内容失败：" + e.message);
+        return;
+      }
       if (!window.confirm("确认发布到：" + names.join("、") + "？\n\n发布后不可撤销。")) return;
       busy.value = true;
       try {
         await api("/api/publish", {
           method: "POST", json: true,
-          body: JSON.stringify({
-            dir: comicDir.value.trim(),
-            config: payload(),
-            chapters: selectedChapters.value.length ? selectedChapters.value : undefined,
-          }),
+          body: JSON.stringify({ dir: comicDir.value.trim(), config: payload() }),
         });
         running.value = true;
         nav.value = "workbench";
@@ -520,17 +573,28 @@ createApp({
 
     // ---------------- 启动 ----------------
 
+    async function autoPreview() {
+      // ?autopreview：调试/回归用，自动加载示例漫画并打开全文预览
+      comicDir.value = "examples/my_comic";
+      await loadComic();
+      await runPreview("/api/preview", "全文预览失败");
+    }
+
     onMounted(() => {
       applyTheme();
-      loadState();
+      loadState().then(() => {
+        if (new URLSearchParams(location.search).has("autopreview")) autoPreview();
+      });
       connectLog();
       watch(logLines, scrollLog);
+      watch(logOpen, (v) => { if (v) logNew.value = 0; });
     });
 
     return {
       nav, navItems, version, note, running, busy, cards, config, statuses, expanded,
-      comicDir, summary, selectedChapters, dragOver, previewText, previewChapters, previewMode,
-      logLines, logBox, toast, modal, lanAddr,
+      comicDir, summary, metaForm, dragOver, previewText, previewChapters, previewMode,
+      resetPick, saveMeta,
+      logLines, logBox, logOpen, logNew, clearLog, toast, modal, lanAddr,
       theme, themeLabel, themeIcon, cycleTheme,
       PLAT_LABELS, pageUrl,
       SOURCE_CHOICES, CATE_OPTIONS,
@@ -538,7 +602,7 @@ createApp({
       platShort, platStatus, connected, extrasOf, extraLabel,
       saveConfig, openAccount, toggleExpand, openLogin,
       checkOne, checkAll, pasteCookie, qrLogin, detectProxy,
-      fieldMapOpen, onSourceChange, pickDir, loadComic, onDrop,
+      fieldMapOpen, onSourceChange, pickDir, pickZip, loadComic, onDrop,
       previewPlan, previewFull, publish, modalOk,
     };
   },

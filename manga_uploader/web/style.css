@@ -654,43 +654,60 @@ html, body {
   box-shadow: var(--shadow);
 }
 
-.pv-chapter { margin-bottom: 18px; }
+/* ============ 发布预览：B站专栏形态模拟 ============ */
+
+.pv-chapter { margin-bottom: 20px; }
 .pv-chapter:last-child { margin-bottom: 0; }
+
 .pv-head {
   display: flex;
   align-items: center;
   gap: 10px;
   margin-bottom: 10px;
 }
-.pv-title { font-size: 14px; font-weight: 650; }
-
-.pv-mock {
-  display: grid;
-  grid-template-columns: minmax(0, 1.4fr) minmax(220px, 1fr);
-  gap: 16px;
-  align-items: start;
+.pv-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-2);
+  font-family: var(--mono);
+}
+.pv-head-plats { margin-left: auto; display: flex; gap: 6px; }
+.pv-head-plat {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  color: var(--text-2);
+  background: var(--surface-3);
+  border-radius: 999px;
+  padding: 2px 9px;
 }
 
-/* 帖子示意（B站专栏/贴吧观感） */
+/* B站专栏文章阅读卡 */
 .pv-post {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 18px 20px;
+  padding: 30px 8%;
 }
 .pv-post-title {
-  font-size: 19px;
-  font-weight: 700;
-  line-height: 1.35;
-  margin-bottom: 10px;
+  font-family: "SimHei", "PingFang SC", "Microsoft YaHei", var(--font);
+  font-size: 26px;
+  font-weight: 800;
+  line-height: 1.4;
+  text-align: center;
+  letter-spacing: 0.01em;
+  margin: 0 auto 14px;
+  max-width: 720px;
 }
 .pv-post-author {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 8px;
   font-size: 12.5px;
-  color: var(--text-2);
-  margin-bottom: 12px;
+  color: var(--text-3);
+  margin-bottom: 18px;
 }
 .pv-avatar {
   width: 24px;
@@ -706,51 +723,40 @@ html, body {
   flex: none;
 }
 .pv-post-desc {
-  font-size: 13.5px;
-  color: var(--text-2);
-  line-height: 1.7;
-  margin: 0 0 14px;
+  font-size: 15px;
+  line-height: 1.9;
+  color: var(--text);
+  margin: 0 auto 22px;
+  max-width: 720px;
   white-space: pre-wrap;
 }
-.pv-flow { display: flex; flex-direction: column; gap: 10px; }
-.pv-fig { margin: 0; position: relative; }
+
+/* 图片流：每张居中、约占容器 80% 宽、保持比例，滚动阅读 */
+.pv-flow { display: flex; flex-direction: column; gap: 18px; }
+.pv-fig { margin: 0; }
 .pv-fig img {
   display: block;
-  max-width: 100%;
-  max-height: 340px;
+  width: 80%;
+  height: auto;
   margin: 0 auto;
-  border-radius: 8px;
+  border-radius: 6px;
   border: 1px solid var(--border);
   background: var(--surface-3);
 }
 .pv-fig figcaption {
-  position: absolute;
-  top: 6px;
-  left: 6px;
   font-size: 11px;
   font-family: var(--mono);
-  color: #fff;
-  background: rgba(0, 0, 0, 0.45);
-  border-radius: 4px;
-  padding: 1px 6px;
-}
-.pv-more {
-  text-align: center;
-  font-size: 12.5px;
   color: var(--text-3);
-  background: var(--surface-3);
-  border-radius: 8px;
-  padding: 10px;
+  text-align: center;
+  padding: 4px 0 0;
 }
 
-/* 各平台参数 */
-.pv-platforms { display: flex; flex-direction: column; gap: 8px; }
-.pv-plat-head {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-3);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+/* 各平台发布参数 */
+.pv-platforms {
+  margin-top: 12px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 8px;
 }
 .pv-plat {
   border: 1px solid var(--border);
@@ -787,10 +793,6 @@ html, body {
   line-height: 1.7;
 }
 .pv-lines li { margin: 0; }
-
-@media (max-width: 860px) {
-  .pv-mock { grid-template-columns: 1fr; }
-}
 
 /* ============ 点 / 状态 ============ */
 
@@ -903,6 +905,107 @@ html, body {
   gap: 12px;
   margin-top: 10px;
 }
+
+/* ============ 大框选择 + 内容编辑 ============ */
+
+.big-drop {
+  border: 1.5px dashed var(--border-strong);
+  border-radius: var(--radius);
+  padding: 20px 20px 16px;
+  text-align: center;
+  color: var(--text-3);
+  transition: border-color 0.15s, background 0.15s;
+}
+.big-drop:hover { border-color: var(--accent); }
+.big-drop.over, .big-drop.is-busy {
+  border-color: var(--accent);
+  background: var(--accent-weak);
+}
+.big-drop.is-busy { cursor: wait; }
+
+.pick-duo {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.pick-pane {
+  padding: 26px 16px;
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  background: var(--surface-2);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, transform 0.1s;
+}
+.pick-pane:hover {
+  border-color: var(--accent);
+  background: var(--accent-weak);
+}
+.pick-pane:active { transform: scale(0.99); }
+.pane-ico { font-size: 30px; margin-bottom: 8px; }
+.pane-title { font-size: 14.5px; font-weight: 600; color: var(--text); }
+.pane-sub { font-size: 12px; margin-top: 4px; color: var(--text-3); }
+
+.big-drop .drop-sub { font-size: 12.5px; color: var(--text-3); }
+.big-drop .drop-hint { font-size: 15px; color: var(--accent); font-weight: 600; padding: 30px 0; }
+
+@media (max-width: 720px) {
+  .pick-duo { grid-template-columns: 1fr; }
+}
+
+.path-line { margin-top: 14px; }
+
+.edit-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px 18px;
+}
+.edit-grid .field-wide { grid-column: 1 / -1; }
+.edit-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 14px;
+  flex-wrap: wrap;
+}
+.edit-actions .hint-text { flex: 1; margin: 0; min-width: 200px; }
+
+/* ============ 浮动日志 ============ */
+
+.pv-target { font-size: 12px; color: var(--text-3); }
+.log-fab {
+  position: fixed;
+  right: 22px;
+  bottom: 22px;
+  z-index: 60;
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: var(--shadow-md);
+  font-size: 19px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.log-fab:hover { border-color: var(--accent); }
+.log-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 18px;
+  height: 18px;
+  border-radius: 9px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 11px;
+  line-height: 18px;
+  padding: 0 5px;
+}
+.log-modal { max-width: 780px; }
+.logbox.tall { height: 58vh; }
 
 /* ============ 窄屏 ============ */
 

@@ -60,90 +60,78 @@ try {
 
       <div v-if="note" class="banner">{{ note }}</div>
 
-      <!-- ① 选择漫画 -->
+      <!-- ① 漫画与内容 -->
       <div class="card">
         <div class="card-head">
-          <h2><span class="step">1</span>选择漫画</h2>
-          <span v-if="summary" class="badge">{{ summary.count }} 章 · {{ summary.series }}</span>
-          <button v-else class="btn btn-ghost btn-sm" @click="loadComic">加载目录</button>
+          <h2><span class="step">1</span>漫画与内容</h2>
+          <span v-if="summary" class="badge">{{ summary.pages }} 页 · {{ summary.size }}</span>
         </div>
         <div class="card-body">
-          <!-- 空状态 -->
-          <div v-if="!summary" class="empty">
-            <div class="dropzone" :class="{ 'is-busy': busy }"
+          <!-- 未选择：大框点击 / 拖拽 / 路径输入 -->
+          <template v-if="!summary">
+            <div class="big-drop" :class="{ 'is-busy': busy, over: dragOver }"
               @dragover.prevent="dragOver = true"
               @dragleave.prevent="dragOver = false"
               @drop.prevent="onDrop($event)">
               <div v-if="busy" class="drop-hint"><span class="spin"></span>正在导入，请稍候…</div>
-              <div v-else-if="dragOver" class="drop-hint">松开以导入</div>
-              <template v-else>
-                <div class="drop-ico">🗂️</div>
-                <div class="drop-title">拖入 ZIP / CBZ 压缩包或图片</div>
-                <div class="drop-sub">多话压缩包原样导入 · 图片多选作为单本（自动补 manga.json）</div>
+              <template v-else-if="!dragOver">
+                <div class="pick-duo">
+                  <div class="pick-pane" @click="!busy && pickDir()">
+                    <div class="pane-ico">📁</div>
+                    <div class="pane-title">选择漫画文件夹</div>
+                    <div class="pane-sub">漫画是整理好的本地目录时用</div>
+                  </div>
+                  <div class="pick-pane" @click="!busy && pickZip()">
+                    <div class="pane-ico">📦</div>
+                    <div class="pane-title">导入压缩包 / 图片</div>
+                    <div class="pane-sub">ZIP · CBZ · 图片，也可拖入本区</div>
+                  </div>
+                </div>
               </template>
+              <div v-else class="drop-hint">松开以导入</div>
             </div>
-            <div class="path-row">
-              <input type="text" v-model="comicDir" class="input" placeholder="或输入漫画目录路径，如 D:\漫画\作品">
-              <button class="btn" @click="pickDir">浏览…</button>
-              <button class="btn btn-primary" @click="loadComic">加载</button>
+            <div class="path-line">
+              <input type="text" v-model="comicDir" class="input"
+                placeholder="输入漫画目录，或 .zip / .cbz 文件路径，回车载入" @keyup.enter="loadComic">
             </div>
-          </div>
-          <!-- 已加载 -->
+          </template>
+
+          <!-- 已加载：编辑整本内容 -->
           <template v-else>
-            <div class="comic-meta">
-              <span class="comic-title">{{ summary.series }}</span>
-              <span v-if="summary.author" class="comic-author">{{ summary.author }}</span>
-              <button class="btn btn-ghost btn-sm" @click="loadComic">重新加载</button>
+            <div class="edit-grid">
+              <div class="field">
+                <label class="field-label">标题</label>
+                <input type="text" v-model="metaForm.title" class="input">
+              </div>
+              <div class="field">
+                <label class="field-label">作者</label>
+                <input type="text" v-model="metaForm.author" class="input">
+              </div>
+              <div class="field field-wide">
+                <label class="field-label">简介 / 正文<span class="field-hint"> B站、贴吧发为正文 · 再漫画为漫画简介 · e-hentai 为上传者评论</span></label>
+                <textarea v-model="metaForm.description" class="textarea" rows="4"></textarea>
+              </div>
             </div>
-            <div class="chapter-grid">
-              <label v-for="c in summary.chapters" :key="c.key" class="chapter-chip" :class="{ on: selectedChapters.includes(c.key) }">
-                <input type="checkbox" :value="c.key" v-model="selectedChapters">
-                <span class="chip-title">{{ c.title }}</span>
-                <span class="chip-meta">{{ c.pages }} 页 / {{ c.size }}</span>
-              </label>
+            <p v-if="summary.over_10mb" class="hint-text">⚠ {{ summary.over_10mb }} 张超过 10MB，发布时会自动压缩</p>
+            <div class="edit-actions">
+              <span class="hint-text">保存后写入漫画目录的 manga.json，预览与发布都以它为准</span>
+              <button class="btn btn-ghost btn-sm" @click="resetPick">换一本…</button>
+              <button class="btn btn-primary" :disabled="busy" @click="saveMeta">保存内容</button>
             </div>
-            <p class="hint-text" v-if="summary.over_10mb">⚠ {{ summary.over_10mb }} 张超 10MB（发布时自动压缩）／不勾选 = 全部发布</p>
           </template>
         </div>
       </div>
 
-      <!-- ② 平台与登录 -->
+      <!-- ② 预览与发布 -->
       <div class="card">
         <div class="card-head">
-          <h2><span class="step">2</span>平台与登录</h2>
-          <button class="btn btn-ghost btn-sm" @click="nav = 'accounts'">管理账号 →</button>
+          <h2><span class="step">2</span>预览与发布</h2>
+          <span v-if="summary" class="pv-target">{{ publishTargetsText }}</span>
         </div>
         <div class="card-body">
-          <div class="plat-list">
-            <div v-for="card in cards" :key="card.key" class="plat-row">
-              <span class="plat-dot" :class="'dot-' + card.key"></span>
-              <span class="plat-name">{{ platShort(card) }}</span>
-              <span class="plat-status" :class="connected(card) ? 'ok' : 'dim'">{{ platStatus(card) }}</span>
-              <button class="btn btn-ghost btn-sm" :disabled="busy" @click="checkOne(card.key)">检查</button>
-              <button class="btn btn-ghost btn-sm" @click="openAccount(card.key)">配置</button>
-            </div>
-          </div>
-          <p class="hint-text">发布目标 = 上方已「连接」的平台；配置 Cookie 在「平台账号」页。</p>
-        </div>
-      </div>
-
-      <!-- ③ 预览与发布 -->
-      <div class="card">
-        <div class="card-head">
-          <h2><span class="step">3</span>预览与发布</h2>
-          <div class="head-actions">
-            <button class="btn btn-ghost btn-sm" :disabled="busy" @click="previewPlan">预览计划</button>
-            <button class="btn btn-ghost btn-sm" :disabled="busy" @click="previewFull">全文预览</button>
-          </div>
-        </div>
-        <div class="card-body">
-          <div class="logbox" ref="logBox">
-            <div v-for="line in logLines" :key="line.seq" class="log-line" :class="'level-' + line.level.toLowerCase()">
-              <span class="log-level">{{ line.level }}</span>
-              <span class="log-msg">{{ line.msg }}</span>
-            </div>
-            <div v-if="!logLines.length" class="log-empty">（暂无日志 · 发布过程会实时显示在这里）</div>
-          </div>
+          <p v-if="summary && !previewChapters.length && !previewText" class="hint-text">
+            已加载：{{ summary.title }} · {{ summary.pages }} 页，预览即将自动生成…
+          </p>
 
           <!-- 发布预览：通用示意图 / 原始文本 -->
           <div v-if="previewChapters.length || previewText" class="pv-wrap">
@@ -158,38 +146,42 @@ try {
             <template v-if="previewMode === 'card'">
               <div v-for="ch in previewChapters" :key="ch.key" class="pv-chapter">
                 <div class="pv-head">
-                  <span class="pv-title">{{ ch.title }}</span>
+                  <span class="pv-title">{{ metaForm.title || ch.title }}</span>
                   <span class="badge">{{ ch.page_count }} 页</span>
+                  <span class="pv-head-plats">
+                    <span v-for="p in ch.platforms" :key="p.key" class="pv-head-plat">
+                      <span class="plat-dot" :class="'dot-' + p.key"></span>{{ PLAT_LABELS[p.key] || p.key }}
+                    </span>
+                  </span>
                 </div>
-                <div class="pv-mock">
-                  <div class="pv-post">
-                    <div class="pv-post-title">{{ ch.title }}</div>
-                    <div v-if="ch.author" class="pv-post-author">
-                      <span class="pv-avatar">{{ (ch.author || "?")[0] }}</span>{{ ch.author }}
-                    </div>
-                    <p v-if="ch.description" class="pv-post-desc">{{ ch.description }}</p>
-                    <div class="pv-flow">
-                      <figure v-for="n in Math.min(ch.page_count, 4)" :key="n" class="pv-fig">
-                        <img :src="pageUrl(ch.key, n - 1)" loading="lazy" alt="">
-                        <figcaption>P{{ n }}</figcaption>
-                      </figure>
-                      <div v-if="ch.page_count > 4" class="pv-more">… 还有 {{ ch.page_count - 4 }} 张</div>
-                    </div>
+
+                <!-- B站专栏形态模拟：标题 → 作者 → 正文 → 图流（绑定编辑框，输入即更新） -->
+                <div class="pv-post">
+                  <div class="pv-post-title">{{ metaForm.title || ch.title }}</div>
+                  <div v-if="summary.author || ch.author" class="pv-post-author">
+                    <span class="pv-avatar">{{ ((summary.author || ch.author) || "?")[0] }}</span>{{ summary.author || ch.author }}
                   </div>
-                  <div class="pv-platforms">
-                    <div class="pv-plat-head">各平台发布参数</div>
-                    <div v-for="p in ch.platforms" :key="p.key" class="pv-plat">
-                      <details>
-                        <summary>
-                          <span class="plat-dot" :class="'dot-' + p.key"></span>
-                          {{ PLAT_LABELS[p.key] || p.key }}
-                          <span class="pv-plat-n">{{ p.lines.length }} 项</span>
-                        </summary>
-                        <ul class="pv-lines">
-                          <li v-for="(l, i) in p.lines" :key="i">{{ l }}</li>
-                        </ul>
-                      </details>
-                    </div>
+                  <p v-if="metaForm.description || ch.description" class="pv-post-desc">{{ metaForm.description || ch.description }}</p>
+                  <div class="pv-flow">
+                    <figure v-for="n in ch.page_count" :key="n" class="pv-fig">
+                      <img :src="pageUrl(ch.key, n - 1)" loading="lazy" alt="">
+                      <figcaption>P{{ n }}</figcaption>
+                    </figure>
+                  </div>
+                </div>
+
+                <div class="pv-platforms">
+                  <div v-for="p in ch.platforms" :key="p.key" class="pv-plat">
+                    <details>
+                      <summary>
+                        <span class="plat-dot" :class="'dot-' + p.key"></span>
+                        {{ PLAT_LABELS[p.key] || p.key }}
+                        <span class="pv-plat-n">{{ p.lines.length }} 项</span>
+                      </summary>
+                      <ul class="pv-lines">
+                        <li v-for="(l, i) in p.lines" :key="i">{{ l }}</li>
+                      </ul>
+                    </details>
                   </div>
                 </div>
               </div>
@@ -336,6 +328,28 @@ try {
       </div>
     </section>
   </main>
+</div>
+
+<!-- ============ 浮动日志按钮 + 日志弹窗 ============ -->
+<button v-if="logLines.length" class="log-fab" @click="logOpen = !logOpen">
+  📋<span v-if="logNew && !logOpen" class="log-badge">{{ logNew }}</span>
+</button>
+<div v-if="logOpen" class="modal-mask" @click.self="logOpen = false">
+  <div class="modal log-modal">
+    <div class="modal-head">
+      <div class="modal-title">运行日志</div>
+      <button class="btn btn-ghost btn-sm" @click="clearLog">清空</button>
+    </div>
+    <div class="modal-body">
+      <div class="logbox tall" ref="logBox">
+        <div v-for="line in logLines" :key="line.seq" class="log-line" :class="'level-' + line.level.toLowerCase()">
+          <span class="log-level">{{ line.level }}</span>
+          <span class="log-msg">{{ line.msg }}</span>
+        </div>
+        <div v-if="!logLines.length" class="log-empty">（暂无日志）</div>
+      </div>
+    </div>
+  </div>
 </div>
 
 <!-- ============ Toast ============ -->
