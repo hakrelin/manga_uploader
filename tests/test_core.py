@@ -123,6 +123,47 @@ class TestConfig(unittest.TestCase):
         self.assertIn("作者：加陽きら", bili["description"])
         self.assertIn("[Chinese]", out["platforms_content"]["ehentai"]["gname_en"])
 
+    def test_save_config_accepts_frontend_wrapped_payload(self):
+        """前端 POST /api/config 发送 {config:{common,platforms}}；
+        保存必须真实落盘（回归：曾因未解包 config 而静默无效）。"""
+        import tempfile
+        from pathlib import Path
+
+        from manga_uploader.webui import save_config
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_path = Path(tmp) / "config.yaml"
+            cfg_path.write_text(
+                "common:\n  max_bytes_mb: 10\nplatforms:\n"
+                "  ehentai:\n    enabled: false\n    settings:\n"
+                "      category_label: Doujinshi\n",
+                encoding="utf-8",
+            )
+            wrapped = {
+                "config": {
+                    "common": {"max_bytes_mb": 25},
+                    "platforms": {
+                        "ehentai": {
+                            "enabled": True,
+                            "cookies": {"ipb_member_id": "1"},
+                            "settings": {"category_label": "Manga"},
+                        }
+                    },
+                }
+            }
+            # 与 _api_config 修复一致：先取 data["config"] 再保存
+            payload = wrapped.get("config")
+            save_config(cfg_path, payload)
+            text = cfg_path.read_text(encoding="utf-8")
+            self.assertIn("max_bytes_mb: 25", text)
+            self.assertIn("enabled: true", text)
+            self.assertIn("category_label: Manga", text)
+            reloaded = load_config(str(cfg_path))
+            self.assertTrue(reloaded.platforms["ehentai"].enabled)
+            self.assertEqual(
+                reloaded.platforms["ehentai"].get("category_label"), "Manga"
+            )
+
 
 class TestEhentaiFormParser(unittest.TestCase):
     HTML = """

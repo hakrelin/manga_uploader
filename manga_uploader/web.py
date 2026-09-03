@@ -794,8 +794,9 @@ class WebHandler(BaseHTTPRequestHandler):
             return Path.cwd() / "config.yaml"
 
     def _api_config(self) -> None:
-        payload = self._read_json()
-        if not payload:
+        data = self._read_json()
+        payload = data.get("config")
+        if not isinstance(payload, dict) or not payload:
             self._json(400, {"error": "空请求体"})
             return
         try:
