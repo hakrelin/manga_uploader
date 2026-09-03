@@ -70,7 +70,7 @@ DEFAULT_SETTINGS: dict[str, dict[str, Any]] = {
     "tieba": {
         "forum": "",
         "fid": 0,
-        "max_pages_per_post": 50,
+        "max_pages_per_post": 9,   # 每楼最多 9 张（网页端硬上限）；第 1 楼固定只放封面
         "upload_sleep": 1.0,
         "title_suffix": "【漫画】",
         "use_system_proxy": False,

@@ -108,11 +108,11 @@ class _Handler(BaseHTTPRequestHandler):
             self._reply_json({"no": -1, "error": "unknown"})
 
 
-def _make_chapter(tmp: Path) -> Chapter:
+def _make_chapter(tmp: Path, count: int = 10) -> Chapter:
     folder = tmp / "ch01"
     folder.mkdir(parents=True)
     pages = []
-    for i in range(1, 11):
+    for i in range(1, count + 1):
         page = folder / f"{i:03d}.png"
         Image.new("RGB", (200, 300), (i * 25 % 255, 80, 100)).save(page)
         pages.append(page)
@@ -183,7 +183,7 @@ class TestTiebaPublisherMock(unittest.TestCase):
         replies = [r for r in _Handler.log if "post/add" in r["path"]]
         self.assertEqual(len(uploads), 10)
         self.assertEqual(len(threads), 1)
-        self.assertEqual(len(replies), 3)  # 10 页 / 每楼 3 张 -> 1 楼主题 + 3 楼回复
+        self.assertEqual(len(replies), 3)  # 封面 1 楼 + 剩余 9 页每楼 3 张 -> 3 楼回复
 
         # 校验新版上传字段与 sign
         body = uploads[0]["body"].decode("utf-8", errors="replace")
@@ -212,13 +212,33 @@ class TestTiebaPublisherMock(unittest.TestCase):
         self.assertTrue(first["title"][0].startswith("【漫画】"))
         self.assertIn("贴吧简介", first["content"][0])
         self.assertIn("#(pic,301522372501,200,300)", first["content"][0])
+        self.assertEqual(first["content"][0].count("#(pic,"), 1)  # 一楼只放封面
         self.assertEqual(first["is_pictxt"][0], "1")
         self.assertIn("needImage", first["ext"][0])
         reply = parse_qs(replies[0]["body"].decode("utf-8"))
         self.assertEqual(reply["tid"][0], "123")
-        self.assertIn("#(pic,301522372501,200,300)", reply["content"][0])
+        self.assertEqual(reply["content"][0].count("#(pic,"), 3)
         self.assertNotIn("贴吧简介", reply["content"][0])
         self.assertNotIn("rich_text", reply)
+
+    def test_cover_first_and_nine_cap(self):
+        # 配置写 50 也会被平台 9 张上限截断：封面 1 楼，19 页 -> 2 个回复楼
+        cfg = PlatformConfig(
+            name="tieba",
+            cookies={"BDUSS": "x"},
+            settings={"forum": "漫画吧", "max_pages_per_post": 50, "upload_sleep": 0},
+        )
+        publisher = TiebaPublisher(cfg, CommonConfig(output_dir=str(Path(self.tmp.name) / "out")))
+        publisher.publish(_make_chapter(Path(self.tmp.name), count=19))
+        threads = [r for r in _Handler.log if "thread/add" in r["path"]]
+        replies = [r for r in _Handler.log if "post/add" in r["path"]]
+        self.assertEqual(len(threads), 1)
+        self.assertEqual(len(replies), 2)
+        first = parse_qs(threads[0]["body"].decode("utf-8"))
+        self.assertEqual(first["content"][0].count("#(pic,"), 1)
+        for reply in replies:
+            body = parse_qs(reply["body"].decode("utf-8"))
+            self.assertLessEqual(body["content"][0].count("#(pic,"), 9)
 
     def test_pc_sign_algorithm(self):
         signed = tieba_mod._pc_sign({"b": 2, "a": "1", "chunk": tieba_mod.TIEBA_FILE_STRING})

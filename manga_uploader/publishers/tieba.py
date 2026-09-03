@@ -61,7 +61,7 @@ def _fmt_error(code: object, message: str) -> str:
         "230265": "未登录或登录状态失效，请更新 Cookie",
         "230308": "没有发帖权限（等级/会员/吧规限制或表单校验未通过）",
         "230808": "每层楼插入的视频不能超过 1 个",
-        "230809": "每层楼插入的图片不能超过 10 张，请调小 max_pages_per_post",
+        "230809": "每层楼插入的图片不能超过 9 张，请调小 max_pages_per_post",
         "230814": "每层楼插入的表情不能超过 10 个",
         "230815": "每层楼插入的音乐不能超过 10 个",
         "230871": "发贴太频繁，请等待一段时间再试",
@@ -141,7 +141,16 @@ class TiebaPublisher(BasePublisher):
 
     @property
     def max_pages_per_post(self) -> int:
-        return max(1, int(self.cfg.get("max_pages_per_post", 50)))
+        # 贴吧网页端每楼最多 9 张，配置文件里更大的值会被截断
+        return max(1, min(9, int(self.cfg.get("max_pages_per_post", 9))))
+
+    def _floor_plan(self, pages: list) -> tuple[list, list[list]]:
+        """分楼：第一楼只放封面（第一张），其余页面每楼最多 max_pages_per_post 张。"""
+        if not pages:
+            return [], []
+        cover = pages[:1]
+        rest = pages[1:]
+        return cover, chunk_list(rest, self.max_pages_per_post)
 
     def _forum(self, chapter: Chapter) -> str:
         meta = self._meta(chapter)
@@ -165,11 +174,11 @@ class TiebaPublisher(BasePublisher):
 
     def plan(self, chapter: Chapter) -> list[str]:
         pages = len(chapter.pages)
-        posts = max(1, -(-pages // self.max_pages_per_post))
+        posts = 1 + max(0, -(-max(pages - 1, 0) // self.max_pages_per_post))
         return [
             f"发帖标题：{chapter.title}",
             f"目标贴吧：{self._forum(chapter)}",
-            f"上传 {pages} 张图片（每楼最多 {self.max_pages_per_post} 张，预计 1 帖 {posts} 楼）",
+            f"上传 {pages} 张图片：第 1 楼放封面，其余每楼最多 {self.max_pages_per_post} 张，预计 1 帖 {posts} 楼",
             f"简介：{(chapter.description[:80] + '…') if len(chapter.description) > 80 else chapter.description}",
         ]
 
@@ -419,7 +428,8 @@ class TiebaPublisher(BasePublisher):
 
             published: list[str] = []
             errors: list[str] = []
-            groups = chunk_list(pages, self.max_pages_per_post)
+            cover_group, rest_groups = self._floor_plan(pages)
+            groups = [cover_group] + rest_groups
             thread_tid: str | None = None
             for index, group in enumerate(groups, 1):
                 try:
