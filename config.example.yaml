@@ -19,6 +19,15 @@ common:
   proxy_url: ""        # 手动代理，如 http://127.0.0.1:7890（留空则直连）
   use_system_proxy: false  # true 时自动读取 Windows 系统代理；海外站连不上再开
 
+  # 罗马音 AI 转换（可选）：填 OpenAI 兼容接口后，“展会/作者/社团/日文标题
+  # → 罗马音（AI）”按钮会优先调用大模型自动分词读音；失败自动回退本地引擎。
+  ai_enabled: false
+  ai_base_url: ""       # 例如 https://api.deepseek.com/v1（/v1 可省略）
+  ai_api_key: ""
+  ai_model: ""          # 例如 deepseek-chat / gpt-4o-mini
+  ai_prompt: ""         # 留空用内置默认提示词（转换结果格式见 composer.ai_to_romaji）
+  ai_timeout: 60
+
 platforms:
   bilibili:
     enabled: true

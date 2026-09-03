@@ -143,6 +143,10 @@ RAR / 7z 请先解压成文件夹再导入。
 - 同人专有读法（例大祭、紅楼夢、博麗、輝針城 等）放在
   `manga_uploader/data/romaji_overrides.json`，GUI 里有“编辑罗马音词典”按钮，
   格式为 `"原文": "假名读音"`，可自行增补；转换结果仍可在文本框里手动微调。
+- 本地引擎整体不够准时可接 **AI 接口**（任意 OpenAI 兼容 Chat Completions，如
+  DeepSeek / OpenAI / Kimi）：GUI“平台账号”页最下方填 Base URL、API Key、模型，
+  勾选启用后点漫画信息页的“… → 罗马音（AI）”按钮；接口返回格式不稳定时可在
+  “展开自定义提示词…”里补充约束。AI 失败会自动回退本地引擎，不会阻塞发布。
 
 ## Cookie 获取
 

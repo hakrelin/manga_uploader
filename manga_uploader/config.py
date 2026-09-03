@@ -41,6 +41,13 @@ class CommonConfig:
     # 代理：proxy_url 手动指定 http(s)://…；use_system_proxy 读取 Windows 系统代理
     proxy_url: str = ""
     use_system_proxy: bool = False
+    # 罗马音 AI 转换（OpenAI 兼容接口；空 api_key 时自动回退本地 pykakasi）
+    ai_enabled: bool = False
+    ai_base_url: str = ""
+    ai_api_key: str = ""
+    ai_model: str = ""
+    ai_prompt: str = ""
+    ai_timeout: float = 60.0
 
 
 @dataclass

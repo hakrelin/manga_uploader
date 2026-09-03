@@ -1,4 +1,5 @@
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from manga_uploader import composer
@@ -69,6 +70,67 @@ class TestComposer(unittest.TestCase):
             "Bannougata Tensai Hada Bishoujo Shujinkou No Yuuutsu",
         )
         self.assertEqual(composer.to_romaji("こんにちは 世界"), "konnichiha sekai")
+
+    def test_ai_config_ready(self):
+        self.assertFalse(composer.ai_config_is_ready({}))
+        ready = {
+            "enabled": True,
+            "base_url": "https://api.example.com/v1",
+            "api_key": "sk-test",
+            "model": "m",
+        }
+        self.assertTrue(composer.ai_config_is_ready(ready))
+        self.assertFalse(composer.ai_config_is_ready({**ready, "enabled": False}))
+        self.assertFalse(composer.ai_config_is_ready({**ready, "api_key": ""}))
+
+    def test_ai_endpoint(self):
+        self.assertEqual(
+            composer._ai_endpoint("https://api.deepseek.com"),
+            "https://api.deepseek.com/v1/chat/completions",
+        )
+        self.assertEqual(
+            composer._ai_endpoint("https://api.openai.com/v1"),
+            "https://api.openai.com/v1/chat/completions",
+        )
+        self.assertEqual(
+            composer._ai_endpoint("https://x.test/v1/chat/completions"),
+            "https://x.test/v1/chat/completions",
+        )
+
+    def test_ai_to_romaji_parses_response(self):
+        fake = mock.Mock()
+        fake.status_code = 200
+        fake.json.return_value = {
+            "choices": [
+                {"message": {"content": "```\nIchidai Taisa\n```"}}
+            ]
+        }
+        cfg = {
+            "enabled": True,
+            "base_url": "https://api.example.com/v1",
+            "api_key": "sk-test",
+            "model": "m",
+        }
+        with mock.patch("requests.post", return_value=fake) as post:
+            result = composer.ai_to_romaji("一代大佐", kind="name", cfg=cfg)
+        self.assertEqual(result, "Ichidai Taisa")
+        payload = post.call_args.kwargs["json"]
+        self.assertEqual(payload["model"], "m")
+        self.assertEqual(payload["messages"][1]["content"], "一代大佐")
+
+    def test_ai_to_romaji_raises_on_error(self):
+        fake = mock.Mock()
+        fake.status_code = 401
+        fake.text = "invalid api key"
+        cfg = {
+            "enabled": True,
+            "base_url": "https://api.example.com",
+            "api_key": "bad",
+            "model": "m",
+        }
+        with mock.patch("requests.post", return_value=fake):
+            with self.assertRaises(RuntimeError):
+                composer.ai_to_romaji("例大祭", kind="name", cfg=cfg)
 
     def test_ehentai_title_en_matches_example_shape(self):
         title = composer.ehentai_title_en(_chapter())

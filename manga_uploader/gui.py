@@ -248,6 +248,14 @@ class UploaderApp:
         self.verbose_var = tk.BooleanVar(value=self.app.common.verbose)
         self.use_system_proxy_var = tk.BooleanVar(value=self.app.common.use_system_proxy)
         self.proxy_url_var = tk.StringVar(value=self.app.common.proxy_url)
+        # AI 罗马音转换配置
+        self.ai_enabled_var = tk.BooleanVar(value=bool(getattr(self.app.common, "ai_enabled", False)))
+        self.ai_base_url_var = tk.StringVar(value=str(getattr(self.app.common, "ai_base_url", "")))
+        self.ai_api_key_var = tk.StringVar(value=str(getattr(self.app.common, "ai_api_key", "")))
+        self.ai_model_var = tk.StringVar(value=str(getattr(self.app.common, "ai_model", "")))
+        self.ai_prompt_var = tk.StringVar(value=str(getattr(self.app.common, "ai_prompt", "")))
+        self.ai_timeout_var = tk.StringVar(value=str(getattr(self.app.common, "ai_timeout", 60)))
+        self.ai_status_var = tk.StringVar(value="")
 
         # 平台相关变量（先建空，_build_account_tab 里填充）
         self.enabled_vars: dict[str, tk.BooleanVar] = {}
@@ -378,6 +386,102 @@ class UploaderApp:
         proxy = ttk.LabelFrame(body, text="网络代理", padding=(8, 6))
         proxy.grid(row=len(PLATFORM_CARDS) + 1, column=0, sticky="ew", pady=(8, 4))
         self._build_proxy_ui(proxy)
+
+        ai = ttk.LabelFrame(body, text="AI 罗马音转换（OpenAI 兼容接口，可选）", padding=(8, 6))
+        ai.grid(row=len(PLATFORM_CARDS) + 2, column=0, sticky="ew", pady=(4, 10))
+        self._build_ai_ui(ai)
+
+    def _ai_config_from_ui(self) -> dict[str, Any]:
+        """把 AI 输入框汇总成 composer.ai_to_romaji 可用的 cfg。"""
+        return {
+            "enabled": self.ai_enabled_var.get(),
+            "base_url": self.ai_base_url_var.get().strip(),
+            "api_key": self.ai_api_key_var.get().strip(),
+            "model": self.ai_model_var.get().strip(),
+            "prompt": self.ai_prompt_var.get().strip(),
+            "timeout": float(self.ai_timeout_var.get() or 60),
+            "proxy_url": self.proxy_url_var.get().strip(),
+        }
+
+    def _build_ai_ui(self, parent: tk.Widget) -> None:
+        parent.columnconfigure(1, weight=1)
+        hint = (
+            "本地引擎无法准确读取同人专名时，可填任意 OpenAI 兼容接口（OpenAI / DeepSeek / "
+            "Kimi / 硅基流动等）。“展会/作者/社团→罗马音”与“日文标题→罗马音标题”在勾选"
+            "“使用 AI”后优先调 AI，失败自动回退本地。接口地址示例："
+            "https://api.deepseek.com/v1 或 https://api.openai.com/v1"
+        )
+        ttk.Label(parent, text=hint, wraplength=930, foreground="#555").grid(
+            row=0, column=0, columnspan=4, sticky="w"
+        )
+        ttk.Checkbutton(
+            parent, text="使用 AI 转换（自动保存后生效）", variable=self.ai_enabled_var
+        ).grid(row=1, column=0, columnspan=4, sticky="w", pady=(6, 0))
+        ttk.Label(parent, text="接口地址 Base URL：").grid(row=2, column=0, sticky="w", pady=4)
+        ttk.Entry(parent, textvariable=self.ai_base_url_var, width=72).grid(
+            row=2, column=1, columnspan=3, sticky="ew", pady=4
+        )
+        ttk.Label(parent, text="API Key：").grid(row=3, column=0, sticky="w", pady=4)
+        key_entry = ttk.Entry(parent, textvariable=self.ai_api_key_var, width=72, show="*")
+        key_entry.grid(row=3, column=1, columnspan=3, sticky="ew", pady=4)
+        ttk.Label(parent, text="模型 Model：").grid(row=4, column=0, sticky="w", pady=4)
+        ttk.Entry(parent, textvariable=self.ai_model_var, width=72).grid(
+            row=4, column=1, columnspan=3, sticky="ew", pady=4
+        )
+        ttk.Label(parent, text="超时(秒)：").grid(row=5, column=0, sticky="w", pady=4)
+        ttk.Entry(parent, textvariable=self.ai_timeout_var, width=10).grid(
+            row=5, column=1, sticky="w", pady=4
+        )
+        ttk.Button(parent, text="测试接口", command=self._test_ai).grid(
+            row=6, column=0, sticky="w", pady=(2, 0)
+        )
+        ttk.Button(parent, text="展开自定义提示词…", command=self._edit_ai_prompt).grid(
+            row=6, column=1, sticky="w", pady=(2, 0)
+        )
+        ttk.Label(parent, textvariable=self.ai_status_var, foreground="#666", wraplength=700).grid(
+            row=7, column=0, columnspan=4, sticky="w", pady=(2, 0)
+        )
+
+    def _edit_ai_prompt(self) -> None:
+        """弹窗编辑自定义系统提示词（留空 = 使用内置默认）。"""
+        win = tk.Toplevel(self.root)
+        win.title("AI 转换提示词（可选）")
+        win.transient(self.root)
+        win.geometry("680x420")
+        ttk.Label(
+            win,
+            text="留空使用内置默认；如模型输出格式不稳定，可在此补充约束。",
+            wraplength=640,
+        ).pack(padx=10, pady=(8, 4), anchor="w")
+        text = tk.Text(win, wrap="word")
+        text.pack(fill="both", expand=True, padx=10, pady=4)
+        text.insert("1.0", self.ai_prompt_var.get())
+
+        def _save() -> None:
+            self.ai_prompt_var.set(text.get("1.0", "end").strip())
+            win.destroy()
+
+        btns = ttk.Frame(win)
+        btns.pack(fill="x", padx=10, pady=8)
+        ttk.Button(btns, text="保存", command=_save).pack(side="left", padx=4)
+        ttk.Button(btns, text="取消", command=win.destroy).pack(side="left", padx=4)
+
+    def _test_ai(self) -> None:
+        """用一个固定样例调用 AI 接口，验证地址/key/model。"""
+
+        def _worker() -> None:
+            try:
+                cfg = self._ai_config_from_ui()
+                cfg["prompt"] = ""
+                result = composer.ai_to_romaji("一代大佐", kind="name", cfg=cfg)
+                message = f"测试成功：“一代大佐” → {result}（失败时自动回退本地引擎）"
+                self.root.after(0, lambda: self.ai_status_var.set(message))
+            except Exception as exc:
+                self.root.after(
+                    0, lambda: self.ai_status_var.set(f"测试失败：{exc}")
+                )
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     def _build_proxy_ui(self, parent: tk.Widget) -> None:
         hint = (
@@ -855,6 +959,16 @@ class UploaderApp:
         ).pack(side="left", padx=4)
         ttk.Button(
             buttons,
+            text="展会/作者/社团 → 罗马音（AI）",
+            command=self._fill_romaji_names_ai,
+        ).pack(side="left", padx=4)
+        ttk.Button(
+            buttons,
+            text="日文标题 → 罗马音标题（AI）",
+            command=self._fill_romaji_title_ai,
+        ).pack(side="left", padx=4)
+        ttk.Button(
+            buttons,
             text="保存漫画信息",
             command=self._save_comic_meta,
         ).pack(side="left", padx=4)
@@ -864,11 +978,16 @@ class UploaderApp:
             command=self._open_romaji_dict,
         ).pack(side="left", padx=4)
         engine = composer.romaji_engine_status()
-        engine_text = (
-            "汉字读音引擎：pykakasi（已启用）"
-            if engine == "pykakasi"
-            else "汉字读音引擎：未安装 pykakasi（汉字无法自动转读音，可 pip install pykakasi）"
+        if engine == "pykakasi":
+            base = "汉字读音引擎：pykakasi（已启用）"
+        else:
+            base = "汉字读音引擎：未安装 pykakasi（汉字无法自动转读音，可 pip install pykakasi）"
+        ai_state = (
+            "AI 转换已开启（在“平台账号”页配置）"
+            if self.ai_enabled_var.get()
+            else "AI 转换未开启（本地引擎）"
         )
+        engine_text = f"{base}；{ai_state}"
         ttk.Label(body, text=engine_text, foreground="#888").grid(
             row=row_index + 3, column=0, columnspan=4, sticky="w", pady=(2, 0)
         )
@@ -924,6 +1043,81 @@ class UploaderApp:
         jp = self._meta_value("title_jp")
         if jp and not self._meta_value("title_en"):
             self._set_meta_value("title_en", composer.to_romaji(jp))
+
+    # ---- AI 罗马音转换（网络调用放后台线程，失败回退本地） ----
+
+    def _convert_one_ai(self, source: str, kind: str) -> str:
+        cfg = self._ai_config_from_ui()
+        if not composer.ai_config_is_ready(cfg):
+            raise RuntimeError("AI 未配置完整（需勾选使用 AI 并填写接口地址/API Key/模型）")
+        return composer.ai_to_romaji(source, kind=kind, cfg=cfg)
+
+    def _fill_romaji_names_ai(self) -> None:
+        fields = [
+            ("event", "event_en", "name"),
+            ("author", "author_en", "name"),
+            ("circle", "circle_en", "name"),
+        ]
+        # 主线程读取，避免工作线程触碰 tk 变量
+        pending: list[tuple[str, str, str, str]] = []
+        for source_key, target_key, kind in fields:
+            source = self._meta_value(source_key)
+            if not source or self._meta_value(target_key):
+                continue
+            pending.append((source_key, target_key, kind, source))
+
+        def _worker() -> None:
+            try:
+                results: dict[str, str] = {}
+                for _source_key, target_key, kind, source in pending:
+                    results[target_key] = self._convert_one_ai(source, kind)
+
+                def _apply() -> None:
+                    for target_key, value in results.items():
+                        self._set_meta_value(target_key, value)
+                    self._info("AI 转换完成：展会/作者/社团罗马音已填入（可继续手动微调）")
+
+                self.root.after(0, _apply)
+            except Exception as exc:
+                self.root.after(
+                    0,
+                    lambda: self._warn(
+                        "AI 转换失败（未改动原文，请改用本地转换或检查接口）："
+                        + str(exc)
+                    ),
+                )
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _fill_romaji_title_ai(self) -> None:
+        jp = self._meta_value("title_jp")
+        if not jp:
+            self._warn("请先填写“日文原标题”")
+            return
+        if self._meta_value("title_en"):
+            self._warn("英文标题已填写；如需 AI 重转请先清空")
+            return
+
+        def _worker() -> None:
+            try:
+                result = self._convert_one_ai(jp, "title")
+                self.root.after(
+                    0,
+                    lambda: (
+                        self._set_meta_value("title_en", result),
+                        self._info("AI 转换完成：英文标题已填入（可继续手动微调）"),
+                    ),
+                )
+            except Exception as exc:
+                self.root.after(
+                    0,
+                    lambda: self._warn(
+                        "AI 转换失败（未改动原文，请改用本地转换或检查接口）："
+                        + str(exc)
+                    ),
+                )
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     # ---- 各平台发布内容（自动生成，可手动修改后保存） ----
 
@@ -1511,6 +1705,7 @@ class UploaderApp:
             max_height = max(0, int(float(self.max_height_var.get())))
             quality = min(95, max(10, int(float(self.quality_var.get()))))
             max_mb = max(0.0, float(self.max_mb_var.get()))
+            ai_timeout = max(1.0, float(self.ai_timeout_var.get() or 60))
         except ValueError as exc:
             raise ConfigError(f"压缩/通用数值填写有误：{exc}") from exc
 
@@ -1528,6 +1723,12 @@ class UploaderApp:
             verbose=self.verbose_var.get(),
             proxy_url=self.proxy_url_var.get().strip(),
             use_system_proxy=self.use_system_proxy_var.get(),
+            ai_enabled=self.ai_enabled_var.get(),
+            ai_base_url=self.ai_base_url_var.get().strip(),
+            ai_api_key=self.ai_api_key_var.get().strip(),
+            ai_model=self.ai_model_var.get().strip(),
+            ai_prompt=self.ai_prompt_var.get().strip(),
+            ai_timeout=ai_timeout,
         )
         platforms: dict[str, PlatformConfig] = {}
         for card in PLATFORM_CARDS:
@@ -2242,6 +2443,12 @@ class UploaderApp:
             "verbose": app.common.verbose,
             "proxy_url": app.common.proxy_url,
             "use_system_proxy": app.common.use_system_proxy,
+            "ai_enabled": app.common.ai_enabled,
+            "ai_base_url": app.common.ai_base_url,
+            "ai_api_key": app.common.ai_api_key,
+            "ai_model": app.common.ai_model,
+            "ai_prompt": app.common.ai_prompt,
+            "ai_timeout": app.common.ai_timeout,
         }
         for key, cfg in app.platforms.items():
             item = raw["platforms"].get(key)

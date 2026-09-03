@@ -47,6 +47,8 @@ from .models import Chapter
 #      未安装时回退到下面的本地假名表，汉字部分仍会保留原文。
 #   2) 覆盖词典 data/romaji_overrides.json：pykakasi 会把同人专有名词（例大祭、
 #      红魔郷、博麗神社等）逐字读错，此处按“最长原文匹配”先切块再统一转写。
+#   3) AI 转换（可选，OpenAI 兼容接口）：本地引擎整体质量不足时可改用大模型
+#      自动分词/读音，prompt 见 _ai_prompts；网络失败自动回退本地引擎。
 
 _CJK_OR_KANA = re.compile(r"[\u3040-\u30ff\u4e00-\u9fff\uf900-\ufaff\u3400-\u4dbf]")
 _KANA_ONLY = re.compile(r"[\u3040-\u30ff]")
@@ -93,6 +95,127 @@ def _pykakasi():
 def romaji_engine_status() -> str:
     """给 GUI 用的引擎状态文案。"""
     return "pykakasi" if _pykakasi() is not None else "basic"
+
+
+# ---------- AI 转换（OpenAI 兼容 Chat Completions） ----------
+
+_AI_DEFAULT_NAME_PROMPT = (
+    "你是日文罗马音转换器。把用户输入的日文（可能含汉字/假名/英文混合）转成 ASCII 罗马音，"
+    "遵循 Hepburn 式习惯：し→shi、ち→chi、つ→tsu、じ→ji、ふ→fu、長音用双写元音"
+    "（おう→ou、こう→kou、コーヒー→koohii），促音双写后续辅音（きって→kitte）。\n"
+    "规则：\n"
+    "1. 只输出转换结果，不解释、不加引号、不加 Markdown、不改写原文含义。\n"
+    "2. 英文/数字原样保留，词间与日文间用半角空格分隔。\n"
+    "3. 空格分隔的每个词首字母大写；专有名词按常识断词（社团/作者/展会名）。\n"
+    "4. 不确定读音的汉字优先给出最常用音读/训读；无法确定的字保留原字，绝不编造。\n"
+    "5. 输入本身已是拉丁字母时原样输出。\n"
+    "示例：\n"
+    "万能型天才肌美少女主人公の憂鬱 → Bannou-gata Tensai-hada Bishoujo Shujinkou no Yuuutsu\n"
+    "一代大佐 → Ichidai Taisa\n"
+    "サンシャインクリエイション → Sunshine Creation\n"
+    "こんにちは 世界 → Konnichiwa Sekai"
+)
+
+_AI_DEFAULT_TITLE_PROMPT = (
+    "你是日文标题罗马音转换器。把日文/日文混合标题转成适合 e-hentai 英文标题的罗马音，"
+    "遵循 Hepburn 式习惯（し→shi、ち→chi、つ→tsu、じ→ji、ふ→fu；長音双写元音；"
+    "促音双写；ん 在元音/や行前写作 n'）。\n"
+    "规则：\n"
+    "1. 只输出转换结果，不解释、不加引号、不加 Markdown。\n"
+    "2. 助词（の/を/は/へ/が 等）独立成词并在首字母大写时小写（no、wo、ha 等）。\n"
+    "3. 词语按语义断开，用空格分隔；同一熟语/词内若有明显结构（如 万能+型、天才+肌）"
+    "可用连字符保持可读，连字符后也首字母大写；不要为每个汉字加连字符。\n"
+    "4. 英文/数字原样保留。不确定读音的字保留原字，绝不编造。\n"
+    "5. 输入已是罗马音时原样输出。\n"
+    "示例：\n"
+    "万能型天才肌美少女主人公の憂鬱 → Bannou-gata Tensai-hada Bishoujo Shujinkou no Yuuutsu\n"
+    "俺の妹がこんなに可愛いわけがない → Ore no Imouto ga Konnani Kawaii Wake ga Nai\n"
+    "東方紅楼夢 → Touhou Kouroumu"
+)
+
+
+def ai_config_is_ready(cfg: dict[str, Any]) -> bool:
+    """是否具备 AI 转换条件（开关+地址+key+模型）。"""
+    try:
+        return bool(
+            cfg.get("enabled")
+            and str(cfg.get("base_url") or "").strip()
+            and str(cfg.get("api_key") or "").strip()
+            and str(cfg.get("model") or "").strip()
+        )
+    except Exception:
+        return False
+
+
+def _ai_endpoint(base_url: str) -> str:
+    base = base_url.strip().rstrip("/")
+    if base.endswith("/chat/completions"):
+        return base
+    if base.endswith("/v1"):
+        return base + "/chat/completions"
+    return base + "/v1/chat/completions"
+
+
+def _ai_request(text: str, system_prompt: str, cfg: dict[str, Any]) -> str:
+    """同步调用 OpenAI 兼容接口；失败抛出带可读信息的异常。"""
+    import requests  # 延迟导入，避免 GUI 首屏依赖
+
+    base_url = str(cfg.get("base_url") or "").strip()
+    api_key = str(cfg.get("api_key") or "").strip()
+    model = str(cfg.get("model") or "").strip()
+    timeout = float(cfg.get("timeout") or 60)
+    url = _ai_endpoint(base_url)
+    payload: dict[str, Any] = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": text},
+        ],
+        "temperature": 0.2,
+    }
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+    }
+    proxy_url = str(cfg.get("proxy_url") or "").strip() or None
+    resp = requests.post(
+        url,
+        json=payload,
+        headers=headers,
+        timeout=timeout,
+        proxies={"http": proxy_url, "https": proxy_url} if proxy_url else None,
+    )
+    if resp.status_code >= 400:
+        raise RuntimeError(f"AI 接口返回 HTTP {resp.status_code}: {resp.text[:300]}")
+    data = resp.json()
+    content = (
+        (data.get("choices") or [{}])[0]
+        .get("message", {})
+        .get("content", "")
+    )
+    content = (content or "").strip()
+    if not content:
+        raise RuntimeError("AI 返回内容为空")
+    return content
+
+
+def ai_to_romaji(text: str, *, kind: str = "name", cfg: dict[str, Any] | None = None) -> str:
+    """用 AI 把日文转成罗马音；kind=name/title 选择不同默认 prompt。
+
+    cfg 结构：{enabled, base_url, api_key, model, prompt, timeout, proxy_url}。
+    prompt 留空使用内置默认；失败（网络/接口/解析）抛异常由调用方决定是否回退。
+    """
+    if not text.strip():
+        return ""
+    cfg = cfg or {}
+    prompt = str(cfg.get("prompt") or "").strip() or (
+        _AI_DEFAULT_TITLE_PROMPT if kind == "title" else _AI_DEFAULT_NAME_PROMPT
+    )
+    raw = _ai_request(text, prompt, cfg)
+    raw = re.sub(r"^```[a-zA-Z]*\s*", "", raw).strip()
+    raw = re.sub(r"\s*```$", "", raw).strip()
+    raw = raw.strip("\"'“”‘’")
+    return raw
 
 
 def _normalize_width(text: str) -> str:
