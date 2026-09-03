@@ -91,9 +91,11 @@ const EXTRA_LABELS = {
   language_label: "画廊语言",
   langtype: "语言类型",
   title_jpn: "默认日文标题",
-  max_pages_per_post: "单帖图片上限（默认 30）",
+  image_text_max_pages: "图文阈值（≤N 页发图文）",
+  article_max_pages: "文章单帖上限",
   publish_draft: "只存草稿（true/false）",
-  topic_id: "发布社区 id（默认 1=PC游戏）",
+  topic_ids: "关联社区 id（逗号分隔）",
+  source: "站外转载来源",
 };
 
 const NAV_ITEMS = [

@@ -118,9 +118,11 @@ PLATFORM_CARDS: list[dict[str, Any]] = [
         "hint": "打开 xiaoheihe.cn 并登录后，按 F12 → Network → 复制任意请求的 Cookie 头整段粘贴。"
         "每帖最多 30 张图，超出自动拆帖；发布到 PC游戏 社区。",
         "extras": [
-            ("max_pages_per_post", "单帖图片上限（默认 30）"),
+            ("image_text_max_pages", "图文阈值（≤N 页发图文，默认 30）"),
+            ("article_max_pages", "文章单帖上限（默认 100）"),
             ("publish_draft", "true=只存草稿（不公开）"),
-            ("topic_id", "发布社区 id（默认 1=PC游戏）"),
+            ("topic_ids", "关联社区（默认 431327,477625）"),
+            ("source", "站外转载来源（默认 bilibili）"),
         ],
     },
 ]
@@ -133,9 +135,11 @@ EXTRA_OPTIONS: dict[str, Any] = {
     "langtype": None,
     "title_jpn": None,
     "forum": None,
-    "max_pages_per_post": None,
+    "image_text_max_pages": None,
+    "article_max_pages": None,
     "publish_draft": None,
-    "topic_id": None,
+    "topic_ids": None,
+    "source": None,
 }
 
 

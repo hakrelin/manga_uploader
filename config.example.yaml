@@ -88,9 +88,18 @@ platforms:
       # 的 Cookie 头（含 pkey/user_pkey/heybox_id/session_token 等）
       cookie: ""
     settings:
-      max_pages_per_post: 30   # 图文单帖上限（站点硬上限 30），超出自动拆帖
-      publish_draft: false     # true = 只保存草稿，可在创作中心检查后再手动发布
-      topic_id: 1              # 发布社区：1 = PC游戏（其他社区需先搜索确认 id）
+      # 自动选形式：≤30 页发图文，>30 页发文章（文章单帖上限 100，超出拆帖）
+      image_text_max_pages: 30
+      article_max_pages: 100
+      publish_draft: false     # true = 只保存草稿，可在创作中心草稿箱检查后再发布
+      # 关联社区（最多 2 个）：默认 东方夜雀食堂 + 东方冰之勇者记
+      topic_ids: "431327,477625"
+      hashtags: ""             # 关联话题（一般不填），逗号分隔的话题名
+      # 内容声明：漫画搬运（有授权）默认 转载/已授权/站外 bilibili
+      original: 0              # 1 原创 / 0 转载
+      declaration: 1           # 转载授权：1 已授权 / 2 未授权
+      trans_in_site: false     # 转载来源：false=站外；true=站内链接
+      source: "bilibili"       # 站外转载来源描述
       device_id: ""            # 留空用内置设备号；被风控时可换成浏览器指纹
       use_system_proxy: false  # 国内站默认直连
       proxy_url: ""            # 需要时再单独填
