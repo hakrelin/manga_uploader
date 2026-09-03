@@ -502,6 +502,10 @@ createApp({
         metaForm.author = m.author || "";
         metaForm.description = m.description || "";
         META_EXTRA.forEach((f) => { metaForm[f.key] = m[f.key] || ""; });
+        // 预填充：系列三字段留空时默认按东方系列填（仅表单，保存才写盘）
+        if (!metaForm.series) metaForm.series = "东方";
+        if (!metaForm.series_en) metaForm.series_en = "Touhou Project";
+        if (!metaForm.series_jp) metaForm.series_jp = "東方Project";
         const pc = r.platforms_content || {};
         Object.keys(PLATFORM_CONTENT_SCHEMA).forEach((plat) => {
           const saved = pc[plat] || {};
@@ -563,6 +567,14 @@ createApp({
       } finally {
         busy.value = false;
       }
+    }
+
+    // 预填系列（东方）：只填表单，需点「保存内容」写入 manga.json
+    function prefillTouhouSeries() {
+      metaForm.series = "东方";
+      metaForm.series_en = "Touhou Project";
+      metaForm.series_jp = "東方Project";
+      toastMsg("已预填系列：东方 / Touhou Project / 東方Project（点“保存内容”写入）");
     }
 
     async function saveMeta() {
@@ -777,7 +789,7 @@ createApp({
       saveConfig, openAccount, toggleExpand, openLogin,
       checkOne, checkAll, pasteCookie, qrLogin, detectProxy,
       fieldMapOpen, onSourceChange, pickDir, pickZip, loadComic, onDrop,
-      fillRomajiNames, fillRomajiTitle,
+      fillRomajiNames, fillRomajiTitle, prefillTouhouSeries,
       previewPlan, previewFull, publish, modalOk,
     };
   },
