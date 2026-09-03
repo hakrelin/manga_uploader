@@ -98,24 +98,37 @@ try {
 
           <!-- 已加载：编辑整本内容 -->
           <template v-else>
-            <div class="edit-grid">
-              <div class="field">
-                <label class="field-label">中文标题</label>
-                <input type="text" v-model="metaForm.title" class="input" placeholder="如 百年先の君へ">
+            <div class="meta-sec">
+              <div class="meta-sec-head">
+                <span class="meta-sec-title">基本信息（必填/常用）</span>
               </div>
-              <div class="field">
-                <label class="field-label">作者 / 画师<span class="field-hint"> 可点罗马音回填</span></label>
-                <input type="text" v-model="metaForm.author" class="input">
-              </div>
-              <div class="field field-wide">
-                <label class="field-label">简介 / 正文<span class="field-hint"> B站、贴吧发为正文 · 再漫画为漫画简介 · e-hentai 为上传者评论</span></label>
-                <textarea v-model="metaForm.description" class="textarea" rows="4"></textarea>
+              <div class="edit-grid">
+                <div class="field">
+                  <label class="field-label">中文标题</label>
+                  <input type="text" v-model="metaForm.title" class="input" placeholder="如 百年先の君へ">
+                </div>
+                <div class="field">
+                  <label class="field-label">日文原标题</label>
+                  <input type="text" v-model="metaForm.title_jp" class="input" placeholder="如 マリサよ安らかに">
+                </div>
+                <div class="field">
+                  <label class="field-label">作者 / 画师</label>
+                  <input type="text" v-model="metaForm.author" class="input">
+                </div>
+                <div class="field">
+                  <label class="field-label">社团</label>
+                  <input type="text" v-model="metaForm.circle" class="input">
+                </div>
+                <div class="field field-wide">
+                  <label class="field-label">简介 / 正文<span class="field-hint"> B站、贴吧发为正文 · 再漫画为漫画简介 · e-hentai 为上传者评论</span></label>
+                  <textarea v-model="metaForm.description" class="textarea" rows="4"></textarea>
+                </div>
               </div>
             </div>
 
             <div class="meta-sec">
               <div class="meta-sec-head">
-                <span class="meta-sec-title">展会 · 社团 · 汉化组 · 日英标题 · 系列 · 标签</span>
+                <span class="meta-sec-title">补充信息（罗马音自动生成 · 展会 · 系列 · 标签等）</span>
                 <div class="meta-sec-actions">
                   <button class="btn btn-ghost btn-sm" :disabled="busy" @click="fillRomajiNames">作者/社团/展会 → 罗马音</button>
                   <button class="btn btn-ghost btn-sm" :disabled="busy" @click="fillRomajiTitle">日文标题 → 英文标题</button>
@@ -123,15 +136,14 @@ try {
                 </div>
               </div>
               <div class="edit-grid">
-                <div v-for="f in META_EXTRA" :key="f.key" class="field" :class="{ 'field-wide': f.key === 'tags' }">
+                <div v-for="f in META_EXTRA_EXTRA" :key="f.key" class="field" :class="{ 'field-wide': f.key === 'tags' }">
                   <label class="field-label">{{ f.label }}</label>
-                  <input v-if="f.key !== 'chapter_name'" type="text" v-model="metaForm[f.key]" class="input">
-                  <input v-else type="text" v-model="metaForm[f.key]" class="input">
+                  <input type="text" v-model="metaForm[f.key]" class="input">
                 </div>
               </div>
-              <p class="hint-text">填日文原/汉字后点罗马音按钮自动生成英文标题、作者/社团罗马音；无 pykakasi 时汉字按基础假名表。</p>
+              <p class="hint-text">输入日文原/汉字后会自动调用本地引擎回填罗马音；系列/标签等可后补，随“保存内容”写入 manga.json。</p>
             </div>
-
+          </template>
             <div class="meta-sec">
               <details class="pc-fold">
                 <summary class="pc-fold-head">各平台发布内容（默认自动组合，可手改覆盖）</summary>

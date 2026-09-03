@@ -36,6 +36,23 @@ const META_EXTRA = [
   { key: "chapter_name", label: "章节名（默认短篇）" },
 ];
 
+// 次要/自动生成字段：基本信息（中文标题/日文标题/作者/社团/简介）已在
+// 上方单独陈列，这里放罗马音、展会、汉化组、系列、标签等补充项
+const META_EXTRA_EXTRA = [
+  { key: "event", label: "展会（如 C105）" },
+  { key: "event_en", label: "展会罗马音（自动）" },
+  { key: "author_en", label: "作者罗马音（自动）" },
+  { key: "circle_en", label: "社团罗马音（自动）" },
+  { key: "group", label: "汉化组（如 茶与金平糖汉化组）" },
+  { key: "title_en", label: "英文/罗马音标题（自动）" },
+  { key: "series", label: "系列/tag 中文（如 东方）" },
+  { key: "series_en", label: "系列英文（如 Touhou Project）" },
+  { key: "series_jp", label: "系列日文（如 東方Project）" },
+  { key: "language", label: "语言（Chinese）" },
+  { key: "tags", label: "标签（逗号分隔，如 东方,汉化）" },
+  { key: "chapter_name", label: "章节名（默认短篇）" },
+];
+
 // 各平台发布内容（对齐 composer.PLATFORM_SCHEMA；留空 = 自动组合）
 const PLATFORM_CONTENT_SCHEMA = {
   bilibili: [
@@ -851,7 +868,7 @@ createApp({
       logLines, logBox, logOpen, logNew, clearLog, toast, modal, lanAddr,
       theme, themeLabel, themeIcon, cycleTheme,
       aiForm, aiStatus, aiSave, aiTest, dictOpen,
-      PLAT_LABELS, pageUrl, META_EXTRA, PLATFORM_CONTENT_SCHEMA, platformContent,
+      PLAT_LABELS, pageUrl, META_EXTRA, META_EXTRA_EXTRA, PLATFORM_CONTENT_SCHEMA, platformContent,
       SOURCE_CHOICES, CATE_OPTIONS,
       markPlatformTouched,
       anyUnconfigured, publishTargetsText,
