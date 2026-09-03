@@ -18,6 +18,51 @@ const SOURCE_CHOICES = [
 
 const CATE_OPTIONS = { "1": "原创作品", "2": "原创汉化", "3": "个人扫漫", "4": "转载作品" };
 
+// 漫画信息 · 次级字段（展会/社团/汉化组/日英标题/系列/标签等，对齐 composer）
+const META_EXTRA = [
+  { key: "event", label: "展会（如 C105）" },
+  { key: "event_en", label: "展会罗马音" },
+  { key: "author_en", label: "作者罗马音" },
+  { key: "circle", label: "社团" },
+  { key: "circle_en", label: "社团罗马音" },
+  { key: "group", label: "汉化组（如 茶与金平糖汉化组）" },
+  { key: "title_jp", label: "日文原标题" },
+  { key: "title_en", label: "英文/罗马音标题" },
+  { key: "series", label: "系列/tag 中文（如 东方）" },
+  { key: "series_en", label: "系列英文（如 Touhou Project）" },
+  { key: "series_jp", label: "系列日文（如 東方Project）" },
+  { key: "language", label: "语言（Chinese）" },
+  { key: "tags", label: "标签（逗号分隔，如 东方,汉化）" },
+  { key: "chapter_name", label: "章节名（默认短篇）" },
+];
+
+// 各平台发布内容（对齐 composer.PLATFORM_SCHEMA；留空 = 自动组合）
+const PLATFORM_CONTENT_SCHEMA = {
+  bilibili: [
+    { key: "title", label: "标题（默认【汉化组】中文标题）", kind: "text" },
+    { key: "description", label: "正文（默认 作者/社团/简介）", kind: "textarea" },
+  ],
+  tieba: [
+    { key: "forum", label: "目标吧名", kind: "text" },
+    { key: "title", label: "标题", kind: "text" },
+    { key: "description", label: "正文", kind: "textarea" },
+  ],
+  ehentai: [
+    { key: "category", label: "画廊类型（如 Manga）", kind: "text" },
+    { key: "language", label: "画廊语言（如 Chinese）", kind: "text" },
+    { key: "langtype", label: "语言类型（0官方/1汉化/2改写）", kind: "text" },
+    { key: "gname_en", label: "英文标题", kind: "text" },
+    { key: "gname_jp", label: "日文标题", kind: "text" },
+    { key: "comment", label: "上传者评论", kind: "textarea" },
+  ],
+  zaimanhua: [
+    { key: "work_name", label: "作品名", kind: "text" },
+    { key: "chapter_name", label: "章节名（默认短篇）", kind: "text" },
+    { key: "introduction", label: "简介", kind: "textarea" },
+    { key: "cate", label: "作品类型（1原创/2汉化/3扫漫/4转载）", kind: "text" },
+  ],
+};
+
 const EXTRA_LABELS = {
   forum: "目标吧名",
   category_label: "默认分类",
@@ -97,6 +142,12 @@ createApp({
     const comicDir = ref("");
     const summary = ref(null);
     const metaForm = reactive({ title: "", author: "", description: "" });
+    META_EXTRA.forEach((f) => { metaForm[f.key] = ""; });
+    const platformContent = reactive({});
+    Object.keys(PLATFORM_CONTENT_SCHEMA).forEach((plat) => {
+      platformContent[plat] = {};
+      PLATFORM_CONTENT_SCHEMA[plat].forEach((f) => { platformContent[plat][f.key] = ""; });
+    });
     const dragOver = ref(false);
     const previewText = ref("");
     const previewChapters = ref([]);
@@ -109,6 +160,56 @@ createApp({
     const toast = ref("");
 
     const modal = ref(null);
+
+    // ---------------- AI 罗马音设置（config.yaml 顶层 ai 段） ----------------
+
+    const aiForm = reactive({ enabled: false, base_url: "", api_key: "", model: "", timeout: 60 });
+    const aiStatus = ref("");
+
+    async function loadAi() {
+      try {
+        const r = await api("/api/ai");
+        const ai = r.ai || {};
+        aiForm.enabled = !!ai.enabled;
+        aiForm.base_url = ai.base_url || "";
+        aiForm.api_key = ai.api_key || "";
+        aiForm.model = ai.model || "";
+        aiForm.timeout = Number(ai.timeout) || 60;
+      } catch (e) { /* 无 config.yaml 时静默用默认 */ }
+    }
+
+    async function aiSave() {
+      busy.value = true;
+      try {
+        await api("/api/ai", { method: "POST", json: true, body: JSON.stringify({ ai: { ...aiForm } }) });
+        aiStatus.value = "已保存" + (aiForm.enabled ? "（AI 转换已开启）" : "（AI 转换未开启）");
+        toastMsg("AI 设置已保存");
+      } catch (e) {
+        toastMsg("保存失败：" + e.message);
+      } finally {
+        busy.value = false;
+      }
+    }
+
+    async function aiTest() {
+      busy.value = true;
+      aiStatus.value = "测试中…";
+      try {
+        const r = await api("/api/ai/test", { method: "POST", json: true, body: JSON.stringify({ ai: { ...aiForm } }) });
+        aiStatus.value = r.ok ? `测试通过：例大祭 → ${r.result}` : "测试失败：" + (r.error || "未知");
+      } catch (e) {
+        aiStatus.value = "测试失败：" + e.message;
+      } finally {
+        busy.value = false;
+      }
+    }
+
+    function dictOpen() {
+      api("/api/dict").then((r) => {
+        const text = (r.rows || []).map(([k, v]) => `${k}=${v}`).join("\n");
+        modal.value = { kind: "dict", title: "罗马音覆盖词典", text };
+      }).catch((e) => toastMsg("读取词典失败：" + e.message));
+    }
 
     const lanAddr = window.location.host;
 
@@ -396,9 +497,18 @@ createApp({
           method: "POST", json: true, body: JSON.stringify({ dir: raw }),
         });
         summary.value = r;
-        metaForm.title = r.title || "";
-        metaForm.author = r.author || "";
-        metaForm.description = r.description || "";
+        const m = (r.meta || {});
+        metaForm.title = m.title || "";
+        metaForm.author = m.author || "";
+        metaForm.description = m.description || "";
+        META_EXTRA.forEach((f) => { metaForm[f.key] = m[f.key] || ""; });
+        const pc = r.platforms_content || {};
+        Object.keys(PLATFORM_CONTENT_SCHEMA).forEach((plat) => {
+          const saved = pc[plat] || {};
+          PLATFORM_CONTENT_SCHEMA[plat].forEach((f) => {
+            platformContent[plat][f.key] = saved[f.key] || "";
+          });
+        });
         await previewFull(); // 加载后自动弹出发布预览
       } catch (e) {
         summary.value = null;
@@ -415,13 +525,57 @@ createApp({
       previewText.value = "";
     }
 
+    function metaBook() {
+      // 只收集已知漫画信息字段（空串照传，后端负责删除）
+      const book = { title: metaForm.title, author: metaForm.author, description: metaForm.description };
+      META_EXTRA.forEach((f) => { book[f.key] = metaForm[f.key] || ""; });
+      return book;
+    }
+
+    async function fillRomajiNames() {
+      busy.value = true;
+      try {
+        const r = await api("/api/romaji", {
+          method: "POST", json: true,
+          body: JSON.stringify({ values: { event: metaForm.event, author: metaForm.author, circle: metaForm.circle } }),
+        });
+        const map = r.romaji || {};
+        ["event_en", "author_en", "circle_en"].forEach((k) => { if (map[k]) metaForm[k] = map[k]; });
+        toastMsg("已转罗马音：展会/作者/社团");
+      } catch (e) {
+        toastMsg("罗马音转换失败：" + e.message);
+      } finally {
+        busy.value = false;
+      }
+    }
+
+    async function fillRomajiTitle() {
+      busy.value = true;
+      try {
+        const r = await api("/api/romaji", {
+          method: "POST", json: true,
+          body: JSON.stringify({ values: { title_jp: metaForm.title_jp } }),
+        });
+        if (r.romaji && r.romaji.title_en) metaForm.title_en = r.romaji.title_en;
+        toastMsg("已转罗马音标题");
+      } catch (e) {
+        toastMsg("罗马音转换失败：" + e.message);
+      } finally {
+        busy.value = false;
+      }
+    }
+
     async function saveMeta() {
       if (!comicDir.value.trim()) return;
       busy.value = true;
       try {
         const r = await api("/api/meta", {
           method: "POST", json: true,
-          body: JSON.stringify({ dir: comicDir.value.trim(), book: { ...metaForm } }),
+          body: JSON.stringify({
+            dir: comicDir.value.trim(),
+            book: metaBook(),
+            platforms: JSON.parse(JSON.stringify(platformContent)),
+          }),
         });
         toastMsg("内容已保存");
         await loadComic();
@@ -513,7 +667,7 @@ createApp({
           method: "POST", json: true,
           body: JSON.stringify({
             dir: comicDir.value.trim(),
-            book: { title: metaForm.title, author: metaForm.author, description: metaForm.description },
+            book: metaBook(),
           }),
         });
       } catch (e) {
@@ -541,6 +695,24 @@ createApp({
     async function modalOk() {
       const m = modal.value;
       if (!m) return;
+      if (m.kind === "dict") {
+        const rows = m.text.split("\n")
+          .map((line) => line.trim())
+          .filter(Boolean)
+          .map((line) => {
+            const i = line.indexOf("=");
+            return i > 0 ? [line.slice(0, i).trim(), line.slice(i + 1).trim()] : null;
+          })
+          .filter(Boolean);
+        try {
+          await api("/api/dict", { method: "POST", json: true, body: JSON.stringify({ rows }) });
+          toastMsg(`词典已保存：${rows.length} 条`);
+          modal.value = null;
+        } catch (e) {
+          toastMsg("词典保存失败：" + e.message);
+        }
+        return;
+      }
       if (m.kind === "paste") {
         const parsed = parseCookies(m.text);
         const keys = Object.keys(parsed);
@@ -585,6 +757,7 @@ createApp({
       loadState().then(() => {
         if (new URLSearchParams(location.search).has("autopreview")) autoPreview();
       });
+      loadAi();
       connectLog();
       watch(logLines, scrollLog);
       watch(logOpen, (v) => { if (v) logNew.value = 0; });
@@ -596,13 +769,15 @@ createApp({
       resetPick, saveMeta,
       logLines, logBox, logOpen, logNew, clearLog, toast, modal, lanAddr,
       theme, themeLabel, themeIcon, cycleTheme,
-      PLAT_LABELS, pageUrl,
+      aiForm, aiStatus, aiSave, aiTest, dictOpen,
+      PLAT_LABELS, pageUrl, META_EXTRA, PLATFORM_CONTENT_SCHEMA, platformContent,
       SOURCE_CHOICES, CATE_OPTIONS,
       anyUnconfigured, publishTargetsText,
       platShort, platStatus, connected, extrasOf, extraLabel,
       saveConfig, openAccount, toggleExpand, openLogin,
       checkOne, checkAll, pasteCookie, qrLogin, detectProxy,
       fieldMapOpen, onSourceChange, pickDir, pickZip, loadComic, onDrop,
+      fillRomajiNames, fillRomajiTitle,
       previewPlan, previewFull, publish, modalOk,
     };
   },

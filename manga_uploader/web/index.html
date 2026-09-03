@@ -100,11 +100,11 @@ try {
           <template v-else>
             <div class="edit-grid">
               <div class="field">
-                <label class="field-label">标题</label>
-                <input type="text" v-model="metaForm.title" class="input">
+                <label class="field-label">中文标题</label>
+                <input type="text" v-model="metaForm.title" class="input" placeholder="如 百年先の君へ">
               </div>
               <div class="field">
-                <label class="field-label">作者</label>
+                <label class="field-label">作者 / 画师<span class="field-hint"> 可点罗马音回填</span></label>
                 <input type="text" v-model="metaForm.author" class="input">
               </div>
               <div class="field field-wide">
@@ -112,6 +112,44 @@ try {
                 <textarea v-model="metaForm.description" class="textarea" rows="4"></textarea>
               </div>
             </div>
+
+            <div class="meta-sec">
+              <div class="meta-sec-head">
+                <span class="meta-sec-title">展会 · 社团 · 汉化组 · 日英标题 · 系列 · 标签</span>
+                <div class="meta-sec-actions">
+                  <button class="btn btn-ghost btn-sm" :disabled="busy" @click="fillRomajiNames">作者/社团/展会 → 罗马音</button>
+                  <button class="btn btn-ghost btn-sm" :disabled="busy" @click="fillRomajiTitle">日文标题 → 英文标题</button>
+                </div>
+              </div>
+              <div class="edit-grid">
+                <div v-for="f in META_EXTRA" :key="f.key" class="field" :class="{ 'field-wide': f.key === 'tags' }">
+                  <label class="field-label">{{ f.label }}</label>
+                  <input v-if="f.key !== 'chapter_name'" type="text" v-model="metaForm[f.key]" class="input">
+                  <input v-else type="text" v-model="metaForm[f.key]" class="input">
+                </div>
+              </div>
+              <p class="hint-text">填日文原/汉字后点罗马音按钮自动生成英文标题、作者/社团罗马音；无 pykakasi 时汉字按基础假名表。</p>
+            </div>
+
+            <div class="meta-sec">
+              <details class="pc-fold">
+                <summary class="pc-fold-head">各平台发布内容（默认自动组合，可手改覆盖）</summary>
+                <div v-for="(schema, plat) in PLATFORM_CONTENT_SCHEMA" :key="plat" class="pc-plat">
+                  <div class="pc-plat-head">
+                    <span class="plat-dot" :class="'dot-' + plat"></span>{{ PLAT_LABELS[plat] || plat }}
+                  </div>
+                  <div class="edit-grid">
+                    <div v-for="f in schema" :key="f.key" class="field" :class="{ 'field-wide': f.kind === 'textarea' }">
+                      <label class="field-label">{{ f.label }}</label>
+                      <textarea v-if="f.kind === 'textarea'" rows="3" v-model="platformContent[plat][f.key]" class="textarea"></textarea>
+                      <input v-else type="text" v-model="platformContent[plat][f.key]" class="input">
+                    </div>
+                  </div>
+                </div>
+                <p class="hint-text">留空 = 按漫画信息自动组合（composer）；填写后以这里为准，随「保存内容」写入 manga.json。</p>
+              </details>
+            </div>
+
             <p v-if="summary.over_10mb" class="hint-text">⚠ {{ summary.over_10mb }} 张超过 10MB，发布时会自动压缩</p>
             <div class="edit-actions">
               <span class="hint-text">保存后写入漫画目录的 manga.json，预览与发布都以它为准</span>
@@ -130,7 +168,7 @@ try {
         </div>
         <div class="card-body">
           <p v-if="summary && !previewChapters.length && !previewText" class="hint-text">
-            已加载：{{ summary.title }} · {{ summary.pages }} 页，预览即将自动生成…
+            已加载：{{ (summary.meta||{}).title || (summary.meta||{}).author || "已选漫画" }} · {{ summary.pages }} 页，预览即将自动生成…
           </p>
 
           <!-- 发布预览：通用示意图 / 原始文本 -->
@@ -158,8 +196,8 @@ try {
                 <!-- B站专栏形态模拟：标题 → 作者 → 正文 → 图流（绑定编辑框，输入即更新） -->
                 <div class="pv-post">
                   <div class="pv-post-title">{{ metaForm.title || ch.title }}</div>
-                  <div v-if="summary.author || ch.author" class="pv-post-author">
-                    <span class="pv-avatar">{{ ((summary.author || ch.author) || "?")[0] }}</span>{{ summary.author || ch.author }}
+                  <div v-if="(summary.meta||{}).author || ch.author" class="pv-post-author">
+                    <span class="pv-avatar">{{ (((summary.meta||{}).author || ch.author) || "?")[0] }}</span>{{ (summary.meta||{}).author || ch.author }}
                   </div>
                   <p v-if="metaForm.description || ch.description" class="pv-post-desc">{{ metaForm.description || ch.description }}</p>
                   <div class="pv-flow">
@@ -248,6 +286,44 @@ try {
           <p class="hint-text">{{ card.hint }}</p>
           <div v-if="statuses[card.key] && statuses[card.key].length" class="check-status">
             <span v-for="s in statuses[card.key]" :key="s.message" :class="s.ok ? 'ok' : 'bad'">{{ s.ok ? '✓' : '✗' }} {{ s.message }}</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- AI 罗马音 + 词典 -->
+      <div class="card">
+        <div class="card-head">
+          <h2>罗马音引擎 · AI · 词典</h2>
+          <button class="btn btn-ghost btn-sm" @click="dictOpen">编辑罗马音词典…</button>
+        </div>
+        <div class="card-body">
+          <p class="hint-text">漫画信息页的「→ 罗马音」默认用本地引擎；开启并填好下面的 OpenAI 兼容接口后自动改走 AI（失败回退本地）。</p>
+          <label class="check-row" style="margin-top:8px">
+            <input type="checkbox" v-model="aiForm.enabled">
+            <span>使用 AI 转换（自动保存后生效）</span>
+          </label>
+          <div class="grid3" style="margin-top:8px">
+            <div class="field">
+              <label class="field-label">接口地址 Base URL</label>
+              <input type="text" v-model="aiForm.base_url" class="input" placeholder="https://api.deepseek.com/v1">
+            </div>
+            <div class="field">
+              <label class="field-label">API Key</label>
+              <input type="password" v-model="aiForm.api_key" class="input" placeholder="sk-…">
+            </div>
+            <div class="field">
+              <label class="field-label">模型 Model</label>
+              <input type="text" v-model="aiForm.model" class="input" placeholder="deepseek-chat">
+            </div>
+            <div class="field">
+              <label class="field-label">超时（秒）</label>
+              <input type="number" min="10" step="5" v-model.number="aiForm.timeout" class="input">
+            </div>
+          </div>
+          <div class="edit-actions" style="margin-top:10px">
+            <span v-if="aiStatus" class="hint-text">{{ aiStatus }}</span>
+            <button class="btn btn-ghost" :disabled="busy" @click="aiTest">测试接口</button>
+            <button class="btn btn-primary" :disabled="busy" @click="aiSave">保存 AI 设置</button>
           </div>
         </div>
       </div>
@@ -363,7 +439,12 @@ try {
       <button class="btn btn-ghost btn-sm" @click="modal = null">✕</button>
     </div>
     <div class="modal-body">
-      <template v-if="modal.kind === 'paste'">
+      <template v-if="modal.kind === 'dict'">
+        <p class="hint-text">每行一条，格式「原文=假名读音」（如 例大祭=れいたいさい）。覆盖词典能让同人专名读出正确罗马音。</p>
+        <textarea class="textarea" rows="12" v-model="modal.text" placeholder="例大祭=れいたいさい&#10;紅楼夢=こうろうむ&#10;博麗=はくれい"></textarea>
+      </template>
+
+      <template v-else-if="modal.kind === 'paste'">
         <p class="hint-text">从浏览器复制整段 Cookie 粘贴到下面，自动拆到各字段：</p>
         <textarea class="textarea" rows="5" v-model="modal.text" placeholder="SESSDATA=xxx; bili_jct=yyy; ..."></textarea>
       </template>

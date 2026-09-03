@@ -26,6 +26,7 @@ from typing import Any, Optional
 from urllib.parse import parse_qs, unquote, urlparse
 
 from . import __version__
+from . import composer
 from .comic import find_meta_file, load_chapters, read_meta
 from .config import (
     AppConfig,
@@ -168,12 +169,35 @@ def _enabled_with_cookie(payload: dict[str, Any]) -> list[str]:
     return result
 
 
+# 漫画信息顶层字段（与 tkinter GUI BASE_FIELDS / composer.fields 对齐）
+WEB_META_FIELDS: list[tuple[str, str]] = [
+    ("event", "展会"),
+    ("event_en", "展会罗马音"),
+    ("author", "作者/画师"),
+    ("author_en", "作者罗马音"),
+    ("circle", "社团"),
+    ("circle_en", "社团罗马音"),
+    ("group", "汉化组"),
+    ("title", "中文标题"),
+    ("title_jp", "日文原标题"),
+    ("title_en", "英文/罗马音标题"),
+    ("series", "系列/tag 中文"),
+    ("series_en", "系列英文"),
+    ("series_jp", "系列日文"),
+    ("language", "语言"),
+    ("tags", "标签"),
+    ("chapter_name", "章节名"),
+    ("description", "简介"),
+]
+
+
 def _chapter_summary(comic_dir: str) -> dict[str, Any]:
     root = Path(comic_dir)
     chapters = load_chapters(comic_dir, strict=False)
     meta_file = find_meta_file(root)
     top = read_meta(meta_file) if meta_file else {}
-    first = chapters[0] if chapters else None
+    if not isinstance(top, dict):
+        top = {}
     total_pages = sum(len(c.pages) for c in chapters)
     total_bytes = sum(p.stat().st_size for c in chapters for p in c.pages)
     over = sum(
@@ -182,21 +206,41 @@ def _chapter_summary(comic_dir: str) -> dict[str, Any]:
         for p in chapter.pages
         if p.stat().st_size > 10 * 1024 * 1024
     )
+    meta: dict[str, str] = {}
+    for key, _label in WEB_META_FIELDS:
+        value = top.get(key)
+        if key == "tags":
+            meta[key] = ",".join(str(t) for t in value) if isinstance(value, list) else str(value or "")
+        else:
+            meta[key] = str(value or "")
+    # 各平台发布内容（PLATFORM_SCHEMA 文字字段，来自 manga.json platforms）
+    platforms_meta = top.get("platforms") if isinstance(top.get("platforms"), dict) else {}
+    platforms_content: dict[str, dict[str, str]] = {}
+    for plat, schema in composer.PLATFORM_SCHEMA.items():
+        p = platforms_meta.get(plat) if isinstance(platforms_meta.get(plat), dict) else {}
+        platforms_content[plat] = {f["key"]: str(p.get(f["key"]) or "") for f in schema}
     return {
-        "title": str(top.get("title") or root.name),
-        "author": str(top.get("author") or ""),
-        "description": str(top.get("description") or ""),
+        "meta": meta,
+        "platforms_content": platforms_content,
         "chapters": len(chapters),
         "pages": total_pages,
         "size": human_size(total_bytes),
         "over_10mb": over,
         "dir": comic_dir,
-        "_first_title": first.title if first else "",
+        "has_meta_file": meta_file is not None,
     }
 
 
-def _save_comic_meta(comic_dir: str, book: dict[str, Any]) -> Path:
-    """把整本 标题/作者/简介 写回漫画目录的 manga.json（不存在则创建）。"""
+def _save_comic_meta(
+    comic_dir: str,
+    book: dict[str, Any],
+    platforms: Optional[dict[str, dict[str, Any]]] = None,
+) -> Path:
+    """把漫画信息顶层字段与各平台发布内容写回漫画目录的 manga.json（不存在则创建）。
+
+    book 允许 WEB_META_FIELDS 任一字段；tags 传逗号分隔字符串，写回时转数组。
+    platforms 形如 {平台: {字段: 值}}，空值字段会被移除（不再覆盖）。
+    """
     root = Path(comic_dir)
     meta_file = find_meta_file(root)
     data: dict[str, Any] = {}
@@ -208,24 +252,65 @@ def _save_comic_meta(comic_dir: str, book: dict[str, Any]) -> Path:
     if not isinstance(data, dict):
         data = {}
     changed = False
-    for key in ("title", "author", "description"):
-        if key in book:
-            value = str(book[key] or "").strip()
-            if data.get(key) != value:
-                data[key] = value
+    for key, _label in WEB_META_FIELDS:
+        if key not in book:
+            continue
+        value = book.get(key)
+        if key == "tags":
+            raw = value if isinstance(value, list) else [
+                t.strip() for t in str(value or "").split(",") if t.strip()
+            ]
+            if raw != data.get("tags"):
+                if raw:
+                    data["tags"] = raw
+                else:
+                    data.pop("tags", None)
                 changed = True
-    if not changed:
-        return meta_file or (root / "manga.json")
-    # 单本导入生成的 chapters 里 folder="root" 的那一条同步标题/简介
+            continue
+        text = str(value or "").strip()
+        if text != (data.get(key) or ""):
+            if text:
+                data[key] = text
+            else:
+                data.pop(key, None)
+            changed = True
+    if platforms:
+        data.setdefault("platforms", {})
+        existing = data["platforms"]
+        if not isinstance(existing, dict):
+            existing = {}
+            data["platforms"] = existing
+        for plat, fields in platforms.items():
+            if not isinstance(fields, dict):
+                continue
+            store = existing.get(plat)
+            if not isinstance(store, dict):
+                store = {}
+                existing[plat] = store
+            touched = False
+            for fkey, fval in fields.items():
+                text = str(fval or "").strip()
+                if text:
+                    if store.get(fkey) != text:
+                        store[fkey] = text
+                        touched = True
+                else:
+                    if fkey in store:
+                        store.pop(fkey, None)
+                        touched = True
+            if touched:
+                changed = True
+    # 单本导入生成的 chapters 里 folder="root" 条目同步标题/简介
     chapters = data.get("chapters")
     if isinstance(chapters, list):
         for entry in chapters:
             if isinstance(entry, dict) and str(entry.get("folder")) == "root":
-                if "title" in book:
-                    entry["title"] = str(book["title"] or "").strip()
-                if "description" in book:
-                    entry["description"] = str(book["description"] or "").strip()
+                for k in ("title", "description"):
+                    if k in book:
+                        entry[k] = str(book.get(k) or "").strip()
     path = meta_file or (root / "manga.json")
+    if not changed and path.exists():
+        return path
     if path.suffix.lower() in (".yaml", ".yml"):
         import yaml
 
@@ -363,6 +448,11 @@ class WebHandler(BaseHTTPRequestHandler):
 
             url = detect_system_proxy()
             self._json(200, {"url": url})
+        elif path == "/api/ai":
+            self._json(200, {"ai": _ai_read(self._config_path())})
+        elif path == "/api/dict":
+            rows = _dict_load()
+            self._json(200, {"rows": rows})
         elif path == "/api/qr/start":
             self._qr_start()
         elif path == "/api/qr/status":
@@ -579,6 +669,14 @@ class WebHandler(BaseHTTPRequestHandler):
             self._api_load()
         elif path == "/api/meta":
             self._api_meta()
+        elif path == "/api/romaji":
+            self._api_romaji()
+        elif path == "/api/ai":
+            self._api_ai_save()
+        elif path == "/api/ai/test":
+            self._api_ai_test()
+        elif path == "/api/dict":
+            self._api_dict_save()
         elif path == "/api/import-path":
             self._api_import_path()
         elif path == "/api/import":
@@ -742,16 +840,86 @@ class WebHandler(BaseHTTPRequestHandler):
         data = self._read_json()
         comic_dir = str(data.get("dir") or "").strip()
         book = data.get("book")
+        platforms = data.get("platforms")
         if not comic_dir or not isinstance(book, dict):
             self._json(400, {"error": "缺少参数"})
             return
+        platforms = platforms if isinstance(platforms, dict) else None
         try:
-            path = _save_comic_meta(comic_dir, book)
+            path = _save_comic_meta(comic_dir, book, platforms=platforms)
         except Exception as exc:
             self._json(500, {"error": f"保存失败：{exc}"})
             return
         self.server.state.ring.append("INFO", f"已保存漫画内容：{path}")
         self._json(200, {"ok": True, "path": str(path)})
+
+    def _api_romaji(self) -> None:
+        """事件/作者/社团→ *_en、日文标题→ title_en。配置了 AI(账号页) 则优先 AI，失败回退本地。"""
+        data = self._read_json()
+        values = data.get("values")
+        if not isinstance(values, dict):
+            self._json(400, {"error": "缺少 values"})
+            return
+        ai_cfg = _ai_read(self._config_path())
+        use_ai = composer.ai_config_is_ready(ai_cfg)
+
+        def _conv(text: str, kind: str) -> str:
+            if use_ai:
+                try:
+                    return composer.ai_to_romaji(text, kind=kind, cfg=ai_cfg)
+                except Exception:
+                    pass
+            return composer.to_romaji_title_case(text)
+
+        out: dict[str, str] = {}
+        for source_key, kind in (("event", "name"), ("author", "name"), ("circle", "name")):
+            target = source_key + "_en"
+            text = str(values.get(source_key) or "").strip()
+            if text:
+                out[target] = _conv(text, kind)
+        jp = str(values.get("title_jp") or "").strip()
+        if jp:
+            out["title_en"] = _conv(jp, "title")
+        self._json(200, {"ok": True, "romaji": out, "engine": "ai" if use_ai else "local"})
+
+    def _api_ai_save(self) -> None:
+        data = self._read_json()
+        ai = data.get("ai")
+        if not isinstance(ai, dict):
+            self._json(400, {"error": "缺少 ai"})
+            return
+        try:
+            _ai_write(self._config_path(), ai)
+        except Exception as exc:
+            self._json(500, {"error": f"保存失败：{exc}"})
+            return
+        self._json(200, {"ok": True})
+
+    def _api_ai_test(self) -> None:
+        data = self._read_json()
+        ai = data.get("ai")
+        if not isinstance(ai, dict) or not composer.ai_config_is_ready(ai):
+            self._json(200, {"ok": False, "error": "AI 未配置完整（需开关+地址+Key+模型）"})
+            return
+        try:
+            out = composer.ai_to_romaji("例大祭", kind="name", cfg=ai)
+        except Exception as exc:
+            self._json(200, {"ok": False, "error": f"AI 请求失败：{exc}"})
+            return
+        self._json(200, {"ok": True, "result": out})
+
+    def _api_dict_save(self) -> None:
+        data = self._read_json()
+        rows = data.get("rows")
+        if not isinstance(rows, list):
+            self._json(400, {"error": "缺少 rows"})
+            return
+        try:
+            _dict_write(rows)
+        except Exception as exc:
+            self._json(500, {"error": f"保存失败：{exc}"})
+            return
+        self._json(200, {"ok": True})
 
     def _api_import_path(self) -> None:
         """按本地 .zip/.cbz 路径直接导入（供路径输入框用）。"""
@@ -877,6 +1045,60 @@ def _import_single_image(image_path: str) -> Path:
     staged = stage_images([src], title_hint=src.stem)
     write_quick_meta(staged, {"title": src.stem, "author": "", "description": ""})
     return staged
+
+
+def _overrides_path() -> Path:
+    return Path(composer.__file__).resolve().parent / "data" / "romaji_overrides.json"
+
+
+def _dict_load() -> list[list[str]]:
+    path = _overrides_path()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    return [[str(k), str(v)] for k, v in (data.items() if isinstance(data, dict) else [])]
+
+
+def _dict_write(rows: list[Any]) -> None:
+    merged: dict[str, str] = {}
+    for row in rows:
+        if isinstance(row, (list, tuple)) and len(row) >= 2:
+            key = str(row[0]).strip()
+            if key:
+                merged[key] = str(row[1]).strip()
+    path = _overrides_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _ai_read(config_path: Path) -> dict[str, Any]:
+    if not config_path.is_file():
+        return {}
+    try:
+        import yaml
+
+        raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return {}
+    ai = raw.get("ai") if isinstance(raw, dict) else None
+    return ai if isinstance(ai, dict) else {}
+
+
+def _ai_write(config_path: Path, ai: dict[str, Any]) -> None:
+    import yaml
+
+    raw: dict[str, Any] = {}
+    if config_path.is_file():
+        try:
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        except Exception:
+            raw = {}
+    if not isinstance(raw, dict):
+        raw = {}
+    cleaned = {k: v for k, v in ai.items() if k in ("enabled", "base_url", "api_key", "model", "timeout", "prompt")}
+    raw["ai"] = cleaned
+    config_path.write_text(yaml.safe_dump(raw, allow_unicode=True, sort_keys=False), encoding="utf-8")
 
 
 def _split_multipart(

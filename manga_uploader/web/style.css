@@ -970,6 +970,47 @@ html, body {
 }
 .edit-actions .hint-text { flex: 1; margin: 0; min-width: 200px; }
 
+.meta-sec {
+  border-top: 1px solid var(--border);
+  margin-top: 16px;
+  padding-top: 12px;
+}
+.meta-sec-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.meta-sec-title { font-size: 12px; font-weight: 600; color: var(--text-2); }
+.meta-sec-actions { display: flex; gap: 8px; }
+
+.pc-fold-head {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-2);
+  cursor: pointer;
+  user-select: none;
+  padding: 2px 0;
+}
+.pc-fold-head:hover { color: var(--accent); }
+.pc-plat {
+  margin-top: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+  background: var(--surface-2);
+}
+.pc-plat-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 10px;
+}
+
 /* ============ 浮动日志 ============ */
 
 .pv-target { font-size: 12px; color: var(--text-3); }

@@ -42,9 +42,10 @@ python -m pip install -r requirements.txt
 **一键启动**（首次运行会在程序目录自动创建 `.venv` 虚拟环境并从清华镜像安装依赖）：
 
 ```bat
-:: Windows：双击 start.bat，或
-.\start.ps1              # 本机启动（自动拉起浏览器）
-.\start.ps1 -Lan         # 局域网可访问（0.0.0.0）
+:: 浏览器前端（推荐）：双击 start.bat，或
+::   .\start-web.ps1 -Lan    # -Lan = 局域网可访问(0.0.0.0)
+:: 桌面 GUI（tkinter 版）：双击 start-gui.bat，或 .\start-gui.ps1
+:: 两者共享同一个本地 .venv（绿色 Python 3.12），首次运行自动准备
 ```
 
 ```bash
@@ -93,6 +94,11 @@ python -m manga_uploader publish examples\my_comic --parallel                  #
 > 双击 `gui.pyw` 没反应时，多半是系统里 .pyw 文件关联被旧版 Python
 > （例如 ArcGIS 自带的 Python 2.7）占用。新版 `gui.pyw` 会自动检测并改用
 > 本机 Python 3 重新启动；仍失败就用命令行或 `--web` 方式启动。
+
+## ⚠ 状态声明
+
+浏览器前端（Web UI）与本次对齐 GUI 能力的改动（漫画信息全字段、罗马音/AI、各平台发布内容编辑）**尚未经过完整的人工测试**：
+自动化测试（67 项）全部通过，但真实发布链路未在 Windows 上逐平台验证。使用中遇到问题请把界面提示与 `output/debug/` 下的转储发出来排查。
 
 ## 运行测试
 
