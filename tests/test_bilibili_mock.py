@@ -17,6 +17,8 @@ from manga_uploader.publishers.bilibili import BilibiliPublisher
 class _Handler(BaseHTTPRequestHandler):
     requests_log: list = []
     draft_counter = 100
+    article_image_calls = 0
+    article_image_failures = 0
 
     def log_message(self, *args):  # 静默
         pass
@@ -65,6 +67,11 @@ class _Handler(BaseHTTPRequestHandler):
                 }
             )
         elif self.path.startswith("/upimage") or self.path.startswith("/upcover"):
+            self.__class__.article_image_calls += 1
+            if self.__class__.article_image_failures > 0:
+                self.__class__.article_image_failures -= 1
+                self._send_json({"code": -400, "message": "mock transient fail", "ttl": 1})
+                return
             self._send_json(
                 {
                     "code": 0,
@@ -161,6 +168,8 @@ class TestBilibiliPublisherMock(unittest.TestCase):
     def setUp(self):
         _Handler.requests_log = []
         _Handler.draft_counter = 100
+        _Handler.article_image_calls = 0
+        _Handler.article_image_failures = 0
         self.tmp = tempfile.TemporaryDirectory()
 
     def tearDown(self):
@@ -208,7 +217,7 @@ class TestBilibiliPublisherMock(unittest.TestCase):
         self.assertEqual(result.details["mode"], "article")
         self.assertIn("cv101", result.url)
 
-        uploads = self._last_posts("/upimage")
+        uploads = self._last_posts("/upcover")
         drafts = self._last_posts("/draft")
         submits = self._last_posts("/submit")
         self.assertEqual(len(uploads), 10)
@@ -216,7 +225,7 @@ class TestBilibiliPublisherMock(unittest.TestCase):
         self.assertEqual(len(submits), 1)
         # 顺序：全部图片 → 草稿 → 提交
         paths = [r["path"] for r in _Handler.requests_log]
-        self.assertTrue(all(p.startswith("/upimage") for p in paths[:10]))
+        self.assertTrue(all(p.startswith("/upcover") for p in paths[:10]))
         self.assertTrue(paths[-2].startswith("/draft") and paths[-1].startswith("/submit"))
 
         data = parse_qs(drafts[0]["body"].decode("utf-8"))
@@ -243,6 +252,29 @@ class TestBilibiliPublisherMock(unittest.TestCase):
         second_content = parse_qs(drafts[1]["body"].decode("utf-8"))["content"][0]
         self.assertEqual(first_content.count("<figure"), 6)
         self.assertEqual(second_content.count("<figure"), 4)
+
+    def test_article_retries_transient_image_failure(self):
+        """B站偶发抽风：第一轮 4 个上传接口组合全失败，自动重试后成功。"""
+        _Handler.article_image_failures = 4
+        chapter = _make_chapter(Path(self.tmp.name))
+        result = self._publisher({"publish_mode": "article"}).publish(chapter)
+        self.assertEqual(result.status, "ok", result.message)
+        # 10 张图 + 第一张图的 4 次失败尝试
+        self.assertGreaterEqual(_Handler.article_image_calls, 14)
+        drafts = self._last_posts("/draft")
+        self.assertEqual(len(drafts), 1)
+        data = parse_qs(drafts[0]["body"].decode("utf-8"))
+        self.assertEqual(data["content"][0].count("<figure"), 10)
+
+    def test_full_preview_article_lists_all_pages_and_html(self):
+        chapter = _make_chapter(Path(self.tmp.name))
+        lines = self._publisher({"publish_mode": "article"}).full_preview(chapter)
+        text = "\n".join(lines)
+        self.assertIn("HTML 结构示例", text)
+        self.assertIn("<figure", text)
+        for i in range(1, 11):
+            self.assertIn(f"{i:03d}.png", text)
+        self.assertNotIn("源文件检查", text)  # 连续编号无警告
 
     def test_article_uses_5mb_pipeline(self):
         cfg = PlatformConfig(

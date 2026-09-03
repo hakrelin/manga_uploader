@@ -15,6 +15,10 @@ class PublisherError(RuntimeError):
     pass
 
 
+class CaptchaRequiredError(PublisherError):
+    """平台明确要求人机验证（验证码），需要用户手动处理后重试。"""
+
+
 class BasePublisher(ABC):
     key: str = ""
     display_name: str = ""
@@ -25,14 +29,20 @@ class BasePublisher(ABC):
         self.log = get_logger(self.key)
         self.output_dir = Path(output_dir) if output_dir else Path(common.output_dir)
         dump_dir = self.output_dir / "debug"
+        # 平台级代理覆盖：config 里 platforms.<key>.settings 可单独指定
+        # proxy_url / use_system_proxy，未配置时沿用 common 的全局设置
+        proxy_url = self.cfg.get("proxy_url", common.proxy_url)
+        use_system_proxy = bool(
+            self.cfg.get("use_system_proxy", common.use_system_proxy)
+        )
         self.http = HttpClient(
             cookies=cfg.cookies,
             timeout=common.timeout,
             retries=common.retries,
             dump_dir=dump_dir,
             log_prefix=self.key,
-            proxy_url=common.proxy_url,
-            use_system_proxy=common.use_system_proxy,
+            proxy_url=proxy_url,
+            use_system_proxy=use_system_proxy,
         )
 
     # ---------- 通用 ----------
@@ -96,6 +106,48 @@ class BasePublisher(ABC):
     def summarize(self, chapter: Chapter) -> str:
         total_kb = sum(p.stat().st_size for p in chapter.pages) / 1024.0
         return f"{len(chapter.pages)} 页 / {total_kb:.1f} KB"
+
+    def full_preview(self, chapter: Chapter) -> list[str]:
+        """发布前的“全文预览”：展示将提交的字段与页面顺序，不联网上传。
+
+        子类可覆盖以展示各自真实的正文/HTML/表单内容。
+        """
+        lines = [
+            f"发布平台：{self.display_name}",
+            f"标题：{chapter.title}",
+        ]
+        if chapter.author:
+            lines.append(f"作者：{chapter.author}")
+        if chapter.description:
+            desc = chapter.description
+            lines.append("正文/简介文本：")
+            for part in desc.splitlines() or [desc]:
+                lines.append("  " + part)
+        else:
+            lines.append("（正文/简介为空）")
+        tags = chapter.tags
+        if tags:
+            lines.append("标签：" + "、".join(str(t) for t in tags))
+        self._append_page_preview(lines, chapter)
+        return lines
+
+    def _append_page_preview(self, lines: list[str], chapter: Chapter) -> None:
+        from ..comic import page_sequence_warnings
+        from ..util import human_size
+
+        pages = chapter.pages
+        lines.append(f"图片共 {len(pages)} 张，将按以下顺序上传：")
+        for index, page in enumerate(pages, 1):
+            lines.append(
+                f"  [{index:>3}] {page.name}（{human_size(page.stat().st_size)}）"
+            )
+        warnings = page_sequence_warnings(pages)
+        if warnings:
+            lines.append("⚠ 检查发现：")
+            for warning in warnings:
+                lines.append("  - " + warning)
+        else:
+            lines.append("✓ 页面顺序连续，未发现重复或明显漏号")
 
     # ---------- 子类实现 ----------
 

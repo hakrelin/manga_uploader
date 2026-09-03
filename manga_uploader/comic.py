@@ -223,3 +223,32 @@ def platform_meta(chapter: Chapter, platform: str) -> dict[str, Any]:
 def first_line(text: str) -> str:
     text = text.strip()
     return re.split(r"[\r\n]", text)[0] if text else ""
+
+
+def page_sequence_warnings(pages: list[Path]) -> list[str]:
+    """检查页面列表是否有重复页/明显漏号，防止“缺页”发布。"""
+    warnings: list[str] = []
+    stems: dict[str, list[str]] = {}
+    for page in pages:
+        stems.setdefault(page.stem.lower(), []).append(page.name)
+    duplicates = [names for names in stems.values() if len(names) > 1]
+    if duplicates:
+        warnings.append(
+            "发现同名文件（可能是重复页，会都上传）：" + "; ".join(", ".join(n) for n in duplicates)
+        )
+
+    numbers: list[int] = []
+    for page in pages:
+        match = re.match(r"^\s*(\d+)", page.stem)
+        if match:
+            numbers.append(int(match.group(1)))
+    unique = sorted(set(numbers))
+    if len(unique) >= 3 and unique[-1] - unique[0] + 1 != len(unique):
+        missing = [
+            str(n) for n in range(unique[0], unique[-1] + 1) if n not in set(unique)
+        ]
+        warnings.append(
+            "文件名编号存在缺口，可能漏页：" + ", ".join(missing[:20])
+            + (f" 等共 {len(missing)} 个" if len(missing) > 20 else "")
+        )
+    return warnings

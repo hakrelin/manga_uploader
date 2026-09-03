@@ -119,24 +119,65 @@ class ZaimanhuaPublisher(BasePublisher):
 
     def _upload_page(self, page) -> str:
         mime = mimetypes.guess_type(page.path.name)[0] or "image/jpeg"
-        with open(page.path, "rb") as fh:
-            resp = self.http.post(
-                UPLOAD_IMG_URL,
-                files={"file": (page.path.name, fh, mime)},
-                data={"beginTime": ""},
-                headers=self._headers(),
-            )
-        try:
-            payload = resp.json()
-        except ValueError as exc:  # pragma: no cover
-            raise PublisherError(f"再漫画 传图接口未返回 JSON：{resp.text[:200]}") from exc
-        if payload.get("errno") != 0:
-            self.http._dump(resp, tag="zaimanhua-upload-img")
-            raise PublisherError(f"再漫画 传图失败：{payload.get('errmsg') or payload}")
-        url = str(((payload.get("data") or {}).get("file") or "")).strip()
-        if not url:
-            raise PublisherError(f"再漫画 上传响应缺少图片地址：{payload}")
-        return url
+        attempts = max(1, int(self.cfg.get("upload_attempts", 2) or 2))
+        last_error = "未知错误"
+        for attempt in range(1, attempts + 1):
+            try:
+                with open(page.path, "rb") as fh:
+                    resp = self.http.post(
+                        UPLOAD_IMG_URL,
+                        files={"file": (page.path.name, fh, mime)},
+                        data={"beginTime": ""},
+                        headers=self._headers(),
+                    )
+                try:
+                    payload = resp.json()
+                except ValueError as exc:  # pragma: no cover
+                    raise PublisherError(
+                        f"再漫画 传图接口未返回 JSON：{resp.text[:200]}"
+                    ) from exc
+                if payload.get("errno") != 0:
+                    last_error = str(payload.get("errmsg") or payload)
+                    raise PublisherError(f"再漫画 传图失败：{last_error}")
+                url = str(((payload.get("data") or {}).get("file") or "")).strip()
+                if not url:
+                    last_error = f"上传响应缺少图片地址：{payload}"
+                    raise PublisherError(last_error)
+                return url
+            except PublisherError:
+                if attempt < attempts:
+                    wait = min(2.0 * attempt, 6.0)
+                    self.log.warning(
+                        "再漫画 图片 %s 上传失败（第 %d/%d 次），%s 秒后重试：%s",
+                        page.path.name,
+                        attempt,
+                        attempts,
+                        wait,
+                        last_error,
+                    )
+                    time.sleep(wait)
+                    continue
+                raise
+            except Exception as exc:  # 网络层失败也按次数重试
+                last_error = str(exc)
+                if attempt < attempts:
+                    wait = min(2.0 * attempt, 6.0)
+                    self.log.warning(
+                        "再漫画 图片 %s 网络上传失败（第 %d/%d 次），%s 秒后重试：%s",
+                        page.path.name,
+                        attempt,
+                        attempts,
+                        wait,
+                        exc,
+                    )
+                    time.sleep(wait)
+                    continue
+                raise PublisherError(
+                    f"再漫画 图片 {page.path.name} 上传失败（已重试 {attempts} 次）：{last_error}"
+                ) from exc
+        raise PublisherError(
+            f"再漫画 图片 {page.path.name} 上传失败（已重试 {attempts} 次）：{last_error}"
+        )
 
     def _submit_chapter(self, body: dict) -> dict:
         resp = self.http.post(

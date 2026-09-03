@@ -6,6 +6,7 @@ from pathlib import Path
 from PIL import Image
 
 from manga_uploader.comic import load_chapters, platform_meta
+from manga_uploader.comic import page_sequence_warnings
 from manga_uploader.config import load_config, missing_cookies
 from manga_uploader.publishers.ehentai import _parse_upload_page
 from manga_uploader.publishers.tieba import _find_first
@@ -50,6 +51,21 @@ class TestComicScan(unittest.TestCase):
         self.assertEqual(chapters[0].key, "root")
         self.assertEqual(chapters[0].title, "某漫画第1话")
 
+    def test_page_sequence_warnings(self):
+        from manga_uploader.comic import page_sequence_warnings
+
+        folder = Path(self.tmp.name) / "warn"
+        folder.mkdir()
+        names = ["001.png", "002.png", "002.jpg", "004.png", "pic.png"]
+        for name in names:
+            Image.new("RGB", (20, 20), "red").save(folder / name)
+        warnings = page_sequence_warnings(
+            sorted((folder / n) for n in names)
+        )
+        joined = "\n".join(warnings)
+        self.assertIn("同名文件", joined)
+        self.assertIn("缺口", joined)
+
 
 class TestConfig(unittest.TestCase):
     def test_load_example(self):
@@ -60,6 +76,13 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(cfg.platforms["bilibili"].get("max_pages_per_post"), 9)
         self.assertEqual(cfg.platforms["bilibili"].get("publish_mode"), "article")
         self.assertAlmostEqual(cfg.common.max_bytes_mb, 10.0)
+        self.assertFalse(cfg.platforms["bilibili"].get("use_system_proxy"))
+        self.assertFalse(cfg.platforms["zaimanhua"].get("use_system_proxy"))
+        # e-hentai 单独配置为走代理（海外站）
+        self.assertTrue(cfg.platforms["ehentai"].get("use_system_proxy"))
+        self.assertEqual(
+            cfg.platforms["ehentai"].get("proxy_url"), "http://127.0.0.1:7897"
+        )
 
     def test_missing_cookies_by_platform(self):
         from manga_uploader.config import PlatformConfig

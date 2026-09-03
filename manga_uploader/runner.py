@@ -100,6 +100,25 @@ class Runner:
             plan.append((chapter, steps))
         return plan
 
+    def build_full_preview(
+        self, comic_dir: str, names: Optional[list[str]] = None, only_chapters: Optional[list[str]] = None
+    ) -> list[tuple[Chapter, list[tuple[str, list[str]]]]]:
+        """不联网的全文预览：真实跑图片预处理并输出各平台将提交的内容。"""
+        chapters = self.load_chapters(comic_dir, only_chapters=only_chapters)
+        preview = []
+        for chapter in chapters:
+            rows = []
+            for name, enabled in self.resolve_platforms(names):
+                if not enabled:
+                    continue
+                try:
+                    publisher = self.make_publisher(name)
+                    rows.append((name, publisher.full_preview(chapter)))
+                except PublisherError as exc:
+                    rows.append((name, [f"配置不完整：{exc}"]))
+            preview.append((chapter, rows))
+        return preview
+
     def run_publish(
         self,
         comic_dir: str,

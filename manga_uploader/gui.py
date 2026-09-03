@@ -136,6 +136,28 @@ def join_cookie_text(cookies: dict[str, str]) -> str:
     return "; ".join(f"{k}={v}" for k, v in cookies.items())
 
 
+def format_full_preview(
+    preview: list[tuple[Any, list[tuple[str, list[str]]]]],
+) -> str:
+    """把全文预览结果排版成文本。"""
+    lines = [
+        "=" * 72,
+        "【发布前全文预览】（只做本地处理与展示，不会上传/发布）",
+        "=" * 72,
+    ]
+    for chapter, rows in preview:
+        lines.append("")
+        lines.append(f"■ 章节：{chapter.title}（{chapter.key}，{len(chapter.pages)} 张源图）")
+        if not rows:
+            lines.append("  无可预览平台（未启用或配置缺失）")
+        for name, content in rows:
+            lines.append("")
+            lines.append(f"  ● {name}")
+            for row in content:
+                lines.append("      " + row)
+    return "\n".join(lines)
+
+
 def _cate_label(value: str) -> str:
     return CATE_LABELS.get(str(value), str(value))
 
@@ -827,6 +849,7 @@ class UploaderApp:
         )
         self.publish_btn.pack(side="left", padx=2)
         ttk.Button(buttons, text="预览计划", command=self._preview_plan).pack(side="left", padx=2)
+        ttk.Button(buttons, text="全文预览", command=self._preview_full).pack(side="left", padx=2)
         ttk.Button(buttons, text="保存配置", command=self._save_config).pack(side="left", padx=2)
         self.run_btn = ttk.Button(
             buttons, text="一键发布", command=self._publish, style="Accent.TButton"
@@ -989,6 +1012,51 @@ class UploaderApp:
                 for row in rows:
                     self._log(f"      - {row}")
         self._log("=" * 60)
+
+    def _preview_full(self) -> None:
+        comic_dir = self.comic_dir_var.get().strip()
+        if not comic_dir:
+            self._warn("请先选择/上传漫画")
+            return
+
+        def _task() -> Any:
+            app = self._build_app()
+            names = self._enabled_with_cookie()
+            if not names:
+                raise RuntimeError("没有启用的平台或都未填 Cookie")
+            only = self._selected_chapter_keys()
+            runner = Runner(app)
+            return runner.build_full_preview(
+                comic_dir, names=names, only_chapters=only
+            )
+
+        def _done(result: Any) -> None:
+            text = format_full_preview(result)
+            self._show_full_preview_window(text)
+            chapters = len(result)
+            self._log(f"全文预览完成（{chapters} 个章节，仅本地处理未发布）")
+
+        self._run_async(_task, on_done=_done)
+
+    def _show_full_preview_window(self, text: str) -> None:
+        win = tk.Toplevel(self.root)
+        win.title("发布前全文预览（不联网）")
+        win.geometry("1080x760")
+        win.transient(self.root)
+        frame = ttk.Frame(win)
+        frame.pack(fill="both", expand=True, padx=8, pady=8)
+        frame.rowconfigure(0, weight=1)
+        frame.columnconfigure(0, weight=1)
+        box = tk.Text(frame, wrap="none", font=("Consolas", 9))
+        vsb = ttk.Scrollbar(frame, orient="vertical", command=box.yview)
+        hsb = ttk.Scrollbar(frame, orient="horizontal", command=box.xview)
+        box.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        box.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+        hsb.grid(row=1, column=0, sticky="ew")
+        box.insert("1.0", text)
+        box.configure(state="disabled")
+        ttk.Button(win, text="关闭", command=win.destroy).pack(pady=6)
 
     def _publish(self) -> None:
         comic_dir = self.comic_dir_var.get().strip()

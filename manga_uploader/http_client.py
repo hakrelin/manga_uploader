@@ -98,6 +98,8 @@ class HttpClient:
                 {"http": effective_proxy, "https": effective_proxy}
             )
             self.log.info("使用代理：%s", effective_proxy)
+        # 只用程序算出的代理（平台级/全局），忽略环境变量里的意外代理
+        self.session.trust_env = False
         self.last_request: Optional[requests.Response] = None
 
     # ---------- 基础请求 ----------
@@ -141,6 +143,10 @@ class HttpClient:
                     self.log.warning("网络错误（%s），%s 秒后重试", exc.__class__.__name__, wait)
                     time.sleep(wait)
                     continue
+            except requests.exceptions.TooManyRedirects as exc:
+                raise HttpError(
+                    f"{method} {url} 重定向次数过多（可能未登录、被要求验证或风控）：{exc}"
+                ) from exc
         raise HttpError(f"{method} {url} 多次重试后仍然失败：{last_error}")
 
     def get(self, url: str, **kwargs: Any) -> requests.Response:
@@ -168,8 +174,22 @@ class HttpClient:
         stamp = time.strftime("%Y%m%d-%H%M%S")
         path = self.dump_dir / f"{tag}-{stamp}-{hash(resp.url) % 10000:04d}.html"
         try:
-            path.write_text(resp.text[:500_000], encoding="utf-8", errors="replace")
-            self.log.info("已把失败响应保存到 %s", path)
+            request = getattr(resp, "request", None)
+            method = (request.method if request is not None else None) or "?"
+            req_url = (request.url if request is not None else None) or resp.url
+            header = f"<!-- debug: {method} {req_url} status={resp.status_code} -->\n"
+            path.write_text(
+                header + resp.text[:499_000],
+                encoding="utf-8",
+                errors="replace",
+            )
+            self.log.info(
+                "已把失败响应保存到 %s（%s %s，HTTP %s）",
+                path,
+                method,
+                req_url,
+                resp.status_code,
+            )
         except OSError as exc:  # pragma: no cover
             self.log.debug("保存响应失败：%s", exc)
 

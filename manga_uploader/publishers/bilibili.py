@@ -113,6 +113,72 @@ class BilibiliPublisher(BasePublisher):
             return self._publish_article(chapter)
         return self._publish_dynamic(chapter)
 
+    def full_preview(self, chapter: Chapter) -> list[str]:
+        """B站发布前全文预览：展示真实将提交的正文/HTML 结构与图片顺序。"""
+        from ..comic import page_sequence_warnings
+        from ..util import human_size
+
+        mode = self._mode(chapter)
+        lines = [
+            "发布平台：B站（" + ("专栏文章" if mode == "article" else "图文动态") + "）",
+            f"标题：{chapter.title}",
+        ]
+        if mode == "article":
+            original = int(self._setting(chapter, "original", 1))
+            reprint = int(self._setting(chapter, "reprint", 0) or 0)
+            tid = int(self._setting(chapter, "tid", 4) or 4)
+            category = int(self._setting(chapter, "category", 0) or 0)
+            lines.append(
+                f"提交参数：tid={tid}（封面模板） category={category} "
+                f"original={original} reprint={reprint}"
+            )
+            pages = len(chapter.pages)
+            posts = max(1, -(-pages // self.article_max_pages))
+            if posts > 1:
+                lines.append(
+                    f"⚠ 超过单篇上限 {self.article_max_pages} 张，将拆成 {posts} 篇专栏"
+                )
+            if chapter.description:
+                lines.append("正文文本（会转成 <p>…</p>）：")
+                for part in chapter.description.splitlines() or [chapter.description]:
+                    lines.append("  " + part)
+            else:
+                lines.append("（无简介文本，正文只有插图）")
+            prepared = self.prepare_pages(
+                chapter,
+                allowed_exts=ARTICLE_ALLOWED_EXTS,
+                max_bytes=ARTICLE_MAX_BYTES,
+            )
+            try:
+                lines.append(
+                    f"正文插图共 {len(prepared)} 张（每张 1 个 figure，按此顺序插入）："
+                )
+                for index, page in enumerate(prepared, 1):
+                    lines.append(
+                        f"  [{index:>3}] {page.path.name}（处理后 "
+                        f"{human_size(page.size_bytes)}，{page.width}x{page.height}）"
+                    )
+                if prepared:
+                    lines.append("HTML 结构示例（每页相同，仅 src 换成上传后地址）：")
+                    lines.append("  " + self._figure_html("…上传后返回的图片地址…"))
+            finally:
+                self.cleanup_prepared(chapter)
+        else:
+            lines.append("动态文案（单条正文，含话题）：")
+            for part in str(self._caption(chapter)).splitlines() or [""]:
+                lines.append("  " + part)
+            groups = max(1, -(-len(chapter.pages) // self.max_pages_per_post))
+            lines.append(f"共 {len(chapter.pages)} 张，按 {self.max_pages_per_post} 张/条拆为 {groups} 条")
+            self._append_page_preview(lines, chapter)
+            return lines
+
+        warnings = page_sequence_warnings(chapter.pages)
+        if warnings:
+            lines.append("⚠ 源文件检查：")
+            for warning in warnings:
+                lines.append("  - " + warning)
+        return lines
+
     # ---------- 专栏文章 ----------
 
     def _plan_article(self, chapter: Chapter) -> list[str]:
@@ -139,44 +205,80 @@ class BilibiliPublisher(BasePublisher):
 
     def _upload_article_image(self, page) -> str:
         mime = mimetypes.guess_type(page.path.name)[0] or "image/jpeg"
-        last_error = "未知错误"
-        # 上传接口/字段随版本变化：依次尝试，第一个成功即停
+        # 上传接口/字段随版本变化：优先 upcover（多个长期维护项目验证过），
+        # 被拒时自动换备用组合，第一个成功即停
         candidates = (
-            (ARTICLE_UPIMAGE_URL, "file"),
             (ARTICLE_UPCOVER_URL, "file"),
-            (ARTICLE_UPIMAGE_URL, "binary"),
+            (ARTICLE_UPIMAGE_URL, "file"),
             (ARTICLE_UPCOVER_URL, "binary"),
+            (ARTICLE_UPIMAGE_URL, "binary"),
         )
-        for endpoint, field in candidates:
-            with open(page.path, "rb") as fh:
+        # B站偶发的单图失败：整轮接口都失败后整体重试（次数可配，默认 3）
+        attempts = max(1, int(self.cfg.get("upload_attempts", 3) or 3))
+        last_error = "未知错误"
+        for attempt in range(1, attempts + 1):
+            for endpoint, field in candidates:
                 try:
-                    resp = self.http.post(
-                        endpoint,
-                        files={field: (page.path.name, fh, mime)},
-                        data={"csrf": self.csrf},
-                        headers={"Referer": ARTICLE_REFERER},
-                    )
-                except Exception as exc:  # 网络层失败，换下一候选
+                    with open(page.path, "rb") as fh:
+                        resp = self.http.post(
+                            endpoint,
+                            files={field: (page.path.name, fh, mime)},
+                            data={"csrf": self.csrf},
+                            headers={"Referer": ARTICLE_REFERER},
+                        )
+                    payload = resp.json()
+                except Exception as exc:  # 网络层/非 JSON 失败，换下一候选
                     last_error = str(exc)
+                    self.log.warning(
+                        "B站 图片 %s 上传候选失败（%s，字段 %s，第 %d/%d 轮）：%s",
+                        page.path.name,
+                        endpoint,
+                        field,
+                        attempt,
+                        attempts,
+                        exc,
+                    )
                     continue
-            try:
-                payload = resp.json()
-            except ValueError:
-                last_error = f"非 JSON 响应：{resp.text[:200]}"
-                continue
-            if payload.get("code") != 0:
-                last_error = str(payload.get("message") or payload)
-                continue
-            url = str(((payload.get("data") or {}).get("url") or "")).strip()
-            if not url:
-                last_error = f"响应缺少 url：{payload}"
-                continue
-            if url.startswith("//"):
-                url = "https:" + url
-            elif url.startswith("http://"):
-                url = "https://" + url[len("http://"):]
-            return url
-        raise PublisherError(f"B站 专栏图片上传失败：{last_error}")
+                code = payload.get("code")
+                if code != 0:
+                    last_error = str(payload.get("message") or payload)
+                    # 账号/CSRF 问题重试也没用，直接失败
+                    if code in (-101, -111):
+                        raise PublisherError(
+                            f"B站 图片上传失败（code={code}）：{last_error}（请检查 Cookie）"
+                        )
+                    self.log.warning(
+                        "B站 图片 %s 上传候选被拒（%s，字段 %s，第 %d/%d 轮）：%s",
+                        page.path.name,
+                        endpoint,
+                        field,
+                        attempt,
+                        attempts,
+                        last_error,
+                    )
+                    continue
+                url = str(((payload.get("data") or {}).get("url") or "")).strip()
+                if not url:
+                    last_error = f"响应缺少 url：{payload}"
+                    continue
+                if url.startswith("//"):
+                    url = "https:" + url
+                elif url.startswith("http://"):
+                    url = "https://" + url[len("http://"):]
+                return url
+            if attempt < attempts:
+                wait = min(1.0 * attempt, 5.0)
+                self.log.info(
+                    "B站 图片 %s 第 %d/%d 轮全部上传候选失败，%s 秒后自动重试",
+                    page.path.name,
+                    attempt,
+                    attempts,
+                    wait,
+                )
+                time.sleep(wait)
+        raise PublisherError(
+            f"B站 图片 {page.path.name} 上传失败（已自动重试 {attempts} 轮）：{last_error}"
+        )
 
     @staticmethod
     def _figure_html(url: str) -> str:

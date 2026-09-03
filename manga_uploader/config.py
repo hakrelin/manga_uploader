@@ -60,9 +60,12 @@ DEFAULT_SETTINGS: dict[str, dict[str, Any]] = {
         "original": 1,              # 1 = 声明原创，0 = 非原创
         "reprint": 0,               # 0 = 原创 / 1 = 转载（配合 original 一起提交）
         "max_article_pages": 100,   # 单篇专栏最多图片数，超出自动拆成多篇
+        "upload_attempts": 3,       # 单张图片上传失败后的自动重试轮数
         "image_category": "draw",  # daily / draw / cos
         "max_pages_per_post": 9,   # 图文动态单条上限 9 张（仅 publish_mode=dynamic）
         "topics": ["#原创漫画#"],
+        "use_system_proxy": False,  # 国内站默认直连，避免代理造成 SSL/风控问题
+        "proxy_url": "",
     },
     "tieba": {
         "forum": "",
@@ -70,6 +73,8 @@ DEFAULT_SETTINGS: dict[str, dict[str, Any]] = {
         "max_pages_per_post": 50,
         "upload_sleep": 1.0,
         "title_suffix": "【漫画】",
+        "use_system_proxy": False,
+        "proxy_url": "",
     },
     "ehentai": {
         "category_label": "Manga",  # 按上传页选项文本模糊匹配
@@ -83,6 +88,9 @@ DEFAULT_SETTINGS: dict[str, dict[str, Any]] = {
         "work_name": "",  # 作品(系列)名，留空用 manga.json 的 title
         "chapter_name": "",  # 章节名，留空用章节标题
         "max_pages_per_upload": 500,  # 单次提交页数上限
+        "upload_attempts": 2,  # 单张图片上传失败自动重试次数（网络/服务器抽风）
+        "use_system_proxy": False,  # 再漫画是国内站：默认直连，避免代理断连
+        "proxy_url": "",  # 手动代理同样默认留空
     },
 }
 

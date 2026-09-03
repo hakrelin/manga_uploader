@@ -8,7 +8,13 @@ from pathlib import Path
 
 from PIL import Image
 
-from manga_uploader.gui import UploaderApp, join_cookie_text, parse_cookie_text
+from manga_uploader.gui import (
+    UploaderApp,
+    format_full_preview,
+    join_cookie_text,
+    parse_cookie_text,
+)
+from manga_uploader.models import Chapter
 
 
 class TestCookieText(unittest.TestCase):
@@ -109,6 +115,21 @@ class TestImportHelpers(unittest.TestCase):
             zf.writestr("ch01/002.jpg", b"data")
         dest = UploaderApp._extract_zip(archive, self.root / "dest")
         self.assertTrue((dest / "ch01" / "001.jpg").exists())
+
+
+class TestFullPreviewFormat(unittest.TestCase):
+    def test_format_contains_chapter_and_platform(self):
+        chapter = Chapter(
+            key="ch01",
+            title="预览标题",
+            description="",
+            pages=[],
+        )
+        preview = [(chapter, [("bilibili", ["发布平台：B站（专栏文章）", "[1] 001.png"])])]
+        text = format_full_preview(preview)
+        self.assertIn("预览标题", text)
+        self.assertIn("● bilibili", text)
+        self.assertIn("001.png", text)
 
 
 if __name__ == "__main__":

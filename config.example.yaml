@@ -28,9 +28,12 @@ platforms:
       original: 1               # 1 = 声明原创（授权转载请按平台要求设为 0）
       reprint: 0                # 0 = 原创；1 = 转载
       max_article_pages: 100    # 单篇专栏最多放多少张图，超出自动拆成多篇
+      upload_attempts: 3        # 单张图上传失败自动重试轮数（B站偶发抽风）
       image_category: draw      # daily / draw / cos
       max_pages_per_post: 9     # 仅图文动态模式：单条最多 9 张，超出自动拆条
       topics: ["原创漫画"]      # 仅图文动态模式：动态话题，可多个
+      use_system_proxy: false   # 国内站默认直连，不跟随全局代理
+      proxy_url: ""             # 需要时再单独填
 
   tieba:
     enabled: true
@@ -42,6 +45,8 @@ platforms:
       max_pages_per_post: 50
       upload_sleep: 1.0         # 每张图上传间隔（秒），防频控
       title_suffix: "【漫画】"
+      use_system_proxy: false   # 国内站默认直连
+      proxy_url: ""
 
   ehentai:
     enabled: true
@@ -54,6 +59,8 @@ platforms:
       language_label: "Chinese"         # 汉化上传默认中文；原版/无字改 Japanese / No Text
       extra_tags: []
       publish_after_upload: true       # 上传后自动正式发布；false=只建草稿到 My Uploads
+      use_system_proxy: true           # e-hentai 是海外站：可单独走代理
+      proxy_url: "http://127.0.0.1:7897"  # 改成你实际代理端口；不需要就留空
       title_jpn: ""                     # 日文/原标题（供 field_map 的 meta:title_jpn 使用）
       langtype: "1"                     # 汉化上传默认 1=Translated；原版/无字改 0，改写改 2
       # langctl（“由专业翻译者翻译”）会在 langtype=1 时自动勾选，避免被标成机翻/渣翻
@@ -82,3 +89,6 @@ platforms:
       work_name: ""                     # 作品名，留空用 manga.json 的 title
       chapter_name: ""                  # 章节名，留空用章节标题
       max_pages_per_upload: 500         # 单次提交上限（再漫画固定 500 张）
+      upload_attempts: 2                # 单张图片上传失败自动重试次数
+      use_system_proxy: false           # 国内站默认直连，不跟随全局代理
+      proxy_url: ""                     # 需要时再单独填，如 http://127.0.0.1:7897
