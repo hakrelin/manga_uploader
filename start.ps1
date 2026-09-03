@@ -1,6 +1,7 @@
 # 漫画发布器一键启动（Windows PowerShell）
-# Python 策略：用本机任意 Python 装 uv，由 uv 建独立的 Python 3.12 虚拟环境（.venv），
-# 依赖版本由 requirements.txt 控制，不使用系统 Python 运行程序。
+# Python 策略：从国内镜像（npmmirror）用 curl 下载"绿色版"独立 Python 3.12 到 .tools\python\，
+# 用它建 .venv，依赖用 .venv 的 pip 从清华源装（版本由 requirements.txt 控制）。
+# 全程不碰系统 Python / pip 配置 / 代理设置。
 # 用法：.\start.ps1 [-Lan] [-Port 9000]
 param(
     [switch]$Lan,
@@ -14,12 +15,24 @@ Set-Location -LiteralPath $PSScriptRoot
 $PipMirror = "https://pypi.tuna.tsinghua.edu.cn/simple"
 $PipOfficial = "https://pypi.org/simple"
 
+# 绿色 Python 3.12（python-build-standalone，npmmirror 镜像）
+$PyVer = "3.12.14"
+$PyTag = "20260901"
+
+$toolsDir = Join-Path $PSScriptRoot ".tools"
+$greenPy = Join-Path $toolsDir "python\python.exe"
 $venvPy = Join-Path $PSScriptRoot ".venv\Scripts\python.exe"
 
 function Fail($msg) {
     Write-Host $msg -ForegroundColor Red
     Read-Host "回车退出"
     exit 1
+}
+
+# .venv 是否可用：Python 3.12 且依赖齐全
+function Test-Env {
+    & $venvPy -c "import sys, requests, yaml, PIL; assert sys.version_info[:2] == (3, 12)" 2>$null
+    return ($LASTEXITCODE -eq 0)
 }
 
 function Start-Main {
@@ -32,71 +45,49 @@ function Start-Main {
     exit 0
 }
 
-function Test-Deps {
-    & $venvPy -c "import requests, yaml, PIL" 2>$null
-    return ($LASTEXITCODE -eq 0)
-}
-
 # ---- 0) .venv 已就绪 → 直接启动 ----
 if (Test-Path $venvPy) {
-    if (Test-Deps) { Start-Main }
+    if (Test-Env) { Start-Main }
 }
 
-# ---- 1) 本机任意 Python（只用来装 uv / 驱动 uv） ----
-$pyArr = $null
-foreach ($cand in @(@("python"), @("py", "-3"))) {
-    $cmd = Get-Command $cand[0] -ErrorAction SilentlyContinue
-    if ($cmd) {
-        $extra = @()
-        if ($cand.Count -gt 1) { $extra = $cand[1..($cand.Count - 1)] }
-        & $cand[0] @extra -c "print(1)" 2>$null
-        if ($LASTEXITCODE -eq 0) { $pyArr = @($cand[0]) + $extra; break }
+# ---- 1) 绿色 Python 3.12（仅在缺失时下载一次，约 110MB） ----
+if (-not (Test-Path $greenPy)) {
+    Write-Host "[初始化] 下载绿色 Python $PyVer（npmmirror 国内镜像，仅首次，约 110MB）…"
+    New-Item -ItemType Directory -Force -Path $toolsDir | Out-Null
+    $arc = Join-Path $env:TEMP "py312.tar.gz"
+    $url = "https://registry.npmmirror.com/-/binary/python-build-standalone/$PyTag/" +
+        "cpython-$PyVer%2B$PyTag-x86_64-pc-windows-msvc-install_only.tar.gz"
+    & curl.exe -L --connect-timeout 20 -o $arc $url
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $arc) -or (Get-Item $arc).Length -lt 10MB) {
+        Fail "[错误] Python 下载失败，请检查网络后重跑"
+    }
+    & tar.exe -xzf $arc -C $toolsDir
+    Remove-Item -Force $arc
+    if (-not (Test-Path $greenPy)) {
+        Fail "[错误] 解压后找不到 python.exe（tar 解压失败？）"
     }
 }
-if (-not $pyArr) { Fail "[错误] 未找到 Python，请先安装任意 Python 3.8+（https://www.python.org）" }
 
-function Uv {
-    & $pyArr[0] $($pyArr | Select-Object -Skip 1) -m uv @args
-}
-
-# ---- 2) 装 uv（清华镜像 → 跳过 SSL 校验 → 官方源） ----
-Write-Host "[初始化] 安装 uv（清华镜像）…"
-& $pyArr[0] $($pyArr | Select-Object -Skip 1) -m pip install -i $PipMirror -q uv
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "[提示] 重试（跳过 SSL 校验）…"
-    & $pyArr[0] $($pyArr | Select-Object -Skip 1) -m pip install -i $PipMirror `
-        --trusted-host pypi.tuna.tsinghua.edu.cn -q uv
-}
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "[提示] 改用官方源…"
-    & $pyArr[0] $($pyArr | Select-Object -Skip 1) -m pip install -i $PipOfficial -q uv
-}
-if ($LASTEXITCODE -ne 0) {
-    Fail "[错误] uv 安装失败，请把上面的输出发给开发者"
-}
-
-# ---- 3) uv 建独立 Python 3.12 + .venv（已存在但不可用则重建） ----
-if ((Test-Path $venvPy) -and -not (Test-Deps)) {
-    Write-Host "[提示] 现有 .venv 不可用，重建…"
+# ---- 2) 建 / 重建 .venv（固定 Python 3.12） ----
+if (-not (Test-Path $venvPy)) {
+    Write-Host "[初始化] 创建虚拟环境 .venv（仅首次）…"
+    & $greenPy -m venv (Join-Path $PSScriptRoot ".venv")
+} elseif (-not (Test-Env)) {
+    Write-Host "[提示] .venv 不可用（版本不对或依赖缺失），重建…"
     Remove-Item -Recurse -Force (Join-Path $PSScriptRoot ".venv")
+    & $greenPy -m venv (Join-Path $PSScriptRoot ".venv")
 }
 if (-not (Test-Path $venvPy)) {
-    Write-Host "[初始化] 准备 Python 3.12 虚拟环境（仅首次）…"
-    Uv python install 3.12
-    if ($LASTEXITCODE -ne 0) { Fail "[错误] Python 3.12 下载失败，请检查网络后重跑" }
-    Uv venv --python 3.12 .venv
-    if (-not (Test-Path $venvPy)) {
-        Fail "[错误] .venv 创建失败，请把上面的输出发给开发者"
-    }
+    Fail "[错误] .venv 创建失败，请把上面的输出发给开发者"
 }
 
-# ---- 4) 依赖（版本由 requirements.txt 控制） ----
-if (-not (Test-Deps)) {
+# ---- 3) 依赖（装进 .venv，版本由 requirements.txt 控制） ----
+if (-not (Test-Env)) {
     Write-Host "[初始化] 安装依赖（清华镜像）…"
-    Uv pip install --python $venvPy -i $PipMirror -r requirements.txt
+    & $venvPy -m pip install -i $PipMirror --timeout 60 -r requirements.txt
     if ($LASTEXITCODE -ne 0) {
         Write-Host "[提示] 清华镜像拉取失败，改用官方源重试…"
-        Uv pip install --python $venvPy -i $PipOfficial -r requirements.txt
+        & $venvPy -m pip install -i $PipOfficial --timeout 60 -r requirements.txt
     }
     if ($LASTEXITCODE -ne 0) {
         Fail "[错误] 依赖安装失败，请把上面的输出发给开发者"
