@@ -39,14 +39,17 @@ from .config import (
 )
 from .models import Chapter
 from .runner import PLATFORM_CLASSES, Runner
-from .util import get_logger, human_size, setup_logging
+from .util import IMAGE_EXTS, get_logger, human_size, setup_logging
 from .webui import (
     PLATFORM_CARDS,
     build_app,
+    delete_page,
     extract_zip,
     format_full_preview,
     import_staging_base,
+    insert_page,
     looks_like_full_comic,
+    replace_page,
     save_config,
     stage_images,
     unwrap_single_dir,
@@ -787,6 +790,12 @@ class WebHandler(BaseHTTPRequestHandler):
             self._api_import_path()
         elif path == "/api/import":
             self._api_import()
+        elif path == "/api/insert":
+            self._api_page_upload("insert")
+        elif path == "/api/replace":
+            self._api_page_upload("replace")
+        elif path == "/api/delete":
+            self._api_page_delete()
         else:
             self._json(404, {"error": f"未知接口：{path}"})
 
@@ -1097,6 +1106,83 @@ class WebHandler(BaseHTTPRequestHandler):
             return
         self.server.state.ring.append("INFO", f"已导入漫画：{comic_dir}")
         self._json(200, {"ok": True, "dir": str(comic_dir)})
+
+    # ---------- 页面插入 / 替换 / 删除 ----------
+
+    def _api_page_upload(self, mode: str) -> None:
+        """multipart 上传新图：insert → 插到第 index 页前；replace → 替换第 index 页。"""
+        content_type = self.headers.get("Content-Type", "")
+        boundary_match = re.search(r"boundary=(?:\"([^\"]+)\"|([^;]+))", content_type)
+        if not boundary_match:
+            self._json(400, {"error": "缺少 multipart boundary"})
+            return
+        boundary = boundary_match.group(1) or boundary_match.group(2)
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = 0
+        if length <= 0 or length > 512 * 1024 * 1024:
+            self._json(400, {"error": "请求体大小异常"})
+            return
+        body = self.rfile.read(length)
+        try:
+            fields, files = _split_multipart(body, boundary)
+        except ValueError as exc:
+            self._json(400, {"error": f"解析上传失败：{exc}"})
+            return
+        comic_dir = str(fields.get("dir") or "").strip()
+        chapter_key = str(fields.get("chapter") or "").strip() or "root"
+        try:
+            index = int(str(fields.get("index") or "0").strip())
+        except ValueError:
+            index = 0
+        if not comic_dir:
+            self._json(400, {"error": "缺少漫画目录"})
+            return
+        if not files:
+            self._json(400, {"error": "没有收到图片文件"})
+            return
+        name, data = files[0]
+        ext = Path(name).suffix.lower()
+        if ext not in IMAGE_EXTS:
+            self._json(400, {"error": f"不支持的图片格式：{ext or '(无扩展名)'}"})
+            return
+        try:
+            if mode == "replace":
+                count = replace_page(comic_dir, chapter_key, index, data, ext)
+            else:
+                count = insert_page(comic_dir, chapter_key, index, data, ext)
+        except Exception as exc:
+            verb = "替换" if mode == "replace" else "插入"
+            self._json(500, {"error": f"{verb}失败：{exc}"})
+            return
+        verb = "替换" if mode == "replace" else "插入"
+        self.server.state.ring.append(
+            "INFO", f"已{verb}页：{Path(comic_dir).name}（{chapter_key}，共 {count} 页）"
+        )
+        self._json(200, {"ok": True, "pages": count})
+
+    def _api_page_delete(self) -> None:
+        """删除漫画某章节第 index 页，并重排后续页码保持连续。"""
+        data = self._read_json()
+        comic_dir = str(data.get("dir") or "").strip()
+        chapter_key = str(data.get("chapter") or "").strip() or "root"
+        try:
+            index = int(str(data.get("index") or "0"))
+        except (TypeError, ValueError):
+            index = 0
+        if not comic_dir:
+            self._json(400, {"error": "缺少漫画目录"})
+            return
+        try:
+            count = delete_page(comic_dir, chapter_key, index)
+        except Exception as exc:
+            self._json(500, {"error": f"删除失败：{exc}"})
+            return
+        self.server.state.ring.append(
+            "INFO", f"已删除页：{Path(comic_dir).name}（{chapter_key}，剩 {count} 页）"
+        )
+        self._json(200, {"ok": True, "pages": count})
 
 
 def _preview_struct(preview) -> list[dict[str, Any]]:

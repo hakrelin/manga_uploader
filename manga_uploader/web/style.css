@@ -758,12 +758,47 @@ html, body {
   background: var(--surface-3);
 }
 .pv-fig figcaption {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
   font-size: 11px;
   font-family: var(--mono);
   color: var(--text-3);
   text-align: center;
   padding: 4px 0 0;
 }
+/* 每页的替换 / 删除小按钮 */
+.pv-page-btn {
+  font: inherit;
+  font-size: 10.5px;
+  font-family: var(--font);
+  color: var(--text-3);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 1px 8px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.pv-page-btn:hover { color: var(--accent); border-color: var(--accent); background: var(--accent-weak); }
+.pv-page-btn.danger:hover { color: var(--danger); border-color: var(--danger); }
+
+/* 插入页操作条 */
+.pv-page-ops {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 16px;
+  padding: 10px 12px;
+  background: var(--surface-3);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-sm);
+}
+.pv-page-ops-label { font-size: 12px; font-weight: 600; color: var(--text-2); }
+.pv-page-ops-input { width: 84px; flex: none; }
+.pv-page-ops-hint { font-size: 11px; color: var(--text-3); margin-right: auto; }
 
 /* 各平台发布参数 */
 .pv-platforms {

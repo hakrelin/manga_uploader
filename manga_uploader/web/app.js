@@ -180,6 +180,10 @@ createApp({
     const previewText = ref("");
     const previewChapters = ref([]);
     const previewMode = ref("card");
+    // 页面编辑：每章「插入到第 N 页前」位置输入 + 待选文件的编辑目标
+    const editPos = reactive({});
+    const pendingPageEdit = ref(null); // { key, index, mode: 'insert'|'replace' }
+    const pageEditFile = ref(null);
 
     const logLines = ref([]);
     const logBox = ref(null);
@@ -757,6 +761,10 @@ createApp({
         previewText.value = r.text || "";
         previewChapters.value = r.chapters || [];
         previewMode.value = r.chapters && r.chapters.length ? "card" : "text";
+        // 每章插入位置默认尾页（count+1）
+        previewChapters.value.forEach((ch) => {
+          if (!Number.isFinite(editPos[ch.key])) editPos[ch.key] = ch.page_count + 1;
+        });
         nav.value = "workbench";
       } catch (e) {
         toastMsg(errPrefix + "：" + e.message);
@@ -796,6 +804,75 @@ createApp({
       } finally {
         busy.value = false;
       }
+    }
+
+    // ---------------- 页面编辑（插入 / 替换 / 删除） ----------------
+
+    function startInsert(ch, mode) {
+      const count = ch.page_count;
+      let pos; // 1-based：插入到第 pos 页前（pos = count+1 即尾页）
+      if (mode === "second") pos = 2;
+      else if (mode === "last") pos = count + 1;
+      else {
+        const v = editPos[ch.key];
+        pos = Number.isFinite(v) && v >= 1 ? Math.round(v) : count + 1;
+        pos = Math.min(pos, count + 1);
+      }
+      pickPageFile({ key: ch.key, index: pos - 1, mode: "insert" });
+    }
+
+    function startReplace(ch, pageNo) {
+      pickPageFile({ key: ch.key, index: pageNo - 1, mode: "replace" });
+    }
+
+    function pickPageFile(target) {
+      pendingPageEdit.value = target;
+      const input = pageEditFile.value;
+      if (!input) { toastMsg("文件选择器不可用"); return; }
+      input.value = ""; // 允许连续选同一文件
+      input.click();
+    }
+
+    async function onPageEditPicked(e) {
+      const file = e.target.files && e.target.files[0];
+      const p = pendingPageEdit.value;
+      pendingPageEdit.value = null;
+      if (!file || !p) return;
+      busy.value = true;
+      try {
+        const fd = new FormData();
+        fd.append("dir", comicDir.value.trim());
+        fd.append("chapter", p.key);
+        fd.append("index", String(p.index));
+        fd.append("file", file);
+        const ep = p.mode === "replace" ? "/api/replace" : "/api/insert";
+        const r = await api(ep, { method: "POST", body: fd });
+        toastMsg(p.mode === "replace"
+          ? `已替换第 ${p.index + 1} 页`
+          : `已插入第 ${p.index + 1} 页，共 ${r.pages} 页`);
+        if (p.mode !== "replace") editPos[p.key] = r.pages + 1; // 默认位置回到新尾页
+        await loadComic(); // 刷新整本内容与预览，页码随之更新
+      } catch (err) {
+        toastMsg((p.mode === "replace" ? "替换" : "插入") + "失败：" + err.message);
+      } finally {
+        busy.value = false;
+      }
+    }
+
+    function startDeletePage(ch, pageNo) {
+      if (!window.confirm(`确认删除第 ${pageNo} 页？\n\n后续页码会重排，且删除不可撤销。`)) return;
+      busy.value = true;
+      api("/api/delete", {
+        method: "POST", json: true,
+        body: JSON.stringify({ dir: comicDir.value.trim(), chapter: ch.key, index: pageNo - 1 }),
+      }).then((r) => {
+        toastMsg(`已删除第 ${pageNo} 页，剩 ${r.pages} 页`);
+        return loadComic();
+      }).catch((err) => {
+        toastMsg("删除失败：" + err.message);
+      }).finally(() => {
+        busy.value = false;
+      });
     }
 
     // ---------------- Modal 确定 ----------------
@@ -894,6 +971,7 @@ createApp({
     return {
       nav, navItems, version, note, running, busy, cards, config, statuses, expanded,
       comicDir, summary, metaForm, dragOver, previewText, previewChapters, previewMode,
+      editPos, pageEditFile, startInsert, startReplace, startDeletePage, onPageEditPicked,
       resetPick, saveMeta,
       logLines, logBox, logOpen, logNew, clearLog, toast, modal, lanAddr,
       theme, themeLabel, themeIcon, cycleTheme,
