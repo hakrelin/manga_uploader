@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import mimetypes
@@ -36,6 +37,7 @@ from .config import (
     REQUIRED_COOKIES,
     load_config,
 )
+from .models import Chapter
 from .runner import PLATFORM_CLASSES, Runner
 from .util import get_logger, human_size, setup_logging
 from .webui import (
@@ -228,6 +230,104 @@ def _chapter_summary(comic_dir: str) -> dict[str, Any]:
         "over_10mb": over,
         "dir": comic_dir,
         "has_meta_file": meta_file is not None,
+    }
+
+
+def _book_to_compose(comic_dir: str, book: dict[str, Any]) -> dict[str, Any]:
+    """把漫画信息表单组合成各平台发布内容（纯计算，不写盘）。
+
+    - 读取磁盘 manga.json 作为基底（保留已保存字段与 platforms 覆盖），
+      仅用表单中出现的字段覆盖；
+    - tags 表单为逗号分隔字符串，构造时转列表；
+    - 用 composer 的平台函数生成「各平台发布内容」栏目展示值。
+    """
+    root = Path(comic_dir)
+    meta_file = find_meta_file(root)
+    top = read_meta(meta_file) if meta_file else {}
+    if not isinstance(top, dict):
+        top = {}
+    data = copy.deepcopy(top)
+    for key, value in (book or {}).items():
+        if value is None:
+            continue
+        data[key] = value
+    # 语言留空默认 Chinese（栏位默认值）
+    if not str(data.get("language") or "").strip():
+        data["language"] = "Chinese"
+    # 罗马音留空时用本地引擎生成，供“填写后自动填入罗马音框”
+    for source_key, target_key in (
+        ("event", "event_en"),
+        ("author", "author_en"),
+        ("circle", "circle_en"),
+    ):
+        source = str(data.get(source_key) or "").strip()
+        if source and not str(data.get(target_key) or "").strip():
+            roma = composer.to_romaji_title_case(source)
+            if roma and roma != source:
+                data[target_key] = roma
+    jp = str(data.get("title_jp") or "").strip()
+    if jp and not str(data.get("title_en") or "").strip():
+        roma = composer.to_romaji_title_case(jp)
+        if roma and roma != jp:
+            data["title_en"] = roma
+    data.setdefault("title", root.name)
+
+    # 章节直接用 root 单本语义：标题/简介取合并后的顶层值
+    tags_raw = data.get("tags")
+    if isinstance(tags_raw, str):
+        tags = [p.strip() for p in tags_raw.split(",") if p.strip()]
+    elif isinstance(tags_raw, list):
+        tags = [str(t).strip() for t in tags_raw if str(t).strip()]
+    else:
+        tags = []
+    chapter = Chapter(
+        key="root",
+        title=str(data.get("title") or root.name),
+        description=str(data.get("description") or "").strip(),
+        tags=tags,
+        author=str(data.get("author") or "").strip(),
+        source_dir=root,
+        raw=data,
+    )
+
+    romaji = {
+        key: str(data.get(key) or "")
+        for key in ("event_en", "author_en", "circle_en", "title_en")
+    }
+
+    composed: dict[str, dict[str, str]] = {}
+    composed["ehentai"] = {
+        "category": str(
+            ((data.get("platforms") or {}).get("ehentai") or {}).get("category") or ""
+        ),
+        "language": str(
+            ((data.get("platforms") or {}).get("ehentai") or {}).get("language")
+            or "Chinese"
+        ),
+        "langtype": str(
+            ((data.get("platforms") or {}).get("ehentai") or {}).get("langtype") or ""
+        ),
+        "gname_en": composer.ehentai_title_en(chapter),
+        "gname_jp": composer.ehentai_title_jp(chapter),
+        "comment": composer.ehentai_comment(chapter),
+    }
+    for plat in ("bilibili", "tieba"):
+        composed[plat] = {
+            "title": composer.platform_title(chapter, plat),
+            "description": composer.platform_body(chapter, plat),
+        }
+    composed["zaimanhua"] = {
+        "work_name": composer.zaim_work_name(chapter),
+        "chapter_name": composer.zaim_chapter_name(chapter),
+        "introduction": composer.zaim_introduction(chapter),
+        "cate": str(
+            ((data.get("platforms") or {}).get("zaimanhua") or {}).get("cate") or ""
+        ),
+    }
+    return {
+        "platforms_content": composed,
+        "romaji": romaji,
+        "language": str(data.get("language") or "Chinese"),
     }
 
 
@@ -669,6 +769,8 @@ class WebHandler(BaseHTTPRequestHandler):
             self._api_load()
         elif path == "/api/meta":
             self._api_meta()
+        elif path == "/api/compose":
+            self._api_compose()
         elif path == "/api/romaji":
             self._api_romaji()
         elif path == "/api/ai":
@@ -852,6 +954,22 @@ class WebHandler(BaseHTTPRequestHandler):
             return
         self.server.state.ring.append("INFO", f"已保存漫画内容：{path}")
         self._json(200, {"ok": True, "path": str(path)})
+
+    def _api_compose(self) -> None:
+        """按当前漫画信息实时组合各平台发布内容（只计算不写盘）。"""
+        data = self._read_json()
+        comic_dir = str(data.get("dir") or "").strip()
+        book = data.get("book")
+        if not comic_dir:
+            self._json(400, {"error": "缺少漫画目录"})
+            return
+        book = book if isinstance(book, dict) else {}
+        try:
+            composed = _book_to_compose(comic_dir, book)
+        except Exception as exc:
+            self._json(500, {"error": f"组合失败：{exc}"})
+            return
+        self._json(200, {"ok": True, **composed})
 
     def _api_romaji(self) -> None:
         """事件/作者/社团→ *_en、日文标题→ title_en。配置了 AI(账号页) 则优先 AI，失败回退本地。"""

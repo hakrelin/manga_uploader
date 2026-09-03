@@ -141,11 +141,14 @@ createApp({
 
     const comicDir = ref("");
     const summary = ref(null);
-    const metaForm = reactive({ title: "", author: "", description: "" });
+    const metaForm = reactive({ title: "", author: "", description: "", language: "Chinese" });
     META_EXTRA.forEach((f) => { metaForm[f.key] = ""; });
+    metaForm.language = metaForm.language || "Chinese";
     const platformContent = reactive({});
+    const platformTouched = reactive({}); // 用户手写过的平台字段（组合刷新不覆盖）
     Object.keys(PLATFORM_CONTENT_SCHEMA).forEach((plat) => {
       platformContent[plat] = {};
+      platformTouched[plat] = {};
       PLATFORM_CONTENT_SCHEMA[plat].forEach((f) => { platformContent[plat][f.key] = ""; });
     });
     const dragOver = ref(false);
@@ -160,6 +163,50 @@ createApp({
     const toast = ref("");
 
     const modal = ref(null);
+    let composeTimer = null;
+    let composing = false;
+
+    function markPlatformTouched(plat, field) {
+      platformTouched[plat][field] = true;
+    }
+
+    // 按当前漫画信息实时组合各平台发布内容（不写盘），并回填留空的罗马音
+    async function refreshCompose(forceNonTouched = false) {
+      if (!comicDir.value.trim() || composing) return;
+      composing = true;
+      try {
+        const r = await api("/api/compose", {
+          method: "POST", json: true,
+          body: JSON.stringify({ dir: comicDir.value.trim(), book: metaBook() }),
+        });
+        const romaji = r.romaji || {};
+        if (r.language && !metaForm.language) metaForm.language = r.language;
+        ["event_en", "author_en", "circle_en"].forEach((k) => {
+          if (romaji[k] && !metaForm[k]) metaForm[k] = romaji[k];
+        });
+        if (romaji.title_en && !metaForm.title_en) metaForm.title_en = romaji.title_en;
+        const pc = r.platforms_content || {};
+        Object.keys(pc).forEach((plat) => {
+          const values = pc[plat] || {};
+          Object.keys(values).forEach((field) => {
+            // 未手写字段跟随当前漫画信息自动组合；手写/已保存覆盖字段保留
+            if (values[field] && !platformTouched[plat][field]
+                && (forceNonTouched || !platformContent[plat][field])) {
+              platformContent[plat][field] = values[field];
+            }
+          });
+        });
+      } catch (e) {
+        // 组合失败不阻塞编辑（可能是漫画目录未加载完整）
+      } finally {
+        composing = false;
+      }
+    }
+
+    function scheduleCompose() {
+      clearTimeout(composeTimer);
+      composeTimer = setTimeout(refreshCompose, 500);
+    }
 
     // ---------------- AI 罗马音设置（config.yaml 顶层 ai 段） ----------------
 
@@ -502,6 +549,7 @@ createApp({
         metaForm.author = m.author || "";
         metaForm.description = m.description || "";
         META_EXTRA.forEach((f) => { metaForm[f.key] = m[f.key] || ""; });
+        if (!metaForm.language) metaForm.language = "Chinese";
         // 预填充：系列三字段留空时默认按东方系列填（仅表单，保存才写盘）
         if (!metaForm.series) metaForm.series = "东方";
         if (!metaForm.series_en) metaForm.series_en = "Touhou Project";
@@ -511,8 +559,10 @@ createApp({
           const saved = pc[plat] || {};
           PLATFORM_CONTENT_SCHEMA[plat].forEach((f) => {
             platformContent[plat][f.key] = saved[f.key] || "";
+            platformTouched[plat][f.key] = !!saved[f.key]; // 已存覆盖视为“用户意图”
           });
         });
+        await refreshCompose(); // 各平台栏目立即显示自动组合结果
         await previewFull(); // 加载后自动弹出发布预览
       } catch (e) {
         summary.value = null;
@@ -581,15 +631,27 @@ createApp({
       if (!comicDir.value.trim()) return;
       busy.value = true;
       try {
+        // 1) 先按当前漫画信息保存顶层字段
         const r = await api("/api/meta", {
           method: "POST", json: true,
           body: JSON.stringify({
             dir: comicDir.value.trim(),
             book: metaBook(),
+          }),
+        });
+        // 2) 用最新漫画信息重新组合各平台发布内容并展示
+        //    （未手写字段覆盖为新组合；用户手写的平台覆盖保留）
+        await refreshCompose(true);
+        // 3) 平台栏（含组合结果与手写覆盖）一并写回 manga.json
+        await api("/api/meta", {
+          method: "POST", json: true,
+          body: JSON.stringify({
+            dir: comicDir.value.trim(),
+            book: {},
             platforms: JSON.parse(JSON.stringify(platformContent)),
           }),
         });
-        toastMsg("内容已保存");
+        toastMsg("内容已保存：漫画信息 + 各平台发布内容已更新");
         await loadComic();
       } catch (e) {
         toastMsg("保存失败：" + e.message);
@@ -771,6 +833,13 @@ createApp({
       });
       loadAi();
       connectLog();
+      // 漫画信息变化 → 自动组合各平台发布内容并回填罗马音（本地引擎）。
+      // 只监听“源字段”；代码回填 *_en 不会再次触发，避免循环请求。
+      ["event", "author", "circle", "group", "title", "title_jp",
+       "series", "series_en", "series_jp", "language", "tags",
+       "chapter_name", "description"].forEach((key) => {
+        watch(() => metaForm[key], scheduleCompose);
+      });
       watch(logLines, scrollLog);
       watch(logOpen, (v) => { if (v) logNew.value = 0; });
     });
@@ -784,6 +853,7 @@ createApp({
       aiForm, aiStatus, aiSave, aiTest, dictOpen,
       PLAT_LABELS, pageUrl, META_EXTRA, PLATFORM_CONTENT_SCHEMA, platformContent,
       SOURCE_CHOICES, CATE_OPTIONS,
+      markPlatformTouched,
       anyUnconfigured, publishTargetsText,
       platShort, platStatus, connected, extrasOf, extraLabel,
       saveConfig, openAccount, toggleExpand, openLogin,

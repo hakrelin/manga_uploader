@@ -8,6 +8,7 @@ from PIL import Image
 from manga_uploader.comic import load_chapters, platform_meta
 from manga_uploader.comic import page_sequence_warnings
 from manga_uploader.config import load_config, missing_cookies
+from manga_uploader.web import _book_to_compose
 from manga_uploader.publishers.ehentai import _parse_upload_page
 from manga_uploader.publishers.tieba import _find_first
 from manga_uploader.http_client import _clean_proxy_url, detect_system_proxy
@@ -95,6 +96,32 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(missing_cookies(zaimanhua), ["token"])
         bilibili = PlatformConfig(name="bilibili", cookies={"SESSDATA": "s", "bili_jct": "c"})
         self.assertEqual(missing_cookies(bilibili), [])
+
+    def test_book_to_compose_local_romaji_and_default_language(self):
+        book = {
+            "title": "魔理沙啊愿你安息",
+            "author": "加陽きら",
+            "circle": "まっしろけ",
+            "event": "例大祭22",
+            "group": "茶与金平糖汉化组",
+            "series": "东方",
+            "series_jp": "東方Project",
+            "series_en": "Touhou Project",
+            "title_jp": "マリサよ安らかに",
+            "description": "简介",
+            "tags": "东方,汉化",
+        }
+        out = _book_to_compose("examples/my_comic", book)
+        # 语言留空默认 Chinese；罗马音由本地引擎自动生成
+        self.assertEqual(out["language"], "Chinese")
+        self.assertEqual(out["romaji"]["author_en"], "Kayou Kira")
+        self.assertIn("Reitaisai 22", out["romaji"]["event_en"])
+        self.assertEqual(out["romaji"]["title_en"], "Marisa Yo Yasura Kani")
+        # 平台发布内容按漫画信息组合
+        bili = out["platforms_content"]["bilibili"]
+        self.assertEqual(bili["title"], "【茶与金平糖汉化组】魔理沙啊愿你安息")
+        self.assertIn("作者：加陽きら", bili["description"])
+        self.assertIn("[Chinese]", out["platforms_content"]["ehentai"]["gname_en"])
 
 
 class TestEhentaiFormParser(unittest.TestCase):

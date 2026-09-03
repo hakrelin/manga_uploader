@@ -142,8 +142,14 @@ try {
                   <div class="edit-grid">
                     <div v-for="f in schema" :key="f.key" class="field" :class="{ 'field-wide': f.kind === 'textarea' }">
                       <label class="field-label">{{ f.label }}</label>
-                      <textarea v-if="f.kind === 'textarea'" rows="3" v-model="platformContent[plat][f.key]" class="textarea"></textarea>
-                      <input v-else type="text" v-model="platformContent[plat][f.key]" class="input">
+                      <textarea v-if="f.kind === 'textarea'" rows="3"
+                        v-model="platformContent[plat][f.key]"
+                        @input="markPlatformTouched(plat, f.key)"
+                        class="textarea"></textarea>
+                      <input v-else type="text"
+                        v-model="platformContent[plat][f.key]"
+                        @input="markPlatformTouched(plat, f.key)"
+                        class="input">
                     </div>
                   </div>
                 </div>
