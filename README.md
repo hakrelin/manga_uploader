@@ -37,16 +37,39 @@ python -m pip install -r requirements.txt
 
 ## 快速开始
 
+### 浏览器前端（推荐）
+
+**一键启动**（首次运行会在程序目录自动创建 `.venv` 虚拟环境并从清华镜像安装依赖）：
+
+```bat
+:: Windows：双击 start.bat，或
+.\start.ps1              # 本机启动（自动拉起浏览器）
+.\start.ps1 -Lan         # 局域网可访问（0.0.0.0）
+```
+
+```bash
+./start.sh               # Linux / macOS，同样支持 --lan
+```
+
+也可以手动启动：
+
+```powershell
+# 启动本地服务并自动拉起浏览器
+python -m manga_uploader --web
+
+# 只在本机监听（默认 127.0.0.1）；需要局域网访问时加 --host 0.0.0.0
+python -m manga_uploader --web --host 0.0.0.0 --port 8970
+```
+
+浏览器界面覆盖全部功能：平台账号（Cookie 分字段 / 粘贴整段 / B站扫码 / e-hentai 上传表单配置 / 代理）、漫画与发布（路径输入 / 浏览目录 / 拖入 ZIP·CBZ·图片导入 / 压缩与通用设置 / 章节多选）、发布与日志（检查登录 / 预览计划 / 全文预览 / 一键发布 / 实时日志）。
+
+> 命令行方式（`check` / `publish` / `scaffold`）与旧 tkinter 界面（`--gui`，双击 `gui.pyw`）保留可用。
+
+### 命令行
+
 ```powershell
 # 1. 生成一份示例漫画，熟悉目录结构
 python -m manga_uploader scaffold examples\my_comic
-
-# 或者直接启动图形界面（也可以双击 gui.pyw）
-python -m manga_uploader --gui
-
-> 双击 `gui.pyw` 没反应时，多半是系统里 .pyw 文件关联被旧版 Python
-> （例如 ArcGIS 自带的 Python 2.7）占用。新版 `gui.pyw` 会自动检测并改用
-> 本机 Python 3 重新启动；仍失败就用命令行方式启动。
 
 # 2. 复制配置并填入各平台 Cookie
 copy config.example.yaml config.yaml
@@ -66,6 +89,10 @@ python -m manga_uploader publish examples\my_comic --platform bilibili,tieba   #
 python -m manga_uploader publish examples\my_comic --chapter ch01 --chapter ch02
 python -m manga_uploader publish examples\my_comic --parallel                  # 章节并行
 ```
+
+> 双击 `gui.pyw` 没反应时，多半是系统里 .pyw 文件关联被旧版 Python
+> （例如 ArcGIS 自带的 Python 2.7）占用。新版 `gui.pyw` 会自动检测并改用
+> 本机 Python 3 重新启动；仍失败就用命令行或 `--web` 方式启动。
 
 ## 运行测试
 

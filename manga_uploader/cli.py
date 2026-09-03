@@ -20,7 +20,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument("--config", default=None, help="config.yaml 路径（默认找当前目录）")
     parser.add_argument("-v", "--verbose", action="store_true", help="输出调试日志")
-    parser.add_argument("--gui", action="store_true", help="启动图形界面")
+    parser.add_argument("--gui", action="store_true", help="启动图形界面（旧 tkinter，备用）")
+    parser.add_argument("--web", action="store_true", help="启动浏览器前端（本地服务 + 自动拉起浏览器）")
+    parser.add_argument("--port", type=int, default=None, help="Web 服务端口（默认 8970，被占自动后移）")
+    parser.add_argument("--host", default="127.0.0.1", help="监听地址（默认 127.0.0.1；如需局域网访问填 0.0.0.0）")
+    parser.add_argument("--no-browser", action="store_true", help="启动 Web 服务但不自动打开浏览器")
 
     sub = parser.add_subparsers(dest="command")
 
@@ -100,6 +104,17 @@ def main(argv: list[str] | None = None) -> int:
         from .gui import run_gui
 
         return run_gui(config_path=args.config)
+    if args.web:
+        from .web import run_server
+
+        run_server(
+            port=args.port,
+            open_browser=not args.no_browser,
+            verbose=args.verbose,
+            config_path=args.config,
+            host=args.host,
+        )
+        return 0
     setup_logging(verbose=args.verbose or getattr(args, "dry_run", False))
 
     if not args.command:

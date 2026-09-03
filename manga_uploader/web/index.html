@@ -1,0 +1,411 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📖</text></svg>">
+<title>漫画发布器</title>
+<script>
+try {
+  var _t = localStorage.getItem("mu-theme");
+  if (_t === "light" || _t === "dark") document.documentElement.setAttribute("data-theme", _t);
+} catch (e) {}
+</script>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app" v-cloak>
+
+<div class="shell">
+
+  <!-- ============ 侧边栏 ============ -->
+  <aside class="sidebar">
+    <div class="logo">
+      <span class="logo-mark">📖</span>
+      <span class="logo-text">漫画发布器<em v-if="version">v{{ version }}</em></span>
+    </div>
+    <nav class="sidenav">
+      <button v-for="item in navItems" :key="item.key" class="sidenav-item"
+        :class="{ active: nav === item.key }" @click="nav = item.key">
+        <span class="sidenav-ico">{{ item.icon }}</span>{{ item.label }}
+        <span v-if="item.key === 'accounts'" class="nav-dot" :class="anyUnconfigured ? 'warn' : ''"></span>
+      </button>
+    </nav>
+    <div class="sidebar-foot">
+      <button class="btn btn-ghost btn-sm theme-btn" @click="cycleTheme" title="切换主题">
+        <span class="theme-ico">{{ themeIcon }}</span>{{ themeLabel }}
+      </button>
+      <div class="srv" :class="{ live: running }">
+        <span class="dot" :class="running ? 'dot-live' : 'dot-ok'"></span>
+        {{ running ? '发布中…' : '本地服务运行中' }}
+      </div>
+      <div class="srv-addr">{{ lanAddr }}</div>
+    </div>
+  </aside>
+
+  <!-- ============ 主区 ============ -->
+  <main class="main">
+
+    <!-- 工作台 -->
+    <section v-show="nav === 'workbench'" class="page">
+      <header class="page-head">
+        <div>
+          <h1>发布漫画</h1>
+          <p class="page-sub">选择漫画 → 确认平台 → 发布到多平台</p>
+        </div>
+        <button class="btn btn-primary btn-lg" :disabled="busy || running" @click="publish">
+          {{ running ? '发布中…' : '一键发布' }}
+        </button>
+      </header>
+
+      <div v-if="note" class="banner">{{ note }}</div>
+
+      <!-- ① 选择漫画 -->
+      <div class="card">
+        <div class="card-head">
+          <h2><span class="step">1</span>选择漫画</h2>
+          <span v-if="summary" class="badge">{{ summary.count }} 章 · {{ summary.series }}</span>
+          <button v-else class="btn btn-ghost btn-sm" @click="loadComic">加载目录</button>
+        </div>
+        <div class="card-body">
+          <!-- 空状态 -->
+          <div v-if="!summary" class="empty">
+            <div class="dropzone"
+              @dragover.prevent="dragOver = true"
+              @dragleave.prevent="dragOver = false"
+              @drop.prevent="onDrop">
+              <div v-if="dragOver" class="drop-hint">松开以导入</div>
+              <template v-else>
+                <div class="drop-ico">🗂️</div>
+                <div class="drop-title">拖入 ZIP / CBZ 压缩包或图片</div>
+                <div class="drop-sub">多话压缩包原样导入 · 图片多选作为单本（自动补 manga.json）</div>
+              </template>
+            </div>
+            <div class="path-row">
+              <input type="text" v-model="comicDir" class="input" placeholder="或输入漫画目录路径，如 D:\漫画\作品">
+              <button class="btn" @click="pickDir">浏览…</button>
+              <button class="btn btn-primary" @click="loadComic">加载</button>
+            </div>
+          </div>
+          <!-- 已加载 -->
+          <template v-else>
+            <div class="comic-meta">
+              <span class="comic-title">{{ summary.series }}</span>
+              <span v-if="summary.author" class="comic-author">{{ summary.author }}</span>
+              <button class="btn btn-ghost btn-sm" @click="loadComic">重新加载</button>
+            </div>
+            <div class="chapter-grid">
+              <label v-for="c in summary.chapters" :key="c.key" class="chapter-chip" :class="{ on: selectedChapters.includes(c.key) }">
+                <input type="checkbox" :value="c.key" v-model="selectedChapters">
+                <span class="chip-title">{{ c.title }}</span>
+                <span class="chip-meta">{{ c.pages }} 页 / {{ c.size }}</span>
+              </label>
+            </div>
+            <p class="hint-text" v-if="summary.over_10mb">⚠ {{ summary.over_10mb }} 张超 10MB（发布时自动压缩）／不勾选 = 全部发布</p>
+          </template>
+        </div>
+      </div>
+
+      <!-- ② 平台与登录 -->
+      <div class="card">
+        <div class="card-head">
+          <h2><span class="step">2</span>平台与登录</h2>
+          <button class="btn btn-ghost btn-sm" @click="nav = 'accounts'">管理账号 →</button>
+        </div>
+        <div class="card-body">
+          <div class="plat-list">
+            <div v-for="card in cards" :key="card.key" class="plat-row">
+              <span class="plat-dot" :class="'dot-' + card.key"></span>
+              <span class="plat-name">{{ platShort(card) }}</span>
+              <span class="plat-status" :class="connected(card) ? 'ok' : 'dim'">{{ platStatus(card) }}</span>
+              <button class="btn btn-ghost btn-sm" :disabled="busy" @click="checkOne(card.key)">检查</button>
+              <button class="btn btn-ghost btn-sm" @click="openAccount(card.key)">配置</button>
+            </div>
+          </div>
+          <p class="hint-text">发布目标 = 上方已「连接」的平台；配置 Cookie 在「平台账号」页。</p>
+        </div>
+      </div>
+
+      <!-- ③ 预览与发布 -->
+      <div class="card">
+        <div class="card-head">
+          <h2><span class="step">3</span>预览与发布</h2>
+          <div class="head-actions">
+            <button class="btn btn-ghost btn-sm" :disabled="busy" @click="previewPlan">预览计划</button>
+            <button class="btn btn-ghost btn-sm" :disabled="busy" @click="previewFull">全文预览</button>
+          </div>
+        </div>
+        <div class="card-body">
+          <div class="logbox" ref="logBox">
+            <div v-for="line in logLines" :key="line.seq" class="log-line" :class="'level-' + line.level.toLowerCase()">
+              <span class="log-level">{{ line.level }}</span>
+              <span class="log-msg">{{ line.msg }}</span>
+            </div>
+            <div v-if="!logLines.length" class="log-empty">（暂无日志 · 发布过程会实时显示在这里）</div>
+          </div>
+
+          <!-- 发布预览：通用示意图 / 原始文本 -->
+          <div v-if="previewChapters.length || previewText" class="pv-wrap">
+            <div class="pv-toolbar">
+              <span class="pv-toolbar-title">发布预览</span>
+              <div class="seg">
+                <button class="seg-btn" :class="{ on: previewMode === 'card' }" @click="previewMode = 'card'">示意图</button>
+                <button class="seg-btn" :class="{ on: previewMode === 'text' }" @click="previewMode = 'text'">文本</button>
+              </div>
+            </div>
+
+            <template v-if="previewMode === 'card'">
+              <div v-for="ch in previewChapters" :key="ch.key" class="pv-chapter">
+                <div class="pv-head">
+                  <span class="pv-title">{{ ch.title }}</span>
+                  <span class="badge">{{ ch.page_count }} 页</span>
+                </div>
+                <div class="pv-mock">
+                  <div class="pv-post">
+                    <div class="pv-post-title">{{ ch.title }}</div>
+                    <div v-if="ch.author" class="pv-post-author">
+                      <span class="pv-avatar">{{ (ch.author || "?")[0] }}</span>{{ ch.author }}
+                    </div>
+                    <p v-if="ch.description" class="pv-post-desc">{{ ch.description }}</p>
+                    <div class="pv-flow">
+                      <figure v-for="n in Math.min(ch.page_count, 4)" :key="n" class="pv-fig">
+                        <img :src="pageUrl(ch.key, n - 1)" loading="lazy" alt="">
+                        <figcaption>P{{ n }}</figcaption>
+                      </figure>
+                      <div v-if="ch.page_count > 4" class="pv-more">… 还有 {{ ch.page_count - 4 }} 张</div>
+                    </div>
+                  </div>
+                  <div class="pv-platforms">
+                    <div class="pv-plat-head">各平台发布参数</div>
+                    <div v-for="p in ch.platforms" :key="p.key" class="pv-plat">
+                      <details>
+                        <summary>
+                          <span class="plat-dot" :class="'dot-' + p.key"></span>
+                          {{ PLAT_LABELS[p.key] || p.key }}
+                          <span class="pv-plat-n">{{ p.lines.length }} 项</span>
+                        </summary>
+                        <ul class="pv-lines">
+                          <li v-for="(l, i) in p.lines" :key="i">{{ l }}</li>
+                        </ul>
+                      </details>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </template>
+            <pre v-else class="preview-text">{{ previewText }}</pre>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 平台账号 -->
+    <section v-show="nav === 'accounts'" class="page">
+      <header class="page-head">
+        <div>
+          <h1>平台账号</h1>
+          <p class="page-sub">在各平台已登录的浏览器里复制 Cookie 填入；账号密码登录因验证码限制请用浏览器登录</p>
+        </div>
+        <button class="btn" :disabled="busy" @click="saveConfig">保存配置</button>
+      </header>
+
+      <div v-for="card in cards" :key="card.key" class="card acc-card" :class="{ expanded: expanded[card.key] }">
+        <div class="acc-head" @click="toggleExpand(card.key)">
+          <span class="plat-dot" :class="'dot-' + card.key"></span>
+          <span class="acc-name">{{ card.label }}</span>
+          <span class="acc-status" :class="connected(card) ? 'ok' : 'dim'">{{ platStatus(card) }}</span>
+          <span class="chevron">{{ expanded[card.key] ? '▾' : '▸' }}</span>
+        </div>
+        <div v-show="expanded[card.key]" class="acc-body">
+          <div class="acc-toolbar">
+            <label class="switch">
+              <input type="checkbox" v-model="config.platforms[card.key].enabled">
+              <span class="switch-track"></span>
+              <span class="switch-label">启用此平台</span>
+            </label>
+            <span class="toolbar-spacer"></span>
+            <button class="btn btn-ghost btn-sm" @click="openLogin(card)">打开登录页</button>
+            <button v-if="card.qr" class="btn btn-ghost btn-sm" @click="qrLogin(card)">扫码登录</button>
+            <button v-if="card.field_map" class="btn btn-ghost btn-sm" @click="fieldMapOpen(card.key)">上传表单填写…</button>
+            <button class="btn btn-ghost btn-sm" @click="pasteCookie(card)">粘贴整段 Cookie</button>
+            <button class="btn btn-ghost btn-sm" :disabled="busy" @click="checkOne(card.key)">检查登录</button>
+          </div>
+
+          <div class="cookie-grid">
+            <div v-for="f in card.cookie_fields" :key="f.name" class="field">
+              <label class="field-label">
+                {{ f.name }}
+                <span v-if="f.required" class="req">必需</span>
+                <span v-else class="opt">可选</span>
+                <span v-if="f.hint" class="field-hint">{{ f.hint }}</span>
+              </label>
+              <input type="password" autocomplete="off" v-model="config.platforms[card.key].cookies[f.name]"
+                class="input" :placeholder="f.name">
+            </div>
+            <div v-for="(placeholder, extraKey) in extrasOf(card)" :key="extraKey" class="field">
+              <label class="field-label">{{ extraLabel(extraKey) }}</label>
+              <select v-if="extraKey === 'cate'" class="input" v-model="config.platforms[card.key].settings.cate">
+                <option v-for="(label, val) in CATE_OPTIONS" :key="val" :value="val">{{ val }} - {{ label }}</option>
+              </select>
+              <input v-else type="text" v-model="config.platforms[card.key].settings[extraKey]"
+                class="input" :placeholder="placeholder">
+            </div>
+          </div>
+
+          <p class="hint-text">{{ card.hint }}</p>
+          <div v-if="statuses[card.key] && statuses[card.key].length" class="check-status">
+            <span v-for="s in statuses[card.key]" :key="s.message" :class="s.ok ? 'ok' : 'bad'">{{ s.ok ? '✓' : '✗' }} {{ s.message }}</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 设置 -->
+    <section v-show="nav === 'settings'" class="page">
+      <header class="page-head">
+        <div>
+          <h1>设置</h1>
+          <p class="page-sub">图片压缩与网络代理等通用配置</p>
+        </div>
+        <button class="btn" :disabled="busy" @click="saveConfig">保存配置</button>
+      </header>
+
+      <div class="card">
+        <div class="card-head"><h2>图片压缩</h2></div>
+        <div class="card-body">
+          <div class="grid3">
+            <div class="field">
+              <label class="field-label">单张上限 (MB) <span class="field-hint">0 = 不限制</span></label>
+              <input type="number" min="0" step="0.5" v-model.number="config.common.max_bytes_mb" class="input">
+            </div>
+            <div class="field">
+              <label class="field-label">最长边 (px) <span class="field-hint">0 = 不缩放</span></label>
+              <input type="number" min="0" step="100" v-model.number="config.common.max_width" class="input">
+            </div>
+            <div class="field">
+              <label class="field-label">质量 (JPEG/WebP)</label>
+              <input type="number" min="10" max="95" step="1" v-model.number="config.common.quality" class="input">
+            </div>
+          </div>
+          <p class="hint-text">只等比缩放不裁剪；超过上限自动压缩。长边缩放同时也会用于全文预览。</p>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h2>网络</h2></div>
+        <div class="card-body">
+          <div class="grid3">
+            <div class="field">
+              <label class="field-label">请求超时 (秒)</label>
+              <input type="number" min="1" step="1" v-model.number="config.common.timeout" class="input">
+            </div>
+            <div class="field">
+              <label class="field-label">重试次数</label>
+              <input type="number" min="0" step="1" v-model.number="config.common.retries" class="input">
+            </div>
+            <div class="field">
+              <label class="field-label">平台间/图片间隔 (秒)</label>
+              <input type="number" min="0" step="0.5" v-model.number="config.common.interval_seconds" class="input">
+            </div>
+            <div class="field field-wide">
+              <label class="field-label">手动代理 URL <span class="field-hint">如 http://127.0.0.1:7890（留空则直连）</span></label>
+              <div class="input-row">
+                <input type="text" v-model="config.common.proxy_url" class="input" placeholder="http://127.0.0.1:7890">
+                <button class="btn btn-ghost" @click="detectProxy">检测系统代理</button>
+              </div>
+            </div>
+          </div>
+          <label class="check-row"><input type="checkbox" v-model="config.common.use_system_proxy"><span>使用系统代理（自动检测注册表/环境变量）</span></label>
+          <p class="hint-text">默认直连。e-hentai 等海外站连不上时再开代理；国内平台走国外代理可能触发风控。</p>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h2>通用</h2></div>
+        <div class="card-body">
+          <div class="grid3">
+            <div class="field">
+              <label class="field-label">输出目录（报告/调试文件）</label>
+              <input type="text" v-model="config.common.output_dir" class="input">
+            </div>
+          </div>
+          <label class="check-row"><input type="checkbox" v-model="config.common.parallel"><span>多章节并行发布</span></label>
+          <label class="check-row"><input type="checkbox" v-model="config.common.verbose"><span>详细调试日志</span></label>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<!-- ============ Toast ============ -->
+<div v-if="toast" class="toast">{{ toast }}</div>
+
+<!-- ============ Modal ============ -->
+<div v-if="modal" class="modal-mask" @click.self="modal = null">
+  <div class="modal">
+    <div class="modal-head">
+      <div class="modal-title">{{ modal.title }}</div>
+      <button class="btn btn-ghost btn-sm" @click="modal = null">✕</button>
+    </div>
+    <div class="modal-body">
+      <template v-if="modal.kind === 'paste'">
+        <p class="hint-text">从浏览器复制整段 Cookie 粘贴到下面，自动拆到各字段：</p>
+        <textarea class="textarea" rows="5" v-model="modal.text" placeholder="SESSDATA=xxx; bili_jct=yyy; ..."></textarea>
+      </template>
+      <template v-else-if="modal.kind === 'qr'">
+        <div class="qr-box">
+          <img v-if="modal.qrUrl" :src="modal.qrUrl" alt="B站登录二维码">
+          <div v-else class="qr-wait">{{ modal.qrMsg }}</div>
+        </div>
+        <p class="hint-text center">{{ modal.qrMsg }}</p>
+      </template>
+      <template v-else-if="modal.kind === 'meta'">
+        <p class="hint-text">该来源没有 manga.json，会复制到导入缓存后发布。</p>
+        <div class="field">
+          <label class="field-label">标题（同时作为作品名与章节名）</label>
+          <input type="text" class="input" v-model="modal.title">
+        </div>
+        <div class="field">
+          <label class="field-label">作者（可留空）</label>
+          <input type="text" class="input" v-model="modal.author">
+        </div>
+        <div class="field">
+          <label class="field-label">简介</label>
+          <textarea class="textarea" rows="4" v-model="modal.desc"></textarea>
+        </div>
+      </template>
+      <template v-else-if="modal.kind === 'fieldmap'">
+        <div class="fm-table">
+          <div class="fm-row fm-head">
+            <span>用途说明</span><span>页面字段名(name)</span><span>内容来源</span><span>参数</span><span></span>
+          </div>
+          <div v-for="(row, i) in modal.rows" :key="i" class="fm-row">
+            <input type="text" class="input input-sm" v-model="row.label" placeholder="用途说明">
+            <input type="text" class="input input-sm" v-model="row.field" placeholder="页面 name">
+            <select class="input input-sm" v-model="row.base" @change="onSourceChange(row)">
+              <option v-for="opt in SOURCE_CHOICES" :key="opt[1]" :value="opt[1]">{{ opt[0] }}</option>
+            </select>
+            <input type="text" class="input input-sm" v-model="row.param" :disabled="!row.base.endsWith(':')" placeholder="字段键/固定文本">
+            <button class="btn btn-ghost btn-sm" @click="modal.rows.splice(i, 1)">删除</button>
+          </div>
+        </div>
+        <div class="field-map-actions">
+          <button class="btn btn-ghost btn-sm" @click="modal.rows.push({label:'',field:'',base:'title',param:''})">添加一行</button>
+          <p class="hint-text">来源选「manga.json/config 字段」时参数填键名（如 title_jpn）；选「固定文本」填文本。</p>
+        </div>
+      </template>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" @click="modal = null">取消</button>
+      <button class="btn btn-primary" @click="modalOk">确定</button>
+    </div>
+  </div>
+</div>
+
+</div>
+
+<script>window.CSRF_TOKEN = "__CSRF_TOKEN__";</script>
+<script src="vendor/vue.global.prod.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
