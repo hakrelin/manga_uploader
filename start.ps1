@@ -44,13 +44,19 @@ if (-not (Test-Path $venvPy)) {
     }
 }
 
-# ---- 依赖（装进 .venv，缺才装） ----
+# ---- 依赖（装进 .venv，缺才装；版本由 requirements.txt 控制） ----
 & $venvPy -c "import requests, yaml, PIL" 2>$null
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "[初始化] 安装依赖 requests / PyYAML / Pillow（清华镜像）…"
-    & $venvPy -m pip install -i $PipMirror requests PyYAML Pillow
+    Write-Host "[初始化] 安装依赖（清华镜像）…"
+    & $venvPy -m pip install -i $PipMirror --timeout 60 -r requirements.txt
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "[错误] 依赖安装失败，请检查网络后重试" -ForegroundColor Red
+        Write-Host "[提示] 清华镜像拉取失败（网络/分流原因），改用官方源重试…"
+        & $venvPy -m pip install --timeout 60 -r requirements.txt
+    }
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "[错误] 依赖安装失败。" -ForegroundColor Red
+        Write-Host "  常见原因：系统代理拦截了 pip。可尝试关闭代理后重跑，" -ForegroundColor Yellow
+        Write-Host "  或手动安装：.venv\Scripts\python -m pip install -r requirements.txt" -ForegroundColor Yellow
         Read-Host "回车退出"
         exit 1
     }

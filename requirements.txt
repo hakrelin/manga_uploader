@@ -1,4 +1,4 @@
-requests>=2.31
-PyYAML>=6.0
-Pillow>=10.0
-qrcode[pil]>=7.4  # 仅 GUI 里 B站扫码登录需要；用 Cookie 登录可不装
+requests>=2.31,<3
+PyYAML>=6.0,<7
+Pillow>=10.0,<13
+qrcode[pil]>=7.4  # 仅 B站扫码登录需要；用 Cookie 登录可不装

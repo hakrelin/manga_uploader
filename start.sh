@@ -22,8 +22,11 @@ PY=.venv/bin/python
 
 # ---- 依赖（装进 .venv，缺才装） ----
 if ! "$PY" -c "import requests, yaml, PIL" >/dev/null 2>&1; then
-    echo "[初始化] 安装依赖 requests / PyYAML / Pillow（清华镜像）…"
-    "$PY" -m pip install -i "$PIP_MIRROR" requests PyYAML Pillow
+    echo "[初始化] 安装依赖（清华镜像，版本由 requirements.txt 控制）…"
+    if ! "$PY" -m pip install -i "$PIP_MIRROR" --timeout 60 -r requirements.txt; then
+        echo "[提示] 清华镜像拉取失败（网络/分流原因），改用官方源重试…"
+        "$PY" -m pip install --timeout 60 -r requirements.txt
+    fi
 fi
 
 LAN=0
