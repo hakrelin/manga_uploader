@@ -196,6 +196,71 @@ class EhentaiPublisher(BasePublisher):
     key = "ehentai"
     display_name = "e-hentai"
 
+    def _upload_mode(self) -> str:
+        """zip（默认，站点稳定接受归档）或 files（逐张多文件）。"""
+        mode = str(self.cfg.get("upload_mode") or "").strip().lower()
+        return mode if mode in ("files", "individual") else "zip"
+
+    def _upload_names(self, pages) -> list[str]:
+        """预览与实际打包共用的上传文件名（顺序与打包完全一致）。"""
+        mode = self._upload_mode()
+
+        def _page_path(page) -> Path:
+            if hasattr(page, "path"):
+                return Path(page.path)
+            return Path(page)
+
+        if mode in ("files", "individual"):
+            return [
+                f"{index:04d}_{_page_path(p).name}" for index, p in enumerate(pages, 1)
+            ]
+        # 固定至少 3 位：001…999、1000…，字典序与自然序一致（防百页以上错序）
+        width = max(3, len(str(len(pages))))
+        return [
+            f"{index:0{width}d}{_page_path(p).suffix.lower()}"
+            for index, p in enumerate(pages, 1)
+        ]
+
+    def full_preview(self, chapter: Chapter) -> list[str]:
+        """e-hentai 全文预览：列出将写入 zip/上传的文件名（与实际上传一致）。"""
+        from ..comic import page_sequence_warnings
+        from ..util import human_size
+
+        mode = self._upload_mode()
+        lines = [
+            f"发布平台：{self.display_name}",
+            f"图库名：{composer.ehentai_title_en(chapter) or chapter.title}",
+        ]
+        meta = self._meta(chapter)
+        category = str(
+            meta.get("category") or self.cfg.get("category_label") or "（按上传页选项匹配）"
+        )
+        lines.append(f"分类：{category}")
+        tags = "、".join(self._tags(chapter)) or "（无）"
+        lines.append(f"标签：{tags}")
+        if mode in ("files", "individual"):
+            lines.append(f"上传 {len(chapter.pages)} 张图片（逐张）")
+        else:
+            lines.append(
+                f"打包为 ZIP 归档（{len(chapter.pages)} 页），归档内文件名如下，"
+                "E 站将按归档内文件名生成页码："
+            )
+        names = self._upload_names(chapter.pages)
+        for index, page in enumerate(chapter.pages, 1):
+            lines.append(
+                f"  [{index:>3}] {names[index - 1]}"
+                f"（源文件 {page.name}，{human_size(page.stat().st_size)}；"
+                "上传时自动压缩至 10MB 内）"
+            )
+        warnings = page_sequence_warnings(chapter.pages)
+        if warnings:
+            lines.append("⚠ 检查发现：")
+            for warning in warnings:
+                lines.append("  - " + warning)
+        else:
+            lines.append("✓ 页面顺序连续，未发现重复或明显漏号")
+        return lines
+
     def check(self) -> CheckResult:
         missing = self.missing_cookies()
         if missing:
@@ -509,6 +574,7 @@ class EhentaiPublisher(BasePublisher):
         if mode not in ("files", "individual"):
             return self._upload_zip(action, data, file_name, pages)
         # files：逐张多文件（兼容站点旧流程与本地测试）
+        names = self._upload_names(pages)
         files: list[tuple[str, tuple[str, object, str]]] = []
         handles: list = []
         try:
@@ -519,7 +585,7 @@ class EhentaiPublisher(BasePublisher):
                 files.append(
                     (
                         file_name,
-                        (f"{index:04d}_{page_item.path.name}", handle, mime),
+                        (names[index - 1], handle, mime),
                     )
                 )
             self.log.info("POST 上传 %d 个文件到 %s", len(files), action)
@@ -552,10 +618,10 @@ class EhentaiPublisher(BasePublisher):
         fd, zip_path = tempfile.mkstemp(suffix=".zip", prefix="ehentai_")
         os.close(fd)  # zipfile 会用路径重新打开，fd 只占资源
         try:
+            names = self._upload_names(pages)
             with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-                for index, page_item in enumerate(pages, 1):
+                for page_item, arcname in zip(pages, names):
                     # 站点按归档内文件名生成页码，只保留页序名（对齐人工 zip 上传的 01.png）
-                    arcname = f"{index:02d}{Path(page_item.path.name).suffix.lower()}"
                     zf.write(page_item.path, arcname=arcname)
             self.log.info("POST 上传 zip（%d 页，%s）到 %s", len(pages), zip_path, action)
             with open(zip_path, "rb") as fh:

@@ -206,9 +206,33 @@ class TestEhentaiPublisherMock(unittest.TestCase):
         self.assertEqual(body.count(b'name="files[]"'), 1)
         self.assertIn(b"application/zip", body)
         self.assertIn(b'filename="gallery.zip"', body)
-        # 归档内按页序命名（01.png … 05.png）
-        self.assertIn(b"01.png", body)
-        self.assertIn(b"05.png", body)
+        # 归档内按页序固定三位命名（001.png … 005.png），字典序与自然序一致
+        self.assertIn(b"001.png", body)
+        self.assertIn(b"005.png", body)
+
+    def test_preview_names_match_upload_names(self):
+        cfg = PlatformConfig(
+            name="ehentai",
+            cookies={"ipb_member_id": "1", "ipb_pass_hash": "h"},
+            settings={"category_label": "Manga", "language_label": "Chinese"},
+        )
+        publisher = EhentaiPublisher(cfg, CommonConfig(output_dir=str(Path(self.tmp.name) / "out")))
+        chapter = _make_chapter(Path(self.tmp.name))
+        lines = publisher.full_preview(chapter)
+        # 预览应展示 zip 打包后的文件名（001.png …），并标注源文件名
+        self.assertIn("[  1] 001.png（源文件 001.png", "\n".join(lines))
+        self.assertIn("[  5] 005.png（源文件 005.png", "\n".join(lines))
+        # 预览文件名与实际打包名完全一致
+        upload_names = publisher._upload_names(chapter.pages)
+        self.assertEqual(len(upload_names), 5)
+        self.assertEqual(upload_names[0], "001.png")
+        self.assertEqual(upload_names[-1], "005.png")
+        # 超过 99 页时统一三位及以上，字典序与自然序一致
+        fake_pages = [Path(f"{i:03d}.png") for i in range(1, 151)]
+        wide = publisher._upload_names(fake_pages)
+        self.assertEqual(wide[0], "001.png")
+        self.assertEqual(wide[-1], "150.png")
+        self.assertEqual(sorted(wide), wide)
 
     def test_publish_platform_override_second_title(self):
         chapter = _make_chapter(Path(self.tmp.name))
