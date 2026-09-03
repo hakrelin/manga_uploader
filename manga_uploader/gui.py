@@ -31,6 +31,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from . import __version__
 from .comic import META_FILES, load_chapters
+from . import composer
 from .config import (
     AppConfig,
     CommonConfig,
@@ -68,7 +69,6 @@ PLATFORM_CARDS: list[dict[str, Any]] = [
         "login_url": "https://tieba.baidu.com",
         "cookie_fields": [{"name": "BDUSS", "required": True}],
         "hint": "登录百度后复制 Cookie 里的 BDUSS。发帖权限受账号与吧等级限制。",
-        "extras": [("forum", "目标吧名（可留空，在 manga.json 里配置）")],
     },
     {
         "key": "ehentai",
@@ -79,14 +79,8 @@ PLATFORM_CARDS: list[dict[str, Any]] = [
             {"name": "ipb_pass_hash", "required": True},
         ],
         "hint": "登录 e-hentai 后复制 Cookie 里的 ipb_member_id 与 ipb_pass_hash。"
-        "上传入口：upload.e-hentai.org/managegallery?act=new；通常需要代理直连。",
-        "extras": [
-            ("category_label", "默认分类（如 Manga / Doujinshi）"),
-            ("language_label", "语言（留空用页面默认 Japanese/No Text，如 Chinese）"),
-            ("langtype", "0=官方/无字 1=汉化 2=改写（汉化上传默认 1）"),
-            ("title_jpn", "默认日文原标题（可被每话 manga.json 覆盖）"),
-        ],
-        "field_map": True,
+        "上传入口：upload.e-hentai.org/managegallery?act=new；通常需要代理直连。"
+        "画廊分类/语言/汉化标记等发布内容请在“漫画与压缩 → 各平台发布内容”里设置。",
     },
     {
         "key": "zaimanhua",
@@ -97,14 +91,29 @@ PLATFORM_CARDS: list[dict[str, Any]] = [
             {"name": "clientId", "required": False, "hint": "可选"},
         ],
         "hint": "登录再漫画后复制 Cookie 里的 token（JWT），可选 clientId。投稿页：manhua.zaimanhua.com/uploadShows",
-        "extras": [("cate", "作品类型")],
     },
 ]
 
-EXTRA_OPTIONS = {
-    "cate": ("1", "2", "3", "4"),
-    "cate_label": None,
-}
+
+# 漫画信息页：基础字段（写入 manga.json 根级，作为各平台自动组合的来源）
+BASE_FIELDS: list[tuple[str, str, str]] = [
+    ("event", "展会（如 C105）", "text"),
+    ("author", "作者/画师（日文原标题侧用原名）", "text"),
+    ("author_en", "作者罗马音（可留空，自动转换）", "text"),
+    ("circle", "社团", "text"),
+    ("circle_en", "社团罗马音（可留空，自动转换）", "text"),
+    ("group", "汉化组（如 茶与金平糖汉化组）", "text"),
+    ("title", "中文标题", "text"),
+    ("title_jp", "日文原标题", "text"),
+    ("title_en", "英文/罗马音标题", "text"),
+    ("series", "系列/tag 中文（如 东方）", "text"),
+    ("series_en", "系列英文（如 Touhou Project）", "text"),
+    ("series_jp", "系列日文（如 東方Project）", "text"),
+    ("language", "语言（Chinese / 中文）", "text"),
+    ("tags", "标签（逗号分隔，如 东方,汉化）", "text"),
+    ("chapter_name", "再漫画章节名（默认短篇）", "text"),
+    ("description", "简介", "textarea"),
+]
 
 
 def parse_cookie_text(text: str) -> dict[str, str]:
@@ -245,6 +254,12 @@ class UploaderApp:
         self.status_vars: dict[str, tk.StringVar] = {}
         self.extra_vars: dict[str, dict[str, tk.Variable]] = {}
         self.field_maps: dict[str, list[dict[str, Any]]] = {}
+        self.meta_vars: dict[str, tk.Variable] = {}
+        self.meta_widgets: dict[str, tk.Widget] = {}
+        self.platform_content_vars: dict[str, dict[str, tk.Variable]] = {}
+        self.platform_content_widgets: dict[str, dict[str, tk.Widget]] = {}
+        self.platform_schema_rows: dict[str, dict[str, dict[str, Any]]] = {}
+        self._editing_chapter: Chapter | None = None
         self.comic_dir_var = tk.StringVar()
         self.chapter_list: Optional[tk.Listbox] = None
         self.meta_var = tk.StringVar()
@@ -459,19 +474,8 @@ class UploaderApp:
                 ttk.Button(head, text="扫码登录", command=self._bilibili_qr_login).pack(
                     side="right", padx=(4, 0)
                 )
-            if card.get("field_map"):
-                ttk.Button(
-                    head,
-                    text="上传表单填写…",
-                    command=lambda k=key: self._open_field_map_editor(k),
-                ).pack(side="right", padx=(4, 0))
 
             cookies = (cfg.cookies if cfg else {}) or {}
-            saved_rows = (cfg.settings.get("field_map") if cfg else None) or []
-            self.field_maps[key] = copy.deepcopy(
-                [r for r in saved_rows if isinstance(r, dict)]
-                or DEFAULT_FIELD_ROWS
-            )
             ttk.Button(
                 frame,
                 text="粘贴整段 Cookie（自动拆分）…",
@@ -482,7 +486,6 @@ class UploaderApp:
             ttk.Label(frame, text=card["hint"], foreground="#666", wraplength=940).pack(
                 anchor="w", pady=(2, 0)
             )
-            self._build_extra_fields(frame, card)
             ttk.Label(frame, textvariable=self.status_vars[key], foreground="#2a7").pack(
                 anchor="w", pady=(2, 0)
             )
@@ -760,7 +763,7 @@ class UploaderApp:
     def _build_comic_tab(self) -> None:
         body = self.tab_comic
         body.columnconfigure(0, weight=1)
-        body.rowconfigure(3, weight=1)
+        body.rowconfigure(2, weight=1)
 
         top = ttk.Frame(body)
         top.grid(row=0, column=0, sticky="ew", pady=(6, 4))
@@ -782,17 +785,588 @@ class UploaderApp:
         mid.columnconfigure(0, weight=1)
         self.chapter_list = tk.Listbox(mid, height=6, selectmode="extended")
         self.chapter_list.grid(row=0, column=0, sticky="ew")
+        self.chapter_list.bind("<<ListboxSelect>>", self._on_chapter_select)
         ttk.Label(mid, textvariable=self.meta_var, wraplength=960, foreground="#333").grid(
             row=1, column=0, sticky="w", pady=(4, 0)
         )
 
-        settings = ttk.LabelFrame(body, text="图片压缩（> 上限自动压缩，默认 10MB/张）", padding=8)
-        settings.grid(row=2, column=0, sticky="ew", pady=(4, 4))
-        self._build_compress_ui(settings)
+        self.comic_sub = ttk.Notebook(body)
+        self.comic_sub.grid(row=2, column=0, sticky="nsew", pady=(2, 4))
+        page_meta = ttk.Frame(self.comic_sub)
+        page_platform = ttk.Frame(self.comic_sub)
+        page_compress = ttk.Frame(self.comic_sub)
+        self.comic_sub.add(page_meta, text=" 漫画信息 ")
+        self.comic_sub.add(page_platform, text=" 各平台发布内容 ")
+        self.comic_sub.add(page_compress, text=" 压缩与通用 ")
+        self._build_comic_meta_page(page_meta)
+        self._build_platform_content_page(page_platform)
+        self._build_compress_page(page_compress)
 
-        advanced = ttk.LabelFrame(body, text="通用", padding=8)
-        advanced.grid(row=3, column=0, sticky="nsew", pady=(0, 4))
-        self._build_common_ui(advanced)
+    # ---- 漫画信息（基础字段，自动组合的来源） ----
+
+    def _build_comic_meta_page(self, parent: tk.Widget) -> None:
+        scroll = _ScrollFrame(parent)
+        scroll.pack(fill="both", expand=True, padx=4, pady=4)
+        scroll.bind_mousewheel()
+        body = scroll.inner
+        body.columnconfigure(1, weight=1)
+        ttk.Label(
+            body,
+            text="按上传习惯填写一次；保存后会自动生成“各平台发布内容”。"
+            "作者/社团/日文标题的罗马音可留空，用右侧按钮自动转换后手动微调。",
+            foreground="#555",
+            wraplength=940,
+        ).grid(row=0, column=0, columnspan=4, sticky="w", pady=(2, 6))
+
+        textarea_keys = {key for key, _label, kind in BASE_FIELDS if kind == "textarea"}
+        row_index = 1
+        for key, label, kind in BASE_FIELDS:
+            label_widget = ttk.Label(body, text=label + "：")
+            label_widget.grid(row=row_index, column=0, sticky="nw", padx=(4, 2), pady=3)
+            if kind == "textarea":
+                text = tk.Text(body, height=5, wrap="word")
+                text.grid(
+                    row=row_index, column=1, columnspan=3, sticky="ew", padx=4, pady=3
+                )
+                self.meta_widgets[key] = text
+                row_index += 1
+                continue
+            var = tk.StringVar()
+            entry = ttk.Entry(body, textvariable=var)
+            entry.grid(row=row_index, column=1, columnspan=3, sticky="ew", padx=4, pady=3)
+            self.meta_vars[key] = var
+            self.meta_widgets[key] = entry
+            row_index += 1
+            if row_index == 9:
+                row_index += 1  # 留一行给转换按钮，视觉分组
+
+        buttons = ttk.Frame(body)
+        buttons.grid(row=row_index + 2, column=0, columnspan=4, sticky="w", pady=6)
+        ttk.Button(
+            buttons,
+            text="作者/社团 → 罗马音",
+            command=self._fill_romaji_names,
+        ).pack(side="left", padx=4)
+        ttk.Button(
+            buttons,
+            text="日文标题 → 罗马音标题",
+            command=self._fill_romaji_title,
+        ).pack(side="left", padx=4)
+        ttk.Button(
+            buttons,
+            text="保存漫画信息",
+            command=self._save_comic_meta,
+        ).pack(side="left", padx=4)
+        ttk.Label(
+            body,
+            text="（保存后自动按新信息重新生成各平台发布内容）",
+            foreground="#888",
+        ).grid(row=row_index + 3, column=0, columnspan=4, sticky="w", pady=(0, 6))
+
+    def _meta_value(self, key: str) -> str:
+        var = self.meta_vars.get(key)
+        if var is not None:
+            return str(var.get()).strip()
+        widget = self.meta_widgets.get(key)
+        if isinstance(widget, tk.Text):
+            return widget.get("1.0", "end").strip()
+        return ""
+
+    def _set_meta_value(self, key: str, value: Any) -> None:
+        var = self.meta_vars.get(key)
+        if var is not None:
+            var.set("" if value is None else str(value))
+            return
+        widget = self.meta_widgets.get(key)
+        if isinstance(widget, tk.Text):
+            widget.delete("1.0", "end")
+            widget.insert("1.0", "" if value is None else str(value))
+
+    def _fill_romaji_names(self) -> None:
+        author = self._meta_value("author")
+        circle = self._meta_value("circle")
+        if author and not self._meta_value("author_en"):
+            self._set_meta_value("author_en", composer.to_romaji(author))
+        if circle and not self._meta_value("circle_en"):
+            self._set_meta_value("circle_en", composer.to_romaji(circle))
+
+    def _fill_romaji_title(self) -> None:
+        jp = self._meta_value("title_jp")
+        if jp and not self._meta_value("title_en"):
+            self._set_meta_value("title_en", composer.to_romaji(jp))
+
+    # ---- 各平台发布内容（自动生成，可手动修改后保存） ----
+
+    def _build_platform_content_page(self, parent: tk.Widget) -> None:
+        scroll = _ScrollFrame(parent)
+        scroll.pack(fill="both", expand=True, padx=4, pady=4)
+        scroll.bind_mousewheel()
+        body = scroll.inner
+        body.columnconfigure(0, weight=1)
+        ttk.Label(
+            body,
+            text="每个平台按上传表单陈列。点“重新生成”按左侧漫画信息自动组合，"
+            "也可直接修改任意文本框；修改后的内容会随“保存”写入 manga.json 覆盖自动值。",
+            foreground="#555",
+            wraplength=960,
+        ).grid(row=0, column=0, sticky="w", pady=(2, 6))
+
+        select_options: dict[str, tuple[str, list[str]]] = {
+            "ehentai": ("category", composer.ehentai_categories()),
+            "zaimanhua": ("cate", [f"{k} - {label}" for k, label in sorted(CATE_LABELS.items())]),
+        }
+        extra_select_options: dict[tuple[str, str], list[str]] = {
+            ("ehentai", "langtype"): ["0 - 官方/无字", "1 - 汉化（默认）", "2 - 改写"],
+        }
+        row = 1
+        for card in PLATFORM_CARDS:
+            key = card["key"]
+            if key not in composer.PLATFORM_SCHEMA:
+                continue
+            frame = ttk.LabelFrame(body, text=card["label"], padding=(8, 4))
+            frame.grid(row=row, column=0, sticky="ew", pady=4)
+            row += 1
+            self.platform_schema_rows[key] = {}
+            self.platform_content_vars[key] = {}
+            self.platform_content_widgets[key] = {}
+
+            head = ttk.Frame(frame)
+            head.pack(fill="x")
+            ttk.Label(
+                head,
+                text=self._platform_content_hint(key),
+                foreground="#777",
+                wraplength=760,
+            ).pack(side="left")
+            ttk.Button(
+                head,
+                text="重新生成",
+                command=lambda k=key: self._regenerate_platform(k),
+            ).pack(side="right")
+
+            for field_index, field_schema in enumerate(composer.PLATFORM_SCHEMA[key]):
+                field_key = field_schema["key"]
+                kind = field_schema["kind"]
+                self.platform_schema_rows[key][field_key] = field_schema
+                frow = ttk.Frame(frame)
+                frow.pack(fill="x", pady=2)
+                label = field_schema["label"]
+                ttk.Label(frow, text=label + "：", width=30, anchor="w").pack(side="left")
+                if kind == "select":
+                    var = tk.StringVar()
+                    if key in select_options and field_key == select_options[key][0]:
+                        values = select_options[key][1]
+                    elif (key, field_key) in extra_select_options:
+                        values = extra_select_options[(key, field_key)]
+                    else:
+                        values = []
+                    combo = ttk.Combobox(
+                        frow,
+                        textvariable=var,
+                        values=values,
+                        width=54,
+                        state="readonly",
+                    )
+                    combo.pack(side="left", fill="x", expand=True)
+                    self.platform_content_vars[key][field_key] = var
+                    self.platform_content_widgets[key][field_key] = combo
+                elif kind == "textarea":
+                    text = tk.Text(frow, height=4, wrap="word")
+                    text.pack(side="left", fill="x", expand=True)
+                    self.platform_content_widgets[key][field_key] = text
+                else:
+                    var = tk.StringVar()
+                    entry = ttk.Entry(frow, textvariable=var)
+                    entry.pack(side="left", fill="x", expand=True)
+                    self.platform_content_vars[key][field_key] = var
+                    self.platform_content_widgets[key][field_key] = entry
+
+        save_bar = ttk.Frame(body)
+        save_bar.grid(row=row + 1, column=0, sticky="ew", pady=8)
+        ttk.Button(
+            save_bar,
+            text="保存各平台发布内容",
+            command=self._save_platform_content,
+        ).pack(side="left", padx=4)
+        ttk.Label(
+            save_bar,
+            text="（先选择左侧要发布的章节；当前编辑章节会显示在日志里）",
+            foreground="#888",
+        ).pack(side="left")
+
+    def _platform_content_hint(self, key: str) -> str:
+        hints = {
+            "ehentai": (
+                "示例：英文 (C105) [Taisanchi (Ichidai Taisa)] Bannou-gata … | 万能型… "
+                "(Touhou Project) [Chinese] [茶与金平糖汉化组]；日文对应 [中国翻訳]"
+            ),
+            "bilibili": "标题：【汉化组】中文标题；正文：作者/社团/简介（图片自动排在正文后）",
+            "tieba": "与 B站类似：标题【汉化组】中文标题；一楼放简介+封面，其余每楼最多 9 张",
+            "zaimanhua": "标题=中文标题；简介=tag/作者/简介；章节名默认“短篇”",
+        }
+        return hints.get(key, "")
+
+    def _platform_value(self, key: str, field: str) -> str:
+        var = self.platform_content_vars.get(key, {}).get(field)
+        if var is not None:
+            return str(var.get()).strip()
+        widget = self.platform_content_widgets.get(key, {}).get(field)
+        if isinstance(widget, tk.Text):
+            return widget.get("1.0", "end").strip()
+        return ""
+
+    def _set_platform_value(self, key: str, field: str, value: Any) -> None:
+        var = self.platform_content_vars.get(key, {}).get(field)
+        if var is not None:
+            var.set("" if value is None else str(value))
+            return
+        widget = self.platform_content_widgets.get(key, {}).get(field)
+        if isinstance(widget, tk.Text):
+            widget.delete("1.0", "end")
+            widget.insert("1.0", "" if value is None else str(value))
+
+    def _temp_chapter(self) -> Chapter:
+        """根据当前基础字段构造临时 Chapter，供“重新生成”计算。"""
+        base = self._selected_chapter()
+        if base is None:
+            raise RuntimeError("请先加载章节")
+        raw = copy.deepcopy(dict(base.raw))
+        raw.setdefault("platforms", {})
+        for field in (
+            "event", "author", "author_en", "circle", "circle_en", "group",
+            "title", "title_jp", "title_en", "series", "series_en", "series_jp",
+            "language", "tags", "chapter_name",
+        ):
+            value = self._meta_value(field)
+            raw[field] = value
+        if self._meta_value("description"):
+            raw["description"] = self._meta_value("description")
+        if self._meta_value("tags"):
+            raw["tags"] = [
+                part.strip()
+                for part in re.split(r"[,，、\n]", self._meta_value("tags"))
+                if part.strip()
+            ]
+        chapter = Chapter(
+            key=base.key,
+            title=str(raw.get("title") or base.title),
+            description=str(raw.get("description") or ""),
+            tags=list(raw.get("tags") or base.tags),
+            author=str(raw.get("author") or ""),
+            cover=base.cover,
+            pages=base.pages,
+            source_dir=base.source_dir,
+            raw=raw,
+        )
+        return chapter
+
+    def _regenerate_platform(self, key: str) -> None:
+        try:
+            chapter = self._temp_chapter()
+        except Exception as exc:
+            self._warn(str(exc))
+            return
+        meta = composer.platform_meta(chapter, key)
+        meta_override = copy.deepcopy(dict(meta))
+        if key == "ehentai":
+            meta_override.pop("gname_en", None)
+            meta_override.pop("gname_jp", None)
+            meta_override.pop("comment", None)
+            language = self._platform_value("ehentai", "language") or "Chinese"
+            langtype = (self._platform_value("ehentai", "langtype") or "1").split(" - ")[0]
+            meta_override["language"] = language
+            meta_override["langtype"] = langtype
+            chapter.raw["platforms"][key] = meta_override
+            self._set_platform_value("ehentai", "gname_en", composer.ehentai_title_en(chapter))
+            self._set_platform_value("ehentai", "gname_jp", composer.ehentai_title_jp(chapter))
+            self._set_platform_value("ehentai", "comment", composer.ehentai_comment(chapter))
+            if not self._platform_value("ehentai", "category"):
+                self._set_platform_value(
+                    "ehentai",
+                    "category",
+                    self.app.platforms["ehentai"].get("category_label", "Doujinshi")
+                    if "ehentai" in self.app.platforms
+                    else "Doujinshi",
+                )
+        elif key in ("bilibili", "tieba"):
+            meta_override.pop("title", None)
+            meta_override.pop("description", None)
+            chapter.raw["platforms"][key] = meta_override
+            self._set_platform_value(key, "title", composer.platform_title(chapter, key))
+            self._set_platform_value(key, "description", composer.platform_body(chapter, key))
+        elif key == "zaimanhua":
+            meta_override.pop("work_name", None)
+            meta_override.pop("chapter_name", None)
+            meta_override.pop("introduction", None)
+            chapter.raw["platforms"][key] = meta_override
+            self._set_platform_value("zaimanhua", "work_name", composer.zaim_work_name(chapter))
+            self._set_platform_value("zaimanhua", "chapter_name", composer.zaim_chapter_name(chapter))
+            self._set_platform_value("zaimanhua", "introduction", composer.zaim_introduction(chapter))
+        self._log(f"已按漫画信息重新生成 {key} 发布内容（可继续手动修改）")
+
+    @staticmethod
+    def _langtype_display(value: str) -> str:
+        mapping = {"0": "0 - 官方/无字", "1": "1 - 汉化（默认）", "2": "2 - 改写"}
+        return mapping.get(str(value).strip(), str(value))
+
+    # ---- 保存到 manga.json ----
+
+    def _meta_root_path(self) -> Path:
+        comic_dir = self.comic_dir_var.get().strip()
+        if not comic_dir:
+            raise RuntimeError("请先选择漫画目录")
+        root = Path(comic_dir).expanduser().resolve()
+        for name in META_FILES:
+            candidate = root / name
+            if candidate.is_file():
+                return candidate
+        return root / "manga.json"
+
+    def _save_comic_meta(self) -> None:
+        chapter = self._selected_chapter()
+        if chapter is None:
+            self._warn("请先加载漫画章节")
+            return
+        try:
+            meta_path = self._meta_root_path()
+            from .comic import read_meta
+
+            raw = read_meta(meta_path)
+            for field in (
+                "event", "author", "author_en", "circle", "circle_en", "group",
+                "title_jp", "title_en", "series", "series_en", "series_jp",
+                "language", "chapter_name",
+            ):
+                value = self._meta_value(field)
+                if value:
+                    raw[field] = value
+                else:
+                    raw.pop(field, None)
+            tags_value = self._meta_value("tags")
+            raw["tags"] = (
+                [p.strip() for p in re.split(r"[,，、\n]", tags_value) if p.strip()]
+                if tags_value
+                else []
+            )
+            self._write_chapter_fields(raw, chapter, title=True, description=True)
+            self._write_meta_file(meta_path, raw)
+            self._log(f"漫画信息已保存：{meta_path.name}（章节 {chapter.key}）")
+            self._load_comic(reload_ui=True)
+            self._select_chapter_key(chapter.key)
+        except Exception as exc:
+            self._warn(f"保存失败：{exc}")
+
+    def _save_platform_content(self) -> None:
+        chapter = self._selected_chapter()
+        if chapter is None:
+            self._warn("请先加载漫画章节")
+            return
+        try:
+            meta_path = self._meta_root_path()
+            from .comic import read_meta
+
+            raw = read_meta(meta_path)
+            raw.setdefault("platforms", {})
+            entries = raw.setdefault("chapters", [])
+            global_target = raw["platforms"]
+            if chapter.key != "root" and len(entries) > 1:
+                entry = None
+                for item in entries:
+                    if not isinstance(item, dict):
+                        continue
+                    if str(item.get("folder") or item.get("key") or item.get("name")) == chapter.key:
+                        entry = item
+                        break
+                if entry is None:
+                    entry = {"folder": chapter.key}
+                    entries.append(entry)
+                entry.setdefault("platforms", {})
+                global_target = entry["platforms"]
+            for key in composer.PLATFORM_SCHEMA:
+                if key not in self.platform_content_widgets:
+                    continue
+                target_platforms = global_target if key in ("ehentai", "bilibili", "tieba", "zaimanhua") else raw["platforms"]
+                if key in ("tieba", "ehentai", "zaimanhua") and key not in ("bilibili",):
+                    # forum/category/cate 属全局设置，其余文字内容按章节存
+                    pass
+                target_platforms.setdefault(key, {})
+                for field in composer.PLATFORM_SCHEMA[key]:
+                    field_key = field["key"]
+                    global_keys = {"forum", "category", "cate"}
+                    store = (
+                        raw["platforms"].setdefault(key, {})
+                        if field_key in global_keys and chapter.key != "root"
+                        else target_platforms.setdefault(key, {})
+                    )
+                    value = self._platform_value(key, field_key)
+                    if field_key == "langtype":
+                        value = value.split(" - ")[0].strip()
+                    if field_key in ("category", "cate"):
+                        if field_key == "cate":
+                            value = value.split(" - ")[0].strip() if value else value
+                        if not value:
+                            store.pop(field_key, None)
+                        else:
+                            store[field_key] = value
+                        continue
+                    if value:
+                        store[field_key] = value
+                    else:
+                        store.pop(field_key, None)
+            self._write_meta_file(meta_path, raw)
+            self._log(f"各平台发布内容已保存（章节 {chapter.key}）")
+            self._load_comic(reload_ui=True)
+            self._select_chapter_key(chapter.key)
+        except Exception as exc:
+            self._warn(f"保存失败：{exc}")
+
+    def _write_meta_file(self, path: Path, raw: dict) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(raw, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    def _write_chapter_fields(self, raw: dict, chapter: Chapter, *, title: bool, description: bool) -> None:
+        """把当前 GUI 值写入 meta：单章/根目录写根级，多章写对应 chapters 条目。"""
+        title_value = self._meta_value("title")
+        description_value = self._meta_value("description")
+        chapter_name = self._meta_value("chapter_name")
+        target = raw
+        entries = raw.setdefault("chapters", [])
+        single_root = chapter.key == "root" and len(entries) <= 1
+        if not single_root and chapter.key != "root":
+            entry = None
+            for item in entries:
+                if not isinstance(item, dict):
+                    continue
+                if str(item.get("folder") or item.get("key") or item.get("name")) == chapter.key:
+                    entry = item
+                    break
+            if entry is None:
+                entry = {"folder": chapter.key}
+                entries.append(entry)
+            target = entry
+        if title:
+            if title_value:
+                target["title"] = title_value
+            else:
+                target.pop("title", None)
+        if description:
+            if description_value:
+                target["description"] = description_value
+            else:
+                target.pop("description", None)
+        if chapter_name:
+            target["chapter_name"] = chapter_name
+        else:
+            target.pop("chapter_name", None)
+        if single_root:
+            if title_value:
+                raw["title"] = title_value
+            if description_value:
+                raw["description"] = description_value
+
+    def _on_chapter_select(self, _event=None) -> None:
+        chapter = self._selected_chapter()
+        if chapter is not None:
+            self._load_meta_ui(chapter)
+
+    def _selected_chapter(self) -> Chapter | None:
+        if self.chapter_list is None:
+            return None
+        selection = self.chapter_list.curselection()
+        if not selection:
+            return self.chapters[0] if self.chapters else None
+        index = int(selection[0])
+        return self.chapters[index] if 0 <= index < len(self.chapters) else None
+
+    def _select_chapter_key(self, key: str) -> None:
+        if self.chapter_list is None:
+            return
+        for index, chapter in enumerate(self.chapters):
+            if chapter.key == key:
+                self.chapter_list.selection_clear(0, "end")
+                self.chapter_list.selection_set(index)
+                self.chapter_list.see(index)
+                self._on_chapter_select()
+                return
+
+    def _load_meta_ui(self, chapter: Chapter | None = None) -> None:
+        chapter = chapter or self._selected_chapter()
+        if chapter is None:
+            return
+        self._editing_chapter = chapter
+        raw = chapter.raw
+        mapping = {
+            "event": raw.get("event", ""),
+            "author": raw.get("author", "") or chapter.author,
+            "author_en": raw.get("author_en", ""),
+            "circle": raw.get("circle", ""),
+            "circle_en": raw.get("circle_en", ""),
+            "group": raw.get("group") or raw.get("group_name") or raw.get("汉化组") or "",
+            "title": raw.get("title", "") or chapter.title,
+            "title_jp": raw.get("title_jp") or raw.get("title_original") or raw.get("title_jpn") or "",
+            "title_en": raw.get("title_en", ""),
+            "series": raw.get("series") or raw.get("series_cn") or "",
+            "series_en": raw.get("series_en", ""),
+            "series_jp": raw.get("series_jp", ""),
+            "language": raw.get("language", "") or "Chinese",
+            "tags": "，".join(str(t) for t in (raw.get("tags") or chapter.tags)),
+            "chapter_name": raw.get("chapter_name", "") or "",
+            "description": raw.get("description", "") or chapter.description,
+        }
+        for key, value in mapping.items():
+            self._set_meta_value(key, value)
+
+        # 平台发布内容：覆盖值优先，无覆盖先显示自动组合结果
+        temp = self._temp_chapter()
+        platform_meta_values = {
+            "ehentai": {
+                "category": self.app.platforms.get("ehentai", None).get("category_label", "Doujinshi")
+                if self.app.platforms.get("ehentai") else "Doujinshi",
+                "language": self.app.platforms.get("ehentai", None).get("language_label", "Chinese")
+                if self.app.platforms.get("ehentai") else "Chinese",
+                "langtype": self.app.platforms.get("ehentai", None).get("langtype", "1")
+                if self.app.platforms.get("ehentai") else "1",
+                "gname_en": temp and composer.ehentai_title_en(temp) or "",
+                "gname_jp": temp and composer.ehentai_title_jp(temp) or "",
+                "comment": temp and composer.ehentai_comment(temp) or "",
+            },
+            "bilibili": {
+                "title": temp and composer.platform_title(temp, "bilibili") or "",
+                "description": temp and composer.platform_body(temp, "bilibili") or "",
+            },
+            "tieba": {
+                "forum": self.app.platforms.get("tieba", None).get("forum", "")
+                if self.app.platforms.get("tieba") else "",
+                "title": temp and composer.platform_title(temp, "tieba") or "",
+                "description": temp and composer.platform_body(temp, "tieba") or "",
+            },
+            "zaimanhua": {
+                "work_name": temp and composer.zaim_work_name(temp) or "",
+                "chapter_name": temp and composer.zaim_chapter_name(temp) or "",
+                "introduction": temp and composer.zaim_introduction(temp) or "",
+                "cate": self.app.platforms.get("zaimanhua", None).get("cate", "1")
+                if self.app.platforms.get("zaimanhua") else "1",
+            },
+        }
+        for key in composer.PLATFORM_SCHEMA:
+            meta = composer.platform_meta(chapter, key)
+            for field in composer.PLATFORM_SCHEMA[key]:
+                field_key = field["key"]
+                if field_key == "forum":
+                    cfg = self.app.platforms.get("tieba")
+                    value = meta.get("forum") or (cfg.get("forum", "") if cfg else "")
+                else:
+                    value = meta.get(field_key)
+                if not value:
+                    value = platform_meta_values.get(key, {}).get(field_key, "")
+                if field_key == "langtype" and value:
+                    value = self._langtype_display(value)
+                if field_key == "cate" and value:
+                    value = f"{value} - {_cate_label(value)}"
+                self._set_platform_value(key, field_key, value)
 
     def _build_compress_ui(self, parent: tk.Widget) -> None:
         parent.columnconfigure(1, weight=1)
@@ -834,6 +1408,20 @@ class UploaderApp:
         ttk.Checkbutton(parent, text="详细调试日志", variable=self.verbose_var).grid(
             row=4, column=1, columnspan=3, sticky="w", pady=2
         )
+
+    def _build_compress_page(self, parent: tk.Widget) -> None:
+        body = parent
+        body.columnconfigure(0, weight=1)
+        settings = ttk.LabelFrame(
+            body, text="图片压缩（> 上限自动压缩，默认 10MB/张）", padding=8
+        )
+        settings.grid(row=0, column=0, sticky="ew", padx=6, pady=(6, 4))
+        self._build_compress_ui(settings)
+
+        advanced = ttk.LabelFrame(body, text="通用（超时/重试/输出目录等）", padding=8)
+        advanced.grid(row=1, column=0, sticky="nsew", padx=6, pady=(4, 6))
+        self._build_common_ui(advanced)
+        body.rowconfigure(1, weight=1)
 
     # ---- 发布与日志页 ----
 
@@ -1429,7 +2017,7 @@ class UploaderApp:
         win.wait_window()
         return result or None
 
-    def _load_comic(self) -> None:
+    def _load_comic(self, *, reload_ui: bool = False) -> None:
         path = self.comic_dir_var.get().strip()
         if not path:
             return
@@ -1464,6 +2052,11 @@ class UploaderApp:
                 f"章节数：{len(chapters)}{note}"
             )
             self._log(f"已加载 {len(chapters)} 个章节：{path}")
+            self._load_meta_ui(first)
+            if self.chapter_list is not None and self.chapter_list.size():
+                self.chapter_list.selection_clear(0, "end")
+            if reload_ui:
+                self._load_meta_ui(first)
 
     # ---------- B站扫码登录（可选） ----------
 

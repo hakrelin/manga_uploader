@@ -72,12 +72,12 @@ DEFAULT_SETTINGS: dict[str, dict[str, Any]] = {
         "fid": 0,
         "max_pages_per_post": 9,   # 每楼最多 9 张（网页端硬上限）；第 1 楼固定只放封面
         "upload_sleep": 1.0,
-        "title_suffix": "【漫画】",
+        "title_suffix": "",
         "use_system_proxy": False,
         "proxy_url": "",
     },
     "ehentai": {
-        "category_label": "Manga",  # 按上传页选项文本模糊匹配
+        "category_label": "Doujinshi",  # 默认同人志（汉化搬运）；可选 Non-H/Manga 等
         "rating_label": "",
         "language_label": "Chinese",  # 汉化上传默认中文；原版/无字可改 Japanese / No Text
         "extra_tags": [],

@@ -32,6 +32,7 @@ import time
 from urllib.parse import quote
 
 from ..models import Chapter, CheckResult, PublishResult
+from .. import composer
 from ..util import chunk_list
 from .base import BasePublisher, CaptchaRequiredError, PublisherError
 
@@ -176,11 +177,32 @@ class TiebaPublisher(BasePublisher):
         pages = len(chapter.pages)
         posts = 1 + max(0, -(-max(pages - 1, 0) // self.max_pages_per_post))
         return [
-            f"发帖标题：{chapter.title}",
+            f"发帖标题：{composer.platform_title(chapter, self.key)}",
             f"目标贴吧：{self._forum(chapter)}",
             f"上传 {pages} 张图片：第 1 楼放封面，其余每楼最多 {self.max_pages_per_post} 张，预计 1 帖 {posts} 楼",
-            f"简介：{(chapter.description[:80] + '…') if len(chapter.description) > 80 else chapter.description}",
+            f"正文：{composer.platform_body(chapter, self.key)[:120]}",
         ]
+
+    def full_preview(self, chapter: Chapter) -> list[str]:
+        """贴吧发布前全文预览：展示真实标题、正文与分楼顺序。"""
+        from ..util import human_size
+
+        pages = len(chapter.pages)
+        posts = 1 + max(0, -(-max(pages - 1, 0) // self.max_pages_per_post))
+        lines = [
+            "发布平台：百度贴吧",
+            f"标题：{composer.platform_title(chapter, self.key)}",
+            f"目标贴吧：{self._forum(chapter)}",
+            f"第 1 楼：简介 + 封面（1 张）",
+            f"后续楼层：其余 {max(pages - 1, 0)} 张，每楼最多 {self.max_pages_per_post} 张，共 {posts} 楼",
+        ]
+        body = composer.platform_body(chapter, self.key)
+        if body:
+            lines.append("一楼正文：")
+            for part in body.splitlines():
+                lines.append("  " + part)
+        self._append_page_preview(lines, chapter)
+        return lines
 
     def _tbs(self) -> str:
         data = self.http.get_json(TBS_URL)
@@ -439,12 +461,11 @@ class TiebaPublisher(BasePublisher):
                         images.append(self._upload_image(page, tbs, forum))
                         time.sleep(float(self.cfg.get("upload_sleep", 1.0) or 0))
 
-                    # 简介只放主题帖一楼，后续楼层只放图片，避免每楼重复简介
-                    description = chapter.description if thread_tid is None else ""
+                    # 正文只放主题帖一楼，后续楼层只放图片，避免每楼重复
+                    description = composer.platform_body(chapter, self.key) if thread_tid is None else ""
                     content = self._build_text(description, images)
 
-                    suffix = str(self.cfg.get("title_suffix") or "")
-                    title = f"{suffix}{chapter.title}" if suffix else chapter.title
+                    title = composer.platform_title(chapter, self.key)
                     if thread_tid is None:
                         thread_tid = self._post_thread(forum, fid, tbs, title[:80], content)
                         url = f"https://tieba.baidu.com/p/{thread_tid}"

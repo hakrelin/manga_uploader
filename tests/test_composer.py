@@ -1,0 +1,95 @@
+import unittest
+from pathlib import Path
+
+from manga_uploader import composer
+from manga_uploader.models import Chapter
+
+
+def _chapter(**extra) -> Chapter:
+    raw = {
+        "event": "C105",
+        "author": "たいさんち",
+        "author_en": "Taisanchi",
+        "circle": "一代大佐",
+        "circle_en": "Ichidai Taisa",
+        "title": "万能型天才肌美少女主人公的忧郁",
+        "title_jp": "万能型天才肌美少女主人公の憂鬱",
+        "title_en": "Bannou-gata Tensai-hada Bishoujo Shujinkou no Yuuutsu",
+        "series": "东方",
+        "series_en": "Touhou Project",
+        "series_jp": "東方Project",
+        "group": "茶与金平糖汉化组",
+        "description": "测试简介",
+    }
+    raw.update(extra)
+    return Chapter(
+        key="root",
+        title=str(raw["title"]),
+        description=str(raw.get("description", "")),
+        author=str(raw.get("author", "")),
+        tags=list(raw.get("tags") or []),
+        pages=[Path("001.png")],
+        raw=raw,
+    )
+
+
+class TestComposer(unittest.TestCase):
+    def test_to_romaji(self):
+        self.assertEqual(composer.to_romaji("たいさんち"), "taisanchi")
+        self.assertEqual(composer.to_romaji("こんにちは"), "konnichiha")
+        # 汉字无法自动判断读音，原样保留供手动修改
+        self.assertEqual(composer.to_romaji("一代大佐"), "一代大佐")
+
+    def test_ehentai_title_en_matches_example_shape(self):
+        title = composer.ehentai_title_en(_chapter())
+        self.assertEqual(
+            title,
+            "(C105) [Taisanchi (Ichidai Taisa)] Bannou-gata Tensai-hada "
+            "Bishoujo Shujinkou no Yuuutsu | 万能型天才肌美少女主人公的忧郁 "
+            "(Touhou Project) [Chinese] [茶与金平糖汉化组]",
+        )
+
+    def test_ehentai_title_jp_matches_example_shape(self):
+        title = composer.ehentai_title_jp(_chapter())
+        self.assertEqual(
+            title,
+            "(C105) [たいさんち (一代大佐)] 万能型天才肌美少女主人公の憂鬱 "
+            "(東方Project) [中国翻訳] [茶与金平糖汉化组]",
+        )
+
+    def test_platform_title_and_body(self):
+        chapter = _chapter()
+        for platform in ("bilibili", "tieba"):
+            self.assertEqual(
+                composer.platform_title(chapter, platform),
+                "【茶与金平糖汉化组】万能型天才肌美少女主人公的忧郁",
+            )
+            body = composer.platform_body(chapter, platform)
+            self.assertIn("作者：たいさんち", body)
+            self.assertIn("社团：一代大佐", body)
+            self.assertIn("简介：测试简介", body)
+
+    def test_ehentai_comment_and_zaim(self):
+        chapter = _chapter()
+        comment = composer.ehentai_comment(chapter)
+        self.assertIn("作者：たいさんち", comment)
+        self.assertIn("社团：一代大佐", comment)
+        self.assertIn("简介：测试简介", comment)
+
+        zaim = _chapter(tags=["东方", "汉化"])
+        intro = composer.zaim_introduction(zaim)
+        self.assertTrue(intro.startswith("东方\n"))
+        self.assertIn("作者：たいさんち", intro)
+        self.assertEqual(composer.zaim_work_name(zaim), "万能型天才肌美少女主人公的忧郁")
+        self.assertEqual(composer.zaim_chapter_name(zaim), "短篇")
+
+    def test_platform_override_wins(self):
+        chapter = _chapter()
+        chapter.raw.setdefault("platforms", {})["ehentai"] = {
+            "gname_en": "手改的英文标题"
+        }
+        self.assertEqual(composer.ehentai_title_en(chapter), "手改的英文标题")
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1,4 +1,10 @@
 # 复制为 config.yaml 后填写（config.yaml 已被 .gitignore 忽略）
+# manga.json（放在漫画目录里）支持的自动组合字段：
+#   event(展会 C105) / author(画师名) / circle(社团) / group(汉化组)
+#   title(中文标题) / title_jp / title_en(罗马音) / series(东方)
+#   series_en(Touhou Project) / series_jp(東方Project) / tags / description
+#   章节目录较多时写在 chapters 条目里；各平台可另存覆盖值，详见
+#   manga_uploader/composer.py 文件头。
 common:
   timeout: 30          # 单次请求超时（秒）
   retries: 3           # 网络错误重试次数
@@ -44,7 +50,7 @@ platforms:
       fid: 0                    # 吧 ID；留 0 自动解析，解析失败再手动填
       max_pages_per_post: 9     # 每楼最多 9 张（网页端硬上限）；第 1 楼固定只放封面
       upload_sleep: 1.0         # 每张图上传间隔（秒），防频控
-      title_suffix: "【漫画】"
+      title_suffix: ""          # 已废弃：标题自动按【汉化组】中文标题生成
       use_system_proxy: false   # 国内站默认直连
       proxy_url: ""
 
@@ -54,30 +60,15 @@ platforms:
       ipb_member_id: ""
       ipb_pass_hash: ""
     settings:
-      category_label: "Manga"           # 按上传页选项文本匹配
+      category_label: "Doujinshi"       # 默认同人志（汉化搬运常用），可选 Non-H/Manga 等
       rating_label: ""                  # 例如 Safe / Questionable / Adult
       language_label: "Chinese"         # 汉化上传默认中文；原版/无字改 Japanese / No Text
       extra_tags: []
       publish_after_upload: true       # 上传后自动正式发布；false=只建草稿到 My Uploads
       use_system_proxy: true           # e-hentai 是海外站：可单独走代理
       proxy_url: "http://127.0.0.1:7897"  # 改成你实际代理端口；不需要就留空
-      title_jpn: ""                     # 日文/原标题（供 field_map 的 meta:title_jpn 使用）
-      langtype: "1"                     # 汉化上传默认 1=Translated；原版/无字改 0，改写改 2
-      # langctl（“由专业翻译者翻译”）会在 langtype=1 时自动勾选，避免被标成机翻/渣翻
-      # 上传表单字段映射（默认已按真实上传页核对；GUI 平台卡片“上传表单填写…”会写入这里）
-      # field_map:
-      #   - label: 英文/罗马字标题
-      #     field: gname_en      # 页面上输入框的 name
-      #     source: title
-      #   - label: 日文原标题
-      #     field: gname_jp
-      #     source: meta:title_jpn
-      #   - label: 上传者评论
-      #     field: ulcomment
-      #     source: description
-      #   - label: 同意服务条款
-      #     field: tos
-      #     source: text:on
+      # 画廊类型/语言/语言类型/标题/评论等请在
+      # “漫画与压缩 → 各平台发布内容”里配置，会写入 manga.json 覆盖自动组合。
 
   zaimanhua:
     enabled: true

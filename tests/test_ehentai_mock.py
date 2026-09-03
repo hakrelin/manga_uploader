@@ -182,22 +182,20 @@ class TestEhentaiPublisherMock(unittest.TestCase):
         self.assertNotIn(b'name="some_unknown_field"', body)
         self.assertNotIn(b"do_not_copy_me", body)
 
-    def test_publish_custom_field_map_second_title(self):
+    def test_publish_platform_override_second_title(self):
         chapter = _make_chapter(Path(self.tmp.name))
         chapter.raw["platforms"] = {
-            "ehentai": {"title_jpn": "エロマンガ第01話", "category": "Manga"}
+            "ehentai": {
+                "title_jpn": "エロマンガ第01話",
+                "gname_jp": "エロマンガ第01話",
+                "category": "Manga",
+            }
         }
         cfg = PlatformConfig(
             name="ehentai",
             cookies={"ipb_member_id": "1", "ipb_pass_hash": "h"},
             settings={
                 "category_label": "Manga",
-                "field_map": [
-                    {"label": "英文标题", "field": "gname_en", "source": "title"},
-                    {"label": "日文标题", "field": "gname_jp", "source": "meta:title_jpn"},
-                    {"label": "上传者评论", "field": "ulcomment", "source": "description"},
-                    {"label": "同意条款", "field": "tos", "source": "text:on"},
-                ],
             },
         )
         publisher = EhentaiPublisher(
@@ -209,6 +207,8 @@ class TestEhentaiPublisherMock(unittest.TestCase):
         self.assertIn(b'name="gname_en"', body)
         self.assertIn(b'name="gname_jp"', body)
         self.assertIn("エロマンガ第01話".encode("utf-8"), body)
+        # 平台覆盖的整段 gname_jp 原样提交（不再二次拼接）
+        self.assertNotIn("[中国翻訳]".encode("utf-8"), body)
         self.assertIn(b'name="tos"\r\n\r\non\r\n', body)
         # 未映射的未知文本框不再被自动填入默认值
         self.assertNotIn(b'name="some_unknown_field"', body)

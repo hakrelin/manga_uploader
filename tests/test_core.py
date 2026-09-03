@@ -69,7 +69,7 @@ class TestComicScan(unittest.TestCase):
 
 class TestConfig(unittest.TestCase):
     def test_load_example(self):
-        cfg = load_config("config.yaml")
+        cfg = load_config("config.example.yaml")
         self.assertIn("bilibili", cfg.platforms)
         self.assertIn("zaimanhua", cfg.platforms)
         self.assertTrue(cfg.platforms["bilibili"].enabled)
