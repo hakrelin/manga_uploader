@@ -529,6 +529,8 @@ class EhentaiPublisher(BasePublisher):
                 files=files,
                 headers={"Referer": UPLOAD_PAGE_URL},
                 allow_redirects=True,
+                retry=False,
+                timeout=float(self.cfg.get("upload_timeout", 600) or 600),
             )
         finally:
             for handle in handles:
@@ -563,6 +565,8 @@ class EhentaiPublisher(BasePublisher):
                     files=[(file_name, ("gallery.zip", fh, "application/zip"))],
                     headers={"Referer": UPLOAD_PAGE_URL},
                     allow_redirects=True,
+                    retry=False,
+                    timeout=float(self.cfg.get("upload_timeout", 600) or 600),
                 )
         finally:
             try:

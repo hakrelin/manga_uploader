@@ -75,6 +75,7 @@ platforms:
       extra_tags: []
       publish_after_upload: true       # 上传后自动正式发布；false=只建草稿到 My Uploads
       upload_mode: zip                 # zip=整包归档上传（推荐）；files=逐张多文件（旧路径）
+      upload_timeout: 600              # 上传单次超时（秒），大文件走代理较慢时给足时间
       use_system_proxy: true           # e-hentai 是海外站：可单独走代理
       proxy_url: "http://127.0.0.1:7897"  # 改成你实际代理端口；不需要就留空
       # 画廊类型/语言/语言类型/标题/评论等请在

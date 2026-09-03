@@ -111,16 +111,18 @@ class HttpClient:
         *,
         allow_redirects: bool = True,
         max_wait: float = 30.0,
+        retry: bool = True,
         **kwargs: Any,
     ) -> requests.Response:
         last_error: Optional[Exception] = None
-        attempts = self.retries + 1
+        attempts = (self.retries + 1) if retry else 1
+        request_timeout = kwargs.pop("timeout", None) or max(self.timeout, 1.0)
         for attempt in range(1, attempts + 1):
             try:
                 resp = self.session.request(
                     method,
                     url,
-                    timeout=max(self.timeout, 1.0),
+                    timeout=request_timeout,
                     allow_redirects=allow_redirects,
                     **kwargs,
                 )
