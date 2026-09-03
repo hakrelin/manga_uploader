@@ -89,7 +89,7 @@ platforms:
       cookie: ""
     settings:
       max_pages_per_post: 30   # 图文单帖上限（站点硬上限 30），超出自动拆帖
-      publish_draft: false     # true = 只保存草稿，可在创作中心检查后再手动发布
+      publish_draft: true      # 默认只保存草稿，核对无误后再手动公开发布；false = 直接公开
       topic_id: 1              # 发布社区：1 = PC游戏（其他社区需先搜索确认 id）
       device_id: ""            # 留空用内置设备号；被风控时可换成浏览器指纹
       use_system_proxy: false  # 国内站默认直连

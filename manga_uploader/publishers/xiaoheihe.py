@@ -59,6 +59,8 @@ _DEFAULT_DEVICE_ID = "2c2fef8385ccef915e3b3caf94e3aa06"
 
 # 图文单帖上限（网页实测 pic_link_limit.pic_limit = 30）
 DEFAULT_MAX_PAGES_PER_POST = 30
+# 服务端正文上限（/bbs/app/profile/post/limits 实测 30000 字）
+MAX_DESC_CHARS = 30000
 
 
 # ---------------------------------------------------------------- 签名
@@ -230,6 +232,14 @@ class XiaoheihePublisher(BasePublisher):
                 mask_secret(cookie_text[:32]),
                 "，已带上 x-xhh-token-id" if token_id else "，未找到 x_xhh_tokenid",
             )
+            # 整段 Cookie 由上面的手动请求头携带；从 cookie jar 里清掉
+            # 名为 "cookie" 的伪条目（值里含 ';' '='，作为 cookie 非法），
+            # 避免 jar 与 header 双数据源分叉。
+            for cookie in list(self.http.session.cookies):
+                if cookie.name == "cookie":
+                    self.http.session.cookies.clear(
+                        cookie.domain or "", cookie.path or "", cookie.name
+                    )
 
     def _ref(self, path: str) -> str:
         """按接口类型给正确 Referer：草稿相关必须指草稿箱页。"""
@@ -244,6 +254,20 @@ class XiaoheihePublisher(BasePublisher):
             if key == name:
                 return value.strip()
         return ""
+
+    @staticmethod
+    def _is_expired(msg: str) -> bool:
+        """判断接口错误消息是否为登录失效。
+
+        只认明确的登录失效信号，避免把权限类提示（如“该社区需要
+        先登录后才能发言”）误判成登录失效，让用户白重贴 Cookie。
+        """
+        return (
+            msg in ("请登录后使用该功能", "登录已失效", "非法的请求")
+            or msg.startswith("请登录")
+            or "登录已" in msg
+            or "重新登录" in msg
+        )
 
     @property
     def max_pages_per_post(self) -> int:
@@ -289,11 +313,16 @@ class XiaoheihePublisher(BasePublisher):
         """图文正文：作者/社团/简介（平台整段覆盖优先）。"""
         meta = self._meta(chapter)
         if str(meta.get("description") or "").strip():
-            return str(meta.get("description") or "").strip()
-        fields = composer.fields(chapter, self.key)
-        return composer.build_credit_lines(
-            fields["author"], fields["circle"], fields["description"]
-        )
+            text = str(meta.get("description") or "").strip()
+        else:
+            fields = composer.fields(chapter, self.key)
+            text = composer.build_credit_lines(
+                fields["author"], fields["circle"], fields["description"]
+            )
+        if len(text) > MAX_DESC_CHARS:
+            self.log.warning("正文超过服务端上限 %d 字，已截断", MAX_DESC_CHARS)
+            return text[:MAX_DESC_CHARS]
+        return text
 
     def _signed(self, path: str, extra: dict | None = None) -> str:
         user_id = self._user_id_from_cookie()
@@ -324,7 +353,7 @@ class XiaoheihePublisher(BasePublisher):
             return CheckResult(self.key, False, f"网络请求失败：{exc}")
         if payload.get("status") != "ok":
             msg = _api_error(payload)
-            if msg in ("请登录后使用该功能", "登录已失效", "非法的请求") or "登录" in msg:
+            if self._is_expired(msg):
                 return CheckResult(self.key, False, f"登录失效：{msg}")
             return CheckResult(self.key, False, f"接口返回异常：{msg}")
         result = payload.get("result") or {}
@@ -351,7 +380,9 @@ class XiaoheihePublisher(BasePublisher):
             f"共 {pages} 张图，预计拆成 {posts} 条图文",
             f"正文：{(self._description(chapter)[:80] + '…') if len(self._description(chapter)) > 80 else self._description(chapter)}",
         ]
-        if not self.cfg.get("publish_draft", False):
+        if self.cfg.get("publish_draft", True):
+            rows.append("默认存草稿：发布后在创作中心草稿箱核对，再手动公开发布")
+        else:
             rows.append("发布后为公开内容（可在小黑盒删除）；如需先存草稿请设置 publish_draft=true")
         return rows
 
@@ -426,6 +457,8 @@ class XiaoheihePublisher(BasePublisher):
                     post_desc = description
                     if total > 1:
                         post_desc = f"{description}\n（第 {index}/{total} 部分）".strip()
+                    if len(post_desc) > MAX_DESC_CHARS:
+                        post_desc = post_desc[:MAX_DESC_CHARS]
                     body = {
                         "text": _content_json(post_desc, uploaded),
                         "title": post_title,
@@ -439,7 +472,7 @@ class XiaoheihePublisher(BasePublisher):
                             {"original": 1}, ensure_ascii=False
                         ),
                     }
-                    if self.cfg.get("publish_draft", False):
+                    if self.cfg.get("publish_draft", True):
                         body["draft"] = 1
                     resp = self.http.post(
                         self._signed(POST_URL),
@@ -465,7 +498,7 @@ class XiaoheihePublisher(BasePublisher):
                         raise PublisherError(
                             f"小黑盒 发布响应缺少 link_id：{payload}"
                         )
-                    if self.cfg.get("publish_draft", False):
+                    if self.cfg.get("publish_draft", True):
                         # 草稿只存在于创作中心“草稿箱”，公开帖子链接打不开。
                         # 主动读一次草稿箱确认草稿真的在（而不是“建完即消失”）。
                         try:
@@ -497,12 +530,16 @@ class XiaoheihePublisher(BasePublisher):
                     published.append(url)
                     self.log.info(
                         "小黑盒 %s：%s",
-                        "已保存草稿" if self.cfg.get("publish_draft", False) else "发布成功",
+                        "已保存草稿" if self.cfg.get("publish_draft", True) else "发布成功",
                         url,
                     )
                 except PublisherError as exc:
                     errors.append(f"第 {index} 帖失败：{exc}")
                     self.log.error("小黑盒 第 %d 帖失败：%s", index, exc)
+                    continue
+                except Exception as exc:  # 未捕获异常也计入该帖失败，保留已发布帖子的 URL
+                    self.log.exception("小黑盒 第 %d 帖未捕获异常", index)
+                    errors.append(f"第 {index} 帖失败：{exc}")
                     continue
 
             if errors:
@@ -514,11 +551,11 @@ class XiaoheihePublisher(BasePublisher):
                     urls=published,
                     mode="image_text",
                     pages=len(pages),
-                    draft=bool(self.cfg.get("publish_draft", False)),
+                    draft=bool(self.cfg.get("publish_draft", True)),
                 )
             note = (
                 f"已存入小黑盒草稿箱 {len(published)} 条"
-                if self.cfg.get("publish_draft", False)
+                if self.cfg.get("publish_draft", True)
                 else (f"已拆成 {len(published)} 条图文" if len(published) > 1 else "已发布图文")
             )
             return PublishResult.ok(

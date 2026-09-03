@@ -655,8 +655,10 @@ class UploaderApp:
                 self._warn("没有解析到任何 Cookie（格式：k=v; k2=v2）")
                 return
             if key == "xiaoheihe":
-                # 小黑盒需要整段 Cookie 原样保存（含 HttpOnly 登录态）
-                result["__whole__"] = raw
+                # 小黑盒需要整段 Cookie（含登录态/设备标识）。从解析结果重建：
+                # 归一化换行并丢弃 HttpOnly/Path 等非 cookie-pair 标记行，
+                # 避免带内部换行的粘贴导致请求头 InvalidHeader。
+                result["__whole__"] = join_cookie_text(parsed)
             else:
                 result.update(parsed)
             win.destroy()
@@ -1440,7 +1442,7 @@ class UploaderApp:
             for key in composer.PLATFORM_SCHEMA:
                 if key not in self.platform_content_widgets:
                     continue
-                target_platforms = global_target if key in ("ehentai", "bilibili", "tieba", "zaimanhua") else raw["platforms"]
+                target_platforms = global_target if key in ("ehentai", "bilibili", "tieba", "zaimanhua", "xiaoheihe") else raw["platforms"]
                 if key in ("tieba", "ehentai", "zaimanhua") and key not in ("bilibili",):
                     # forum/category/cate 属全局设置，其余文字内容按章节存
                     pass

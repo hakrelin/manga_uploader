@@ -817,9 +817,11 @@ createApp({
         const keys = Object.keys(parsed);
         if (!keys.length) { toastMsg("没有解析到任何 Cookie（格式：k=v; k2=v2）"); return; }
         const p = config.platforms[m.key].cookies;
-        // 小黑盒：整段 Cookie 原样保存（含登录态与设备标识），不做字段拆分
+        // 小黑盒：整段 Cookie 保存（含登录态与设备标识），不做字段拆分。
+        // 从解析结果重建：归一化换行并丢弃 HttpOnly/Path 等非 cookie-pair
+        // 标记行，避免带内部换行的粘贴导致请求头 InvalidHeader。
         if (m.key === "xiaoheihe") {
-          const only = m.text.replace(/^[\s;]+|[\s;]+$/g, "").trim();
+          const only = Object.entries(parsed).map(([k, v]) => `${k}=${v}`).join("; ");
           if (!only) { toastMsg("Cookie 内容为空"); return; }
           p.cookie = only;
           // 顺带解析 heybox_id（可选，便于诊断）

@@ -95,8 +95,8 @@ DEFAULT_SETTINGS: dict[str, dict[str, Any]] = {
     "xiaoheihe": {
         # 图文单帖上限（站点实测 30）；页数超出自动拆成多帖
         "max_pages_per_post": 30,
-        # true = 只保存草稿（创作中心可见，可人工检查后再发布）
-        "publish_draft": False,
+        # true = 只保存草稿（创作中心可见，核对无误后再手动公开发布）
+        "publish_draft": True,
         # 发布到哪个社区：1 = PC游戏（默认盒友推荐流常用社区）
         "topic_id": 1,
         "device_id": "",  # 留空用内置设备号；被风控时可换
