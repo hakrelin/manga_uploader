@@ -93,12 +93,26 @@ DEFAULT_SETTINGS: dict[str, dict[str, Any]] = {
         "upload_mode": "zip",
     },
     "xiaoheihe": {
-        # 图文单帖上限（站点实测 30）；页数超出自动拆成多帖
-        "max_pages_per_post": 30,
+        # 发布形式：auto 自动选择（≤30 页图文 / >30 页文章）；
+        # image_text 强制图文；article 强制文章
+        "publish_mode": "auto",
+        "image_text_max_pages": 30,
+        "article_max_pages": 100,
         # true = 只保存草稿（创作中心可见，核对无误后再手动公开发布）
         "publish_draft": True,
-        # 发布到哪个社区：1 = PC游戏（默认盒友推荐流常用社区）
-        "topic_id": 1,
+        # 关联社区（最多 2 个），默认东方夜雀食堂 + 东方冰之勇者记；
+        # 也可填逗号分隔的社区 id（如 431327,477625）。
+        "topic_ids": "431327,477625",
+        # 关联话题（话题 tag），逗号分隔的话题名
+        "hashtags": "东方project,东方同人",
+        # 内容声明：1 原创 / 0 转载（搬运漫画默认转载）
+        "original": 0,
+        # 转载授权声明（转载时）：1 已授权 / 2 未授权
+        "declaration": 1,
+        # 转载来源：站外固定 false（true=站内链接需填 intrasite_source_link_id）
+        "trans_in_site": False,
+        # 站外转载来源描述（默认 bilibili）
+        "source": "bilibili",
         "device_id": "",  # 留空用内置设备号；被风控时可换
         "use_system_proxy": False,  # 国内站默认直连
         "proxy_url": "",

@@ -45,68 +45,13 @@ from .models import Chapter
 from .publishers.ehentai import DEFAULT_FIELD_ROWS
 from .publishers.zaimanhua import CATE_LABELS
 from .runner import PLATFORM_CLASSES, Runner
+from .webui import PLATFORM_CARDS as _WEBUI_CARDS
 from .util import get_logger, human_size, is_image, natural_sort_key, setup_logging
 
 LOGGER_NAME = "manga_uploader"
 
-# 平台卡片顺序与说明
-PLATFORM_CARDS: list[dict[str, Any]] = [
-    {
-        "key": "bilibili",
-        "label": "B站（专栏文章，可切图文动态）",
-        "login_url": "https://passport.bilibili.com/login",
-        "cookie_fields": [
-            {"name": "SESSDATA", "required": True},
-            {"name": "bili_jct", "required": True, "hint": "CSRF 令牌"},
-            {"name": "buvid3", "required": False, "hint": "建议填写"},
-        ],
-        "hint": "默认把每话发成一篇专栏（正文带图）；要发图文动态可在 config 里把 publish_mode 改成 dynamic。",
-        "qr": True,
-    },
-    {
-        "key": "tieba",
-        "label": "百度贴吧（图帖）",
-        "login_url": "https://tieba.baidu.com",
-        "cookie_fields": [{"name": "BDUSS", "required": True}],
-        "hint": "登录百度后复制 Cookie 里的 BDUSS。发帖权限受账号与吧等级限制。",
-    },
-    {
-        "key": "ehentai",
-        "label": "e-hentai（图库）",
-        "login_url": "https://forums.e-hentai.org/index.php?act=Login&CODE=00",
-        "cookie_fields": [
-            {"name": "ipb_member_id", "required": True},
-            {"name": "ipb_pass_hash", "required": True},
-        ],
-        "hint": "登录 e-hentai 后复制 Cookie 里的 ipb_member_id 与 ipb_pass_hash。"
-        "上传入口：upload.e-hentai.org/managegallery?act=new；通常需要代理直连。"
-        "画廊分类/语言/汉化标记等发布内容请在“漫画与压缩 → 各平台发布内容”里设置。",
-    },
-    {
-        "key": "zaimanhua",
-        "label": "再漫画（投稿）",
-        "login_url": "https://www.zaimanhua.com/",
-        "cookie_fields": [
-            {"name": "token", "required": True},
-            {"name": "clientId", "required": False, "hint": "可选"},
-        ],
-        "hint": "登录再漫画后复制 Cookie 里的 token（JWT），可选 clientId。投稿页：manhua.zaimanhua.com/uploadShows",
-    },
-    {
-        "key": "xiaoheihe",
-        "label": "小黑盒（图文发布）",
-        "login_url": "https://www.xiaoheihe.cn/creator/editor/draft/image_text",
-        "cookie_fields": [
-            {
-                "name": "cookie",
-                "required": True,
-                "hint": "整段 Cookie（含 pkey/user_pkey/heybox_id 等）",
-            }
-        ],
-        "hint": "登录 xiaoheihe.cn 后按 F12 → Network，复制任意请求的 Cookie 头整段粘贴。"
-        "每帖最多 30 张图，超出自动拆帖。",
-    },
-]
+# 平台卡片顺序与说明：与 Web 前端共用同一份定义（控件/选项统一维护）
+PLATFORM_CARDS: list[dict[str, Any]] = _WEBUI_CARDS
 
 
 # 漫画信息页：基础字段（写入 manga.json 根级，作为各平台自动组合的来源）
@@ -859,17 +804,53 @@ class UploaderApp:
         key = card["key"]
         cfg = self.app.platforms.get(key)
         settings = (cfg.settings if cfg else {}) or {}
+        # 合并 extras（文本输入）与 controls（开关/下拉/数字），键不重复
+        control_items: list[tuple[str, dict[str, Any]]] = []
+        seen: set[str] = set()
         for extra_key, placeholder in card.get("extras", []):
+            if extra_key in seen:
+                continue
+            seen.add(extra_key)
+            control_items.append(
+                (extra_key, {"kind": "text", "placeholder": placeholder})
+            )
+        for extra_key, ctrl in (card.get("controls") or {}).items():
+            if extra_key in seen:
+                continue
+            seen.add(extra_key)
+            control_items.append((extra_key, ctrl))
+
+        label_map = {
+            "forum": "目标吧名",
+            "category_label": "默认分类",
+            "cate": "作品类型",
+            "language_label": "画廊语言",
+            "langtype": "语言类型",
+            "title_jpn": "默认日文标题",
+            "publish_mode": "发布形式",
+            "publish_draft": "先存草稿",
+            "image_text_max_pages": "图文/文章分界页",
+            "article_max_pages": "文章单帖上限",
+            "max_article_pages": "单篇专栏最多图",
+            "max_pages_per_post": "每帖/每楼最多图",
+            "upload_sleep": "图片间隔(秒)",
+            "upload_mode": "上传方式",
+            "publish_after_upload": "上传后自动发布",
+            "extra_tags": "附加标签(逗号分隔)",
+            "max_pages_per_upload": "单章最多图",
+            "upload_attempts": "传图重试次数",
+            "original": "原创声明",
+            "reprint": "转载属性",
+            "topics": "图文动态话题(逗号分隔)",
+            "image_category": "动态图片分类",
+            "topic_ids": "关联社区(逗号分隔)",
+            "hashtags": "关联话题(逗号分隔)",
+            "source": "站外转载来源",
+        }
+        for extra_key, ctrl in control_items:
             row = ttk.Frame(frame)
             row.pack(fill="x", pady=2)
-            label = {
-                "forum": "目标吧名",
-                "category_label": "默认分类",
-                "cate": "作品类型",
-                "language_label": "画廊语言",
-                "langtype": "语言类型",
-                "title_jpn": "默认日文标题",
-            }.get(extra_key, extra_key)
+            label = ctrl.get("label") or label_map.get(extra_key, extra_key)
             ttk.Label(row, text=f"{label}：").pack(side="left")
             if extra_key == "cate":
                 cate_value = str(settings.get("cate", "1"))
@@ -884,13 +865,46 @@ class UploaderApp:
                 combo.pack(side="left")
                 self.extra_vars[key]["cate"] = var
                 continue
+            kind = ctrl.get("kind", "text")
+            if kind == "switch":
+                var = tk.BooleanVar(value=self._setting_bool(settings, extra_key))
+                ttk.Checkbutton(row, variable=var).pack(side="left")
+                self.extra_vars[key][extra_key] = var
+                continue
+            if kind == "select":
+                options = [str(o[0]) for o in ctrl.get("options", [])]
+                label_by_value = {
+                    str(o[0]): str(o[1]) for o in ctrl.get("options", [])
+                }
+                current = str(settings.get(extra_key, options[0] if options else ""))
+                combo = ttk.Combobox(
+                    row,
+                    values=[
+                        f"{o} - {label_by_value.get(o, o)}"
+                        for o in options
+                    ],
+                    width=40,
+                    state="readonly",
+                )
+                combo.set(f"{current} - {label_by_value.get(current, current)}")
+                combo.pack(side="left", fill="x", expand=True)
+                self.extra_vars[key][extra_key] = combo
+                continue
             var = tk.StringVar(value=str(settings.get(extra_key, "")))
             entry = ttk.Entry(row, textvariable=var, width=56)
             entry.pack(side="left", fill="x", expand=True)
-            if placeholder:
-                hint = ttk.Label(row, text=placeholder, foreground="#999")
+            hint = ctrl.get("placeholder") or ctrl.get("hint")
+            if hint:
+                hint = ttk.Label(row, text=str(hint), foreground="#999")
                 hint.pack(side="left", padx=6)
             self.extra_vars[key][extra_key] = var
+
+    @staticmethod
+    def _setting_bool(settings: dict[str, Any], key: str) -> bool:
+        value = settings.get(key, False)
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in ("1", "true", "yes", "on")
 
     # ---- 漫画与压缩页 ----
 
@@ -1778,9 +1792,17 @@ class UploaderApp:
             }
             settings = copy.deepcopy(old.settings if old else DEFAULT_SETTINGS.get(key, {}))
             for extra_key, var in self.extra_vars.get(key, {}).items():
-                value = str(var.get())
-                if extra_key == "cate":
-                    value = value.split(" - ")[0].strip()
+                if isinstance(var, tk.BooleanVar):
+                    value = var.get()
+                else:
+                    value = str(var.get())
+                    if extra_key == "publish_draft":
+                        value = value.strip().lower() in ("1", "true", "yes", "on")
+                # select 下拉存的是 "值 - 说明"，取原始值（text 不会含 " - "）
+                if " - " in value:
+                    head = value.split(" - ")[0].strip()
+                    if head:
+                        value = head
                 settings[extra_key] = value
             if key in self.field_maps and self.field_maps[key]:
                 settings["field_map"] = copy.deepcopy(self.field_maps[key])

@@ -1,4 +1,4 @@
-"""小黑盒（xiaoheihe.cn）图文发布。
+"""小黑盒（xiaoheihe.cn）发布（图文 / 文章自动选择）。
 
 小黑盒没有公开的发帖接口，网页“创作中心”走带签名的 api.xiaoheihe.cn。
 本实现按网页端行为复刻（2026-09 实测）：
@@ -8,15 +8,18 @@
 2. 传图：POST /bbs/app/api/qcloud/cos/upload/info/v2 预占位拿
    bucket/key → POST token/v2 拿 COS 临时密钥 → 用腾讯 COS SDK 直传
    → POST callback/v2 确认并拿到 CDN 地址。
-3. 发文：POST /bbs/app/api/link/post。正文结构与网页编辑器一致：
-   text 字段是 JSON 数组 [{"type":"text","text":"<p>…</p>"},
-   {"type":"img","url":…,"width":…,"height":…}]；
-   link_tag=27 图文 / 11 文章；draft=1 只存草稿（页面
-   /creator/editor 可见），不传即正式发布。
+3. 发文：POST /bbs/app/api/link/post，正文结构与网页编辑器一致：
+   - 图文（link_tag=27）：text=[{"type":"text","text":"<p>…</p>"},
+     {"type":"img","url":…,"width":…,"height":…}]；
+   - 文章（link_tag=11）：text=[{"type":"html","text":"<p>…</p><img …/>"},
+     {"type":"img","url":…}]。
+   draft=1 只存草稿（创作中心草稿箱可见），不传即正式发布。
 
-页面限制（/bbs/app/profile/post/limits 实测）：图文单帖最多 30 张图、
-文章单帖最多 100 张图、标题 ≤30 字、正文 ≤30000 字；新号发帖有频控
-（10006 发帖频率过快，需等待）。漫画页数超过单帖上限时自动拆成多帖。
+发布形式按页数自动选择：≤30 页发图文，>30 页发文章（文章单帖上限
+100 张图，超出继续自动拆帖）。标题/正文组合与 B站一致
+（【汉化组】中文标题 + 作者/社团/简介正文）。关联社区默认
+东方夜雀食堂 + 东方冰之勇者记；内容声明默认“转载 / 已授权 / 站外
+bilibili”（有授权转载场景，可按需在 config 覆盖）。
 
 Cookie 说明：直接粘贴访问 xiaoheihe.cn 时的整段 Cookie 即可
 （含 pkey/user_pkey/heybox_id/session_token 等）。配置键为
@@ -32,6 +35,7 @@ import math
 import mimetypes
 import os
 import random
+import re
 import time
 from urllib.parse import urlencode
 
@@ -58,7 +62,11 @@ _CHARSET = "AB45STUVWZEFGJ6CH01D237IXYPQRKLMN89"
 _DEFAULT_DEVICE_ID = "2c2fef8385ccef915e3b3caf94e3aa06"
 
 # 图文单帖上限（网页实测 pic_link_limit.pic_limit = 30）
-DEFAULT_MAX_PAGES_PER_POST = 30
+# 图文单帖上限（站点硬上限 30）；文章单帖上限 100
+DEFAULT_IMAGE_TEXT_MAX_PAGES = 30
+DEFAULT_ARTICLE_MAX_PAGES = 100
+# 默认关联社区：东方夜雀食堂、东方冰之勇者记（2026-09 实测 topic_id）
+DEFAULT_TOPIC_IDS = "431327,477625"
 # 服务端正文上限（/bbs/app/profile/post/limits 实测 30000 字）
 MAX_DESC_CHARS = 30000
 
@@ -191,11 +199,19 @@ def _text_html(plain: str) -> str:
     return "".join(lines)
 
 
-def _content_json(description: str, pages: list) -> str:
-    """组装图文帖 text 字段（网页编辑器同一 JSON 结构）。"""
+def _content_blocks(description: str, pages: list, *, article: bool) -> list[dict]:
+    """按发布形式组装正文块（图文 text+img / 文章 html+img）。
+
+    标题与正文组合和 B站一致（见 composer.xiaoheihe_title/body）。
+    图文正文放独立 text 块；文章把正文并入 html 块（与网页编辑器一致）。
+    """
     blocks: list[dict] = []
     if description.strip():
-        blocks.append({"type": "text", "text": _text_html(description)})
+        html = _text_html(description)
+        if article:
+            blocks.append({"type": "html", "text": html})
+        else:
+            blocks.append({"type": "text", "text": html})
     for page in pages:
         blocks.append(
             {
@@ -205,8 +221,11 @@ def _content_json(description: str, pages: list) -> str:
                 "height": page.height or 0,
             }
         )
-    return json.dumps(blocks, ensure_ascii=False)
+    return blocks
 
+
+def _content_json(description: str, pages: list, *, article: bool = False) -> str:
+    return json.dumps(_content_blocks(description, pages, article=article), ensure_ascii=False)
 
 # ---------------------------------------------------------------- 发布器
 
@@ -270,8 +289,23 @@ class XiaoheihePublisher(BasePublisher):
         )
 
     @property
-    def max_pages_per_post(self) -> int:
-        return max(1, int(self.cfg.get("max_pages_per_post", DEFAULT_MAX_PAGES_PER_POST)))
+    def image_text_max_pages(self) -> int:
+        return max(1, int(self.cfg.get("image_text_max_pages", DEFAULT_IMAGE_TEXT_MAX_PAGES)))
+
+    @property
+    def article_max_pages(self) -> int:
+        return max(1, int(self.cfg.get("article_max_pages", DEFAULT_ARTICLE_MAX_PAGES)))
+
+    def mode_for(self, page_count: int) -> str:
+        """发布形式：publish_mode=auto 时按页数自动选；否则强制指定。"""
+        mode = str(self.cfg.get("publish_mode") or "auto").strip().lower()
+        if mode in ("image_text", "article"):
+            return mode
+        # auto：≤image_text_max_pages 页 → 图文；更多 → 文章
+        return "image_text" if page_count <= self.image_text_max_pages else "article"
+
+    def mode_limit(self, mode: str) -> int:
+        return self.article_max_pages if mode == "article" else self.image_text_max_pages
 
     @property
     def user_id(self) -> str:
@@ -299,30 +333,54 @@ class XiaoheihePublisher(BasePublisher):
         return str(self.cfg.get("device_id") or "").strip() or _DEFAULT_DEVICE_ID
 
     def _title(self, chapter: Chapter) -> str:
-        """小黑盒标题：中文标题（平台覆盖优先），截断到 30 字。"""
-        meta = self._meta(chapter)
-        if str(meta.get("title") or "").strip():
-            title = str(meta.get("title") or "").strip()
-        else:
-            title = str(chapter.title or "").strip()
-        if not title:
-            title = composer.platform_title(chapter, self.key)
-        return title[:30]
+        """小黑盒标题：与 B站一致的组合（【汉化组】中文标题），≤30 字。"""
+        return composer.platform_title(chapter, self.key)[:30]
 
     def _description(self, chapter: Chapter) -> str:
-        """图文正文：作者/社团/简介（平台整段覆盖优先）。"""
-        meta = self._meta(chapter)
-        if str(meta.get("description") or "").strip():
-            text = str(meta.get("description") or "").strip()
-        else:
-            fields = composer.fields(chapter, self.key)
-            text = composer.build_credit_lines(
-                fields["author"], fields["circle"], fields["description"]
-            )
+        """小黑盒正文：与 B站一致的作者/社团/简介组合，按服务端上限截断。"""
+        text = composer.platform_body(chapter, self.key)
         if len(text) > MAX_DESC_CHARS:
             self.log.warning("正文超过服务端上限 %d 字，已截断", MAX_DESC_CHARS)
             return text[:MAX_DESC_CHARS]
         return text
+
+    def _publish_draft(self) -> bool:
+        """草稿开关：默认 true（只存草稿），兼容 config 里 true/false（bool 或字符串）。"""
+        value = self.cfg.get("publish_draft", True)
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+    def _topic_ids(self) -> str:
+        """关联社区 topic_ids（逗号分隔 id 或名称均可；默认东方双社区）。"""
+        value = str(self.cfg.get("topic_ids") or "").strip()
+        if not value:
+            value = DEFAULT_TOPIC_IDS
+        return value
+
+    def _hashtags(self) -> str:
+        value = str(self.cfg.get("hashtags") or "").strip()
+        if not value:
+            return ""
+        names = [p.strip() for p in re.split(r"[,，]", value) if p.strip()]
+        return json.dumps(names, ensure_ascii=False) if names else ""
+
+    def _declaration(self) -> dict:
+        """内容声明：original 转载/原创；转载带授权与站外来源。"""
+        original = int(self.cfg.get("original", 0) or 0)
+        trans_in_site = bool(self.cfg.get("trans_in_site", False))
+        params: dict = {
+            "original": 1 if original else 0,
+        }
+        if not original:
+            # 转载：默认“已授权 + 站外 bilibili”
+            params["declaration"] = int(self.cfg.get("declaration", 1) or 1)
+            source = str(self.cfg.get("source") or "bilibili").strip()
+            if trans_in_site:
+                params["intrasite_source_link_id"] = source
+            else:
+                params["source"] = source
+        return params
 
     def _signed(self, path: str, extra: dict | None = None) -> str:
         user_id = self._user_id_from_cookie()
@@ -361,7 +419,7 @@ class XiaoheihePublisher(BasePublisher):
         if topics:
             name = self.nickname or self._user_id_from_cookie() or "未知用户"
             uid = self._user_id_from_cookie() or "未知"
-            max_pic = self.max_pages_per_post
+            max_pic = self.image_text_max_pages
             return CheckResult(
                 self.key,
                 True,
@@ -372,15 +430,26 @@ class XiaoheihePublisher(BasePublisher):
 
     def plan(self, chapter: Chapter) -> list[str]:
         pages = len(chapter.pages)
-        limit = self.max_pages_per_post
+        mode = self.mode_for(pages)
+        limit = self.mode_limit(mode)
         posts = max(1, math.ceil(pages / limit)) if pages else 0
+        mode_label = "图文" if mode == "image_text" else "文章"
+        decl = self._declaration()
+        decl_text = (
+            f"转载/已授权/站外 {decl.get('source')}"
+            if decl.get("original") == 0
+            else "原创"
+        )
         rows = [
-            f"发布方式：小黑盒图文（image_text，每帖最多 {limit} 张图）",
+            f"发布方式：小黑盒{mode_label}（{pages} 页{' ≤ ' + str(self.image_text_max_pages) + ' 页' if mode == 'image_text' else ' > ' + str(self.image_text_max_pages) + ' 页，按文章发'}，"
+            f"每帖最多 {limit} 张）",
             f"标题：{self._title(chapter)}",
-            f"共 {pages} 张图，预计拆成 {posts} 条图文",
+            f"关联社区：{self._topic_ids()}",
+            f"内容声明：{decl_text}",
+            f"共 {pages} 张图，预计拆成 {posts} 条{mode_label}",
             f"正文：{(self._description(chapter)[:80] + '…') if len(self._description(chapter)) > 80 else self._description(chapter)}",
         ]
-        if self.cfg.get("publish_draft", True):
+        if self._publish_draft():
             rows.append("默认存草稿：发布后在创作中心草稿箱核对，再手动公开发布")
         else:
             rows.append("发布后为公开内容（可在小黑盒删除）；如需先存草稿请设置 publish_draft=true")
@@ -392,14 +461,18 @@ class XiaoheihePublisher(BasePublisher):
 
         description = self._description(chapter)
         pages = chapter.pages
-        limit = self.max_pages_per_post
+        mode = self.mode_for(len(pages))
+        limit = self.mode_limit(mode)
         groups = chunk_list(pages, limit)
+        mode_label = "图文 image_text" if mode == "image_text" else "文章 article"
+        decl = self._declaration()
         lines = [
-            "发布平台：小黑盒（图文 image_text）",
+            f"发布平台：小黑盒（{mode_label}，link_tag={27 if mode == 'image_text' else 11}）",
             f"标题：{self._title(chapter)}",
             f"正文：{(description[:80] + '…') if len(description) > 80 else description}",
-            f"将提交的 text 字段（JSON 数组，正文转 <p>，图片带 url/宽高）：",
-            f"  {_content_json(description, [])[:200] + '…' if description else '  （无正文文本，纯图帖）'}",
+            f"关联社区：{self._topic_ids()}",
+            f"内容声明：{json.dumps(decl, ensure_ascii=False)}",
+            f"正文结构示例：{_content_json(description, [], article=(mode == 'article'))[:180] + '…'}",
             f"共 {len(pages)} 张图，拆成 {len(groups)} 帖（每帖最多 {limit} 张）：",
         ]
         for index, group in enumerate(groups, 1):
@@ -426,14 +499,23 @@ class XiaoheihePublisher(BasePublisher):
         try:
             published: list[str] = []
             errors: list[str] = []
-            groups = chunk_list(pages, self.max_pages_per_post)
+            mode = self.mode_for(len(pages))
+            limit = self.mode_limit(mode)
+            article = mode == "article"
+            link_tag = 11 if article else 27
+            mode_label = "文章" if article else "图文"
+            groups = chunk_list(pages, limit)
             description = self._description(chapter)
             title = self._title(chapter)
+            topic_ids = self._topic_ids()
+            hashtags = self._hashtags()
+            decl = self._declaration()
             total = len(groups)
             for index, group in enumerate(groups, 1):
                 try:
                     self.log.info(
-                        "小黑盒 上传第 %d/%d 帖图片（%d 张）",
+                        "小黑盒[%s] 上传第 %d/%d 帖图片（%d 张）",
+                        mode_label,
                         index,
                         total,
                         len(group),
@@ -443,7 +525,8 @@ class XiaoheihePublisher(BasePublisher):
                         item = self._upload_page(page)
                         uploaded.append(item)
                         self.log.info(
-                            "小黑盒 第 %d/%d 帖图片 %d/%d 上传完成：%s",
+                            "小黑盒[%s] 第 %d/%d 帖图片 %d/%d 上传完成：%s",
+                            mode_label,
                             index,
                             total,
                             page_index,
@@ -459,20 +542,29 @@ class XiaoheihePublisher(BasePublisher):
                         post_desc = f"{description}\n（第 {index}/{total} 部分）".strip()
                     if len(post_desc) > MAX_DESC_CHARS:
                         post_desc = post_desc[:MAX_DESC_CHARS]
+                    text = _content_json(post_desc, uploaded, article=article)
                     body = {
-                        "text": _content_json(post_desc, uploaded),
+                        "text": text,
                         "title": post_title,
                         "desc": "",
-                        "words_count": len(post_desc),
+                        "words_count": len(description),
                         "post_card_ids": "",
-                        "link_tag": 27,
+                        "link_tag": link_tag,
                         "view_limit": 1,
-                        "topic_ids": str(self.cfg.get("topic_id", 1) or 1),
+                        "topic_ids": topic_ids,
                         "original_info": json.dumps(
-                            {"original": 1}, ensure_ascii=False
+                            {"original": decl.get("original", 0)}, ensure_ascii=False
                         ),
                     }
-                    if self.cfg.get("publish_draft", True):
+                    if decl.get("source"):
+                        body["source"] = decl["source"]
+                    if "intrasite_source_link_id" in decl:
+                        body["intrasite_source_link_id"] = decl["intrasite_source_link_id"]
+                    if decl.get("declaration") is not None:
+                        body["declaration"] = decl["declaration"]
+                    if hashtags:
+                        body["hashtags"] = hashtags
+                    if self._publish_draft():
                         body["draft"] = 1
                     resp = self.http.post(
                         self._signed(POST_URL),
@@ -498,7 +590,7 @@ class XiaoheihePublisher(BasePublisher):
                         raise PublisherError(
                             f"小黑盒 发布响应缺少 link_id：{payload}"
                         )
-                    if self.cfg.get("publish_draft", True):
+                    if self._publish_draft():
                         # 草稿只存在于创作中心“草稿箱”，公开帖子链接打不开。
                         # 主动读一次草稿箱确认草稿真的在（而不是“建完即消失”）。
                         try:
@@ -529,8 +621,9 @@ class XiaoheihePublisher(BasePublisher):
                         url = f"{WEB}/app/bbs/link/{link_id}"
                     published.append(url)
                     self.log.info(
-                        "小黑盒 %s：%s",
-                        "已保存草稿" if self.cfg.get("publish_draft", True) else "发布成功",
+                        "小黑盒[%s] %s：%s",
+                        mode_label,
+                        "已保存草稿" if self._publish_draft() else "发布成功",
                         url,
                     )
                 except PublisherError as exc:
@@ -549,14 +642,18 @@ class XiaoheihePublisher(BasePublisher):
                     url=published[0] if published else "",
                     message=f"部分失败：{'; '.join(errors)}",
                     urls=published,
-                    mode="image_text",
+                    mode=mode,
                     pages=len(pages),
-                    draft=bool(self.cfg.get("publish_draft", True)),
+                    draft=self._publish_draft(),
                 )
             note = (
                 f"已存入小黑盒草稿箱 {len(published)} 条"
-                if self.cfg.get("publish_draft", True)
-                else (f"已拆成 {len(published)} 条图文" if len(published) > 1 else "已发布图文")
+                if self._publish_draft()
+                else (
+                    f"已拆成 {len(published)} 条{mode_label}"
+                    if len(published) > 1
+                    else f"已发布{mode_label}"
+                )
             )
             return PublishResult.ok(
                 self.key,
@@ -564,7 +661,7 @@ class XiaoheihePublisher(BasePublisher):
                 url=published[0],
                 message=f"{note}，共 {len(pages)} 页",
                 urls=published,
-                mode="image_text",
+                mode=mode,
                 pages=len(pages),
             )
         finally:

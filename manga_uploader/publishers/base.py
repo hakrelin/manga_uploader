@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+import hashlib
 from pathlib import Path
 
 from ..config import CommonConfig, PlatformConfig, missing_cookies
 from ..http_client import HttpClient
 from ..models import Chapter, CheckResult, PublishResult
-from ..util import get_logger, prepare_page
+from ..util import get_logger, prepare_page_cached
 
 
 class PublisherError(RuntimeError):
@@ -70,16 +71,21 @@ class BasePublisher(ABC):
         allowed_exts: set[str] | None = None,
         max_bytes: int | None = None,
     ) -> list:
-        """统一压缩/转换页面，返回 PreparedPage 列表（零拷贝优先）。"""
+        """统一压缩/转换页面，返回 PreparedPage 列表（零拷贝优先）。
+
+        输出目录按“处理规格”分桶（不按平台分）：同一章节里多个平台使用
+        相同规格（允许格式/单张上限/缩放/质量）时共享同一批结果文件，
+        同一张图只解码压缩一次。cleanup_prepared 由调度器整批发布后调用。
+        """
         if max_bytes is None:
             mb = float(self.common.max_bytes_mb or 0)
             max_bytes = int(mb * 1024 * 1024) if mb > 0 else 0
-        out_dir = self.output_dir / "prepared" / self.key / chapter.key
+        spec = self._spec_key(allowed_exts, max_bytes)
+        out_dir = self.output_dir / "prepared" / "_shared" / spec / chapter.key
         prepared = []
         for index, page in enumerate(chapter.pages, 1):
-            self.log.info("[%s] 处理图片 %d/%d：%s", chapter.key, index, len(chapter.pages), page.name)
             try:
-                item = prepare_page(
+                item = prepare_page_cached(
                     page,
                     out_dir,
                     allowed_exts=allowed_exts,
@@ -93,15 +99,23 @@ class BasePublisher(ABC):
             prepared.append(item)
         return prepared
 
+    @staticmethod
+    def _spec_key(allowed_exts: set[str] | None, max_bytes: int) -> str:
+        """把图片处理参数编码成共享目录名（不同发布器同规格共用）。"""
+        exts = ",".join(sorted(e.lower() for e in (allowed_exts or []))) or "any"
+        raw = f"{exts}|{int(max_bytes or 0)}"
+        digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
+        return f"{digest}-{int(max_bytes or 0)}m"
+
     def cleanup_prepared(self, chapter: Chapter) -> None:
-        prepared_dir = self.output_dir / "prepared" / self.key / chapter.key
-        if prepared_dir.is_dir():
-            try:
-                for f in prepared_dir.iterdir():
-                    if f.is_file():
-                        f.unlink()
-            except OSError:  # pragma: no cover
-                pass
+        """不再单独删除共享结果，交由 Runner 在整批发布后统一清理。
+
+        多个平台共用同一批 prepared 文件时，任一平台提前删除会让后续
+        平台重新处理甚至失败；若此时清空进程内缓存，后处理的平台还会
+        失去去重命中。因此这里不做任何事（保留钩子供子类/单测调用），
+        Runner 会在整批发布结束后统一清缓存并删除 prepared 目录。
+        """
+        return None
 
     def summarize(self, chapter: Chapter) -> str:
         total_kb = sum(p.stat().st_size for p in chapter.pages) / 1024.0

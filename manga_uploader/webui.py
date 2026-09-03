@@ -66,6 +66,21 @@ PLATFORM_CARDS: list[dict[str, Any]] = [
         ],
         "hint": "默认把每话发成一篇专栏（正文带图）；要发图文动态可在 config 里把 publish_mode 改成 dynamic。",
         "qr": True,
+        "controls": {
+            "publish_mode": {
+                "kind": "select",
+                "label": "发布方式",
+                "options": [
+                    ("article", "专栏文章（推荐）"),
+                    ("dynamic", "图文动态（旧）"),
+                ],
+            },
+            "max_article_pages": {"kind": "number", "label": "单篇专栏最多图片数"},
+            "original": {"kind": "select", "label": "原创声明", "options": [("1", "原创"), ("0", "非原创")]},
+            "reprint": {"kind": "select", "label": "转载属性", "options": [("0", "原创/未标转载"), ("1", "转载")]},
+            "topics": {"kind": "text", "label": "图文动态话题（逗号分隔）"},
+            "image_category": {"kind": "text", "label": "动态图片分类 daily/draw/cos"},
+        },
     },
     {
         "key": "tieba",
@@ -74,6 +89,10 @@ PLATFORM_CARDS: list[dict[str, Any]] = [
         "cookie_fields": [{"name": "BDUSS", "required": True}],
         "hint": "登录百度后复制 Cookie 里的 BDUSS。发帖权限受账号与吧等级限制。",
         "extras": [("forum", "目标吧名（可留空，在 manga.json 里配置）")],
+        "controls": {
+            "max_pages_per_post": {"kind": "number", "label": "每楼最多图片数（默认 9）"},
+            "upload_sleep": {"kind": "number", "label": "每张图上传间隔（秒）"},
+        },
     },
     {
         "key": "ehentai",
@@ -92,6 +111,15 @@ PLATFORM_CARDS: list[dict[str, Any]] = [
             ("title_jpn", "默认日文原标题（可被每话 manga.json 覆盖）"),
         ],
         "field_map": True,
+        "controls": {
+            "upload_mode": {
+                "kind": "select",
+                "label": "上传方式",
+                "options": [("zip", "整包 zip（推荐）"), ("files", "逐张多文件")],
+            },
+            "publish_after_upload": {"kind": "switch", "label": "上传后自动发布"},
+            "extra_tags": {"kind": "text", "label": "附加标签（逗号分隔）"},
+        },
     },
     {
         "key": "zaimanhua",
@@ -103,6 +131,10 @@ PLATFORM_CARDS: list[dict[str, Any]] = [
         ],
         "hint": "登录再漫画后复制 Cookie 里的 token（JWT），可选 clientId。投稿页：manhua.zaimanhua.com/uploadShows",
         "extras": [("cate", "作品类型")],
+        "controls": {
+            "max_pages_per_upload": {"kind": "number", "label": "单章最多图片数"},
+            "upload_attempts": {"kind": "number", "label": "传图失败重试次数"},
+        },
     },
     {
         "key": "xiaoheihe",
@@ -116,12 +148,38 @@ PLATFORM_CARDS: list[dict[str, Any]] = [
             }
         ],
         "hint": "打开 xiaoheihe.cn 并登录后，按 F12 → Network → 复制任意请求的 Cookie 头整段粘贴。"
-        "每帖最多 30 张图，超出自动拆帖；发布到 PC游戏 社区。",
+        "≤30 页发图文，＞30 页发文章（文章单帖上限 100，超出继续拆帖）；"
+        "默认关联 东方夜雀食堂 + 东方冰之勇者记，内容声明为转载/已授权/站外 bilibili。",
         "extras": [
-            ("max_pages_per_post", "单帖图片上限（默认 30）"),
-            ("publish_draft", "true=只存草稿（不公开）"),
-            ("topic_id", "发布社区 id（默认 1=PC游戏）"),
+            ("topic_ids", "关联社区（默认 431327,477625）"),
+            ("hashtags", "关联话题（默认 东方project,东方同人）"),
+            ("source", "站外转载来源（默认 bilibili）"),
         ],
+        # 发布形式/草稿模式等常用项：前端渲染成开关/下拉等控件，
+        # 其余 extras 仍以文本输入展示（无需再手动编辑 config.yaml）。
+        "controls": {
+            "publish_mode": {
+                "kind": "select",
+                "label": "发布形式",
+                "options": [
+                    ("auto", "自动（≤30 页图文 / >30 页文章）"),
+                    ("image_text", "图文"),
+                    ("article", "文章"),
+                ],
+            },
+            "publish_draft": {
+                "kind": "switch",
+                "label": "先存草稿（不公开）",
+            },
+            "image_text_max_pages": {
+                "kind": "number",
+                "label": "图文/文章分界页数（auto）",
+            },
+            "article_max_pages": {
+                "kind": "number",
+                "label": "文章单帖最大页数",
+            },
+        },
     },
 ]
 
@@ -133,9 +191,12 @@ EXTRA_OPTIONS: dict[str, Any] = {
     "langtype": None,
     "title_jpn": None,
     "forum": None,
-    "max_pages_per_post": None,
+    "image_text_max_pages": None,
+    "article_max_pages": None,
     "publish_draft": None,
-    "topic_id": None,
+    "topic_ids": None,
+    "hashtags": None,
+    "source": None,
 }
 
 

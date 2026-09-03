@@ -38,6 +38,24 @@ class Runner:
         path.mkdir(parents=True, exist_ok=True)
         return path
 
+    def cleanup_prepared_all(self) -> None:
+        """整批发布结束后统一删除共享的图片预处理结果。
+
+        多个平台共用同一批 prepared 文件（按规格共享），不能由单个
+        平台在发布完成时删除；所有平台上传完毕后这里一次性清理。
+        """
+        from .util import clear_prepare_cache
+
+        clear_prepare_cache()
+        root = Path(self.app.common.output_dir) / "prepared"
+        if root.is_dir():
+            try:
+                import shutil
+
+                shutil.rmtree(root, ignore_errors=True)
+            except OSError:  # pragma: no cover
+                pass
+
     def make_publisher(self, name: str) -> BasePublisher:
         if name not in PLATFORM_CLASSES:
             raise PublisherError(f"未知平台：{name}，支持：{', '.join(PLATFORM_CLASSES)}")
@@ -169,13 +187,16 @@ class Runner:
                 return []
 
         results: list[PublishResult] = []
-        parallel = self.app.common.parallel
-        if parallel and len(chapters) > 1:
-            results = self._run_parallel(chapters, enabled)
-        else:
-            for chapter in chapters:
-                for name, _ in enabled:
-                    results.append(self._publish_one(name, chapter))
+        try:
+            parallel = self.app.common.parallel
+            if parallel and len(chapters) > 1:
+                results = self._run_parallel(chapters, enabled)
+            else:
+                for chapter in chapters:
+                    for name, _ in enabled:
+                        results.append(self._publish_one(name, chapter))
+        finally:
+            self.cleanup_prepared_all()
         self._write_report(results)
         _print_summary(results)
         return results

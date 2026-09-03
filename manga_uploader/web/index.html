@@ -185,6 +185,21 @@ try {
           <span v-if="summary" class="pv-target">{{ publishTargetsText }}</span>
         </div>
         <div class="card-body">
+          <!-- 小黑盒发布快捷选项：存草稿 + 发布形式（也保留在平台账号卡片可调） -->
+          <div v-if="xhSettings" class="publish-options">
+            <label class="switch">
+              <input type="checkbox" v-model="xhSettings.publish_draft">
+              <span class="switch-track"></span>
+              <span class="switch-label">小黑盒先存草稿</span>
+            </label>
+            <label class="option-label">小黑盒发布形式</label>
+            <select v-model="xhSettings.publish_mode" class="input option-select">
+              <option value="auto">自动（≤30 页图文 / &gt;30 页文章）</option>
+              <option value="image_text">图文</option>
+              <option value="article">文章</option>
+            </select>
+            <span class="hint-text">改动在“一键发布”时生效（自动随配置保存）</span>
+          </div>
           <p v-if="summary && !previewChapters.length && !previewText" class="hint-text">
             已加载：{{ (summary.meta||{}).title || (summary.meta||{}).author || "已选漫画" }} · {{ summary.pages }} 页，预览即将自动生成…
           </p>
@@ -298,6 +313,24 @@ try {
               </select>
               <input v-else type="text" v-model="config.platforms[card.key].settings[extraKey]"
                 class="input" :placeholder="placeholder">
+            </div>
+            <!-- 常用发布设置控件（小黑盒等）：开关 / 下拉 / 数字 -->
+            <div v-for="(item, itemKey) in (card.controls || {})" :key="'ctrl-' + itemKey" class="field">
+              <label class="field-label">{{ item.label || itemKey }}</label>
+              <select v-if="item.kind === 'select'" class="input"
+                v-model="config.platforms[card.key].settings[itemKey]">
+                <option v-for="opt in (item.options || [])" :key="opt[0]" :value="opt[0]">{{ opt[1] }}</option>
+              </select>
+              <input v-else-if="item.kind === 'number'" type="number" class="input"
+                v-model.number="config.platforms[card.key].settings[itemKey]" min="0" step="1">
+              <label v-else-if="item.kind === 'switch'" class="switch">
+                <input type="checkbox" v-model="config.platforms[card.key].settings[itemKey]">
+                <span class="switch-track"></span>
+                <span class="switch-label">{{ item.onLabel || '开启' }}</span>
+              </label>
+              <input v-else type="text" class="input"
+                v-model="config.platforms[card.key].settings[itemKey]"
+                :placeholder="item.placeholder || ''">
             </div>
           </div>
 
