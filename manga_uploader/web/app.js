@@ -387,7 +387,8 @@ createApp({
 
     function onDrop(e) {
       dragOver.value = false;
-      const files = Array.from(e.dataTransfer.files || []);
+      if (busy.value) { toastMsg("正在导入中，请稍候…"); return; }
+      const files = Array.from((e && e.dataTransfer && e.dataTransfer.files) || []);
       if (!files.length) return;
       const zips = files.filter((f) => /\.(zip|cbz)$/i.test(f.name));
       const imgs = files.filter((f) => /\.(jpg|jpeg|png|gif|webp)$/i.test(f.name));

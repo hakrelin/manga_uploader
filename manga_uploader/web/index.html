@@ -73,7 +73,7 @@ try {
             <div class="dropzone" :class="{ 'is-busy': busy }"
               @dragover.prevent="dragOver = true"
               @dragleave.prevent="dragOver = false"
-              @drop.prevent="busy || onDrop()">
+              @drop.prevent="onDrop($event)">
               <div v-if="busy" class="drop-hint"><span class="spin"></span>正在导入，请稍候…</div>
               <div v-else-if="dragOver" class="drop-hint">松开以导入</div>
               <template v-else>
