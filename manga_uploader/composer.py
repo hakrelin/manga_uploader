@@ -7,6 +7,7 @@ manga.json 支持的通用键：
     author       画师/作者名（英文标题侧可用罗马音，JP 标题侧可直接填日文）
     circle       社团名
     event        发行展会，如 C105
+    event_en     展会罗马音（自动生成，可手改）
     group        汉化组名，如 茶与金平糖汉化组
     title_jp     日文原标题
     title_en     英文/罗马音标题（可用“日→罗马音”辅助生成）
@@ -35,101 +36,194 @@ from .comic import platform_meta
 from .models import Chapter
 
 
-# ---------- 日文假名 → 罗马音（平文式简化版） ----------
+# ---------- 日文假名 → 罗马音（无音调记号的 ASCII 风格，如 とうきょう→toukyou） ----------
 
-_KANA_ROWS: list[tuple[str, str, str]] = [
-    # 行 あ
-    ("あ", "ぁ", "a"), ("い", "ぃ", "i"), ("う", "ぅ", "u"),
-    ("え", "ぇ", "e"), ("お", "ぉ", "o"),
-    # 行 か
-    ("か", "が", "ka"), ("き", "ぎ", "ki"), ("く", "ぐ", "ku"),
-    ("け", "げ", "ke"), ("こ", "ご", "ko"),
-    # 行 さ
-    ("さ", "ざ", "sa"), ("し", "じ", "shi"), ("す", "ず", "su"),
-    ("せ", "ぜ", "se"), ("そ", "ぞ", "so"),
-    # 行 た
-    ("た", "だ", "ta"), ("ち", "ぢ", "chi"), ("つ", "づ", "tsu"),
-    ("て", "で", "te"), ("と", "ど", "to"),
-    # 行 な
-    ("な", "", "na"), ("に", "", "ni"), ("ぬ", "", "nu"),
-    ("ね", "", "ne"), ("の", "", "no"),
-    # 行 は
-    ("は", "ば", "ha"), ("ひ", "び", "hi"), ("ふ", "ぶ", "fu"),
-    ("へ", "べ", "he"), ("ほ", "ぼ", "ho"),
-    # 行 ま
-    ("ま", "", "ma"), ("み", "", "mi"), ("む", "", "mu"),
-    ("め", "", "me"), ("も", "", "mo"),
-    # 行 や
-    ("や", "ゃ", "ya"), ("ゆ", "ゅ", "yu"), ("よ", "ょ", "yo"),
-    # 行 ら
-    ("ら", "", "ra"), ("り", "", "ri"), ("る", "", "ru"),
-    ("れ", "", "re"), ("ろ", "", "ro"),
-    # 行 わ
-    ("わ", "", "wa"), ("を", "", "wo"), ("ん", "", "n"),
-]
+_BASE: dict[str, str] = {
+    # 平假名
+    "あ": "a", "い": "i", "う": "u", "え": "e", "お": "o",
+    "か": "ka", "き": "ki", "く": "ku", "け": "ke", "こ": "ko",
+    "さ": "sa", "し": "shi", "す": "su", "せ": "se", "そ": "so",
+    "た": "ta", "ち": "chi", "つ": "tsu", "て": "te", "と": "to",
+    "な": "na", "に": "ni", "ぬ": "nu", "ね": "ne", "の": "no",
+    "は": "ha", "ひ": "hi", "ふ": "fu", "へ": "he", "ほ": "ho",
+    "ま": "ma", "み": "mi", "む": "mu", "め": "me", "も": "mo",
+    "や": "ya", "ゆ": "yu", "よ": "yo",
+    "ら": "ra", "り": "ri", "る": "ru", "れ": "re", "ろ": "ro",
+    "わ": "wa", "を": "wo", "ん": "n",
+    "が": "ga", "ぎ": "gi", "ぐ": "gu", "げ": "ge", "ご": "go",
+    "ざ": "za", "じ": "ji", "ず": "zu", "ぜ": "ze", "ぞ": "zo",
+    "だ": "da", "ぢ": "ji", "づ": "zu", "で": "de", "ど": "do",
+    "ば": "ba", "び": "bi", "ぶ": "bu", "べ": "be", "ぼ": "bo",
+    "ぱ": "pa", "ぴ": "pi", "ぷ": "pu", "ぺ": "pe", "ぽ": "po",
+    "ゐ": "wi", "ゑ": "we",
+    # 片假名
+    "ア": "a", "イ": "i", "ウ": "u", "エ": "e", "オ": "o",
+    "カ": "ka", "キ": "ki", "ク": "ku", "ケ": "ke", "コ": "ko",
+    "サ": "sa", "シ": "shi", "ス": "su", "セ": "se", "ソ": "so",
+    "タ": "ta", "チ": "chi", "ツ": "tsu", "テ": "te", "ト": "to",
+    "ナ": "na", "ニ": "ni", "ヌ": "nu", "ネ": "ne", "ノ": "no",
+    "ハ": "ha", "ヒ": "hi", "フ": "fu", "ヘ": "he", "ホ": "ho",
+    "マ": "ma", "ミ": "mi", "ム": "mu", "メ": "me", "モ": "mo",
+    "ヤ": "ya", "ユ": "yu", "ヨ": "yo",
+    "ラ": "ra", "リ": "ri", "ル": "ru", "レ": "re", "ロ": "ro",
+    "ワ": "wa", "ヲ": "wo", "ン": "n",
+    "ガ": "ga", "ギ": "gi", "グ": "gu", "ゲ": "ge", "ゴ": "go",
+    "ザ": "za", "ジ": "ji", "ズ": "zu", "ゼ": "ze", "ゾ": "zo",
+    "ダ": "da", "ヂ": "ji", "ヅ": "zu", "デ": "de", "ド": "do",
+    "バ": "ba", "ビ": "bi", "ブ": "bu", "ベ": "be", "ボ": "bo",
+    "パ": "pa", "ピ": "pi", "プ": "pu", "ペ": "pe", "ポ": "po",
+    "ヴ": "vu", "ヷ": "va", "ヸ": "vi", "ヹ": "ve", "ヺ": "vo",
+    "ヰ": "wi", "ヱ": "we",
+}
 
+_SMALL: dict[str, str] = {
+    "ぁ": "a", "ぃ": "i", "ぅ": "u", "ぇ": "e", "ぉ": "o",
+    "ゃ": "ya", "ゅ": "yu", "ょ": "yo", "ゎ": "wa",
+    "ァ": "a", "ィ": "i", "ゥ": "u", "ェ": "e", "ォ": "o",
+    "ャ": "ya", "ュ": "yu", "ョ": "yo", "ヮ": "wa",
+}
 
-def _build_kana_map() -> dict[str, str]:
-    mapping: dict[str, str] = {}
-    for hira, daku, roma in _KANA_ROWS:
-        mapping[hira] = roma
-        mapping[hira.upper()] = roma  # 片假名直接由大写 ASCII 近似，下面再补真实表
-    extra = {
-        "ア": "a", "イ": "i", "ウ": "u", "エ": "e", "オ": "o",
-        "カ": "ka", "ガ": "ga", "キ": "ki", "ギ": "gi", "ク": "ku", "グ": "gu",
-        "ケ": "ke", "ゲ": "ge", "コ": "ko", "ゴ": "go",
-        "サ": "sa", "ザ": "za", "シ": "shi", "ジ": "ji", "ス": "su", "ズ": "zu",
-        "セ": "se", "ゼ": "ze", "ソ": "so", "ゾ": "zo",
-        "タ": "ta", "ダ": "da", "チ": "chi", "ヂ": "ji", "ツ": "tsu", "ヅ": "zu",
-        "テ": "te", "デ": "de", "ト": "to", "ド": "do",
-        "ナ": "na", "ニ": "ni", "ヌ": "nu", "ネ": "ne", "ノ": "no",
-        "ハ": "ha", "バ": "ba", "パ": "pa", "ヒ": "hi", "ビ": "bi", "ピ": "pi",
-        "フ": "fu", "ブ": "bu", "プ": "pu", "ヘ": "he", "ベ": "be", "ペ": "pe",
-        "ホ": "ho", "ボ": "bo", "ポ": "po",
-        "マ": "ma", "ミ": "mi", "ム": "mu", "メ": "me", "モ": "mo",
-        "ヤ": "ya", "ユ": "yu", "ヨ": "yo",
-        "ラ": "ra", "リ": "ri", "ル": "ru", "レ": "re", "ロ": "ro",
-        "ワ": "wa", "ヲ": "wo", "ン": "n",
-        "ヴ": "vu",
-        "ァ": "a", "ィ": "i", "ゥ": "u", "ェ": "e", "ォ": "o",
-        "ャ": "ya", "ュ": "yu", "ョ": "yo",
-        "ー": "", "ッ": "", "ッ": "",
-    }
-    mapping.update(extra)
-    return mapping
+# 基本假名 + 小写假名的拗音
+_DIGRAPH: dict[tuple[str, str], str] = {
+    ("き", "ゃ"): "kya", ("き", "ゅ"): "kyu", ("き", "ょ"): "kyo",
+    ("ぎ", "ゃ"): "gya", ("ぎ", "ゅ"): "gyu", ("ぎ", "ょ"): "gyo",
+    ("し", "ゃ"): "sha", ("し", "ゅ"): "shu", ("し", "ょ"): "sho",
+    ("じ", "ゃ"): "ja", ("じ", "ゅ"): "ju", ("じ", "ょ"): "jo",
+    ("ち", "ゃ"): "cha", ("ち", "ゅ"): "chu", ("ち", "ょ"): "cho",
+    ("ぢ", "ゃ"): "ja", ("ぢ", "ゅ"): "ju", ("ぢ", "ょ"): "jo",
+    ("に", "ゃ"): "nya", ("に", "ゅ"): "nyu", ("に", "ょ"): "nyo",
+    ("ひ", "ゃ"): "hya", ("ひ", "ゅ"): "hyu", ("ひ", "ょ"): "hyo",
+    ("び", "ゃ"): "bya", ("び", "ゅ"): "byu", ("び", "ょ"): "byo",
+    ("ぴ", "ゃ"): "pya", ("ぴ", "ゅ"): "pyu", ("ぴ", "ょ"): "pyo",
+    ("み", "ゃ"): "mya", ("み", "ゅ"): "myu", ("み", "ょ"): "myo",
+    ("り", "ゃ"): "rya", ("り", "ゅ"): "ryu", ("り", "ょ"): "ryo",
+    ("キ", "ャ"): "kya", ("キ", "ュ"): "kyu", ("キ", "ョ"): "kyo",
+    ("ギ", "ャ"): "gya", ("ギ", "ュ"): "gyu", ("ギ", "ョ"): "gyo",
+    ("シ", "ャ"): "sha", ("シ", "ュ"): "shu", ("シ", "ョ"): "sho",
+    ("ジ", "ャ"): "ja", ("ジ", "ュ"): "ju", ("ジ", "ョ"): "jo",
+    ("チ", "ャ"): "cha", ("チ", "ュ"): "chu", ("チ", "ョ"): "cho",
+    ("ニ", "ャ"): "nya", ("ニ", "ュ"): "nyu", ("ニ", "ョ"): "nyo",
+    ("ヒ", "ャ"): "hya", ("ヒ", "ュ"): "hyu", ("ヒ", "ョ"): "hyo",
+    ("ビ", "ャ"): "bya", ("ビ", "ュ"): "byu", ("ビ", "ョ"): "byo",
+    ("ピ", "ャ"): "pya", ("ピ", "ュ"): "pyu", ("ピ", "ョ"): "pyo",
+    ("ミ", "ャ"): "mya", ("ミ", "ュ"): "myu", ("ミ", "ョ"): "myo",
+    ("リ", "ャ"): "rya", ("リ", "ュ"): "ryu", ("リ", "ョ"): "ryo",
+}
 
+# 片假名外来语常见双假名音节（ファ=ファ …）
+_PAIR_SPECIAL: dict[str, str] = {
+    "ファ": "fa", "フィ": "fi", "フェ": "fe", "フォ": "fo", "フュ": "fyu",
+    "ウィ": "wi", "ウェ": "we", "ウォ": "wo",
+    "ヴァ": "va", "ヴィ": "vi", "ヴェ": "ve", "ヴォ": "vo", "ヴュ": "vyu",
+    "チェ": "che", "シェ": "she", "ジェ": "je", "ティ": "ti", "ディ": "di",
+    "トゥ": "tu", "ドゥ": "du", "テュ": "tyu", "デュ": "dyu",
+    "クァ": "kwa", "クィ": "kwi", "クェ": "kwe", "クォ": "kwo",
+    "グァ": "gwa", "グィ": "gwi", "グェ": "gwe", "グォ": "gwo",
+    "ツァ": "tsa", "ツィ": "tsi", "ツェ": "tse", "ツォ": "tso",
+    "スィ": "si", "ズィ": "zi",
+    "ふぁ": "fa", "ふぃ": "fi", "ふぇ": "fe", "ふぉ": "fo", "ふゅ": "fyu",
+    "うぃ": "wi", "うぇ": "we", "うぉ": "wo",
+    "ゔぁ": "va", "ゔぃ": "vi", "ゔぇ": "ve", "ゔぉ": "vo", "ゔゅ": "vyu",
+}
 
-_KANA = _build_kana_map()
+def _geminate(next_roma: str) -> str:
+    """促音っ 加在下个音节前。"""
+    if not next_roma:
+        return ""
+    if next_roma.startswith("ch"):
+        # っち→tchi / っちゃ→tcha（Hepburn 用 t 接 ch）
+        return "t" + next_roma
+    first = next_roma[0]
+    if first.isalpha():
+        return first + next_roma
+    return ""
 
 
 def to_romaji(text: str) -> str:
-    """把日文假名转成平文式罗马音；汉字无法自动判断读音时会原样保留，
-    请结合站点习惯手动改成罗马音（如 万能型→Bannou-gata）。"""
+    """把日文假名/假名音节转成 ASCII 罗马音。
+
+    - 拗音按音节合并（しゃ→sha、きょう→kyou），促音按规范双写
+      （きって→kitte、いっち→itchi），ん 在元音/や行前加撇号。
+    - 汉字无法自动判断读音，会原样保留，请按站点习惯手动改成罗马音
+      （例如 万能型 → Bannou-gata、例大祭 → Reitaisai）。
+    """
     if not text:
         return ""
-    result: list[str] = []
-    for ch in text:
-        roma = _KANA.get(ch)
-        if roma is None:
-            result.append(ch)
+    # 全角英数/空格归一
+    normalized = (
+        text.replace("　", " ")
+        .translate(str.maketrans("０１２３４５６７８９ＡＢＣＤＥＦＧＨＩＪＫＬＭＮＯＰＱＲＳＴＵＶＷＸＹＺａｂｃｄｅｆｇｈｉｊｋｌｍｎｏｐｑｒｓｔｕｖｗｘｙｚ", "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"))
+    )
+    out: list[str] = []
+    i = 0
+    pending_geminate = False
+    length = len(normalized)
+    while i < length:
+        ch = normalized[i]
+        pair = normalized[i : i + 2]
+        if pair in _PAIR_SPECIAL:
+            roma = _PAIR_SPECIAL[pair]
+            if pending_geminate:
+                out.append(_geminate(roma))
+                pending_geminate = False
+            else:
+                out.append(roma)
+            i += 2
+            continue
+        next_ch = normalized[i + 1] if i + 1 < length else ""
+        if ch in _BASE and next_ch in _SMALL and (ch, next_ch) in _DIGRAPH:
+            roma = _DIGRAPH[(ch, next_ch)]
+            if pending_geminate:
+                out.append(_geminate(roma))
+                pending_geminate = False
+            else:
+                out.append(roma)
+            i += 2
             continue
         if ch in ("っ", "ッ"):
-            # 促音：若后面还有字符，先占位由下个字符首字母补齐
-            result.append("__TSU__")
+            pending_geminate = True
+            i += 1
             continue
-        result.append(roma)
-    # 处理促音（っ/ッ）：下个音节首字母双写
-    out = "".join(result)
-    while "__TSU__" in out:
-        out = re.sub(
-            r"__TSU__([a-zA-Z])",
-            lambda m: m.group(1) + m.group(1),
-            out,
-            count=1,
-        )
-        out = out.replace("__TSU__", "", 1) if "__TSU__" in out else out
-    out = re.sub(r"\s+", " ", out).strip()
-    return out
+        if ch == "ー":
+            # 长音符：重复上一个音节末尾的元音（ASCII 习惯，如 コーヒー→koohii）
+            if out:
+                last = out[-1]
+                if last and last[-1] in "aeiou":
+                    out.append(last[-1])
+            i += 1
+            continue
+        roma = _BASE.get(ch)
+        if roma is None:
+            # 汉字、符号、小写假名等原样保留，避免“漏字”
+            if pending_geminate and ch not in (" ", "-", "・"):
+                out.append("tsu")
+                pending_geminate = False
+            out.append(ch)
+            i += 1
+            continue
+        if roma == "n" and next_ch in _BASE and _BASE[next_ch][:1] in ("a", "i", "u", "e", "o", "y"):
+            roma = "n'"
+        if pending_geminate:
+            out.append(_geminate(roma))
+            pending_geminate = False
+        else:
+            out.append(roma)
+        i += 1
+    if pending_geminate:
+        out.append("tsu")
+    result = "".join(out)
+    result = re.sub(r"\s+", " ", result).strip()
+    return result
+
+
+def to_romaji_title_case(text: str) -> str:
+    """转罗马音并把每个单词/连字符段首字母大写（如 たいさんち→Taisanchi）。"""
+    roma = to_romaji(text)
+    parts = re.split(r"(\s+|-)", roma)
+    for index, part in enumerate(parts):
+        if part and part[0].isalpha():
+            parts[index] = part[0].upper() + part[1:]
+    return "".join(parts)
 
 
 # ---------- 读取元数据 ----------
@@ -181,6 +275,7 @@ def fields(chapter: Chapter, platform: str | None = None) -> dict[str, Any]:
         "circle": meta_field(chapter, platform, ("circle", "社团")),
         "circle_en": meta_field(chapter, platform, ("circle_en",)),
         "event": meta_field(chapter, platform, ("event", "展会")),
+        "event_en": meta_field(chapter, platform, ("event_en",)),
         "group": meta_field(chapter, platform, ("group", "group_name", "汉化组")),
         "title_jp": meta_field(chapter, platform, ("title_jp", "title_original", "title_jpn")),
         "title_en": meta_field(chapter, platform, ("title_en",)),
@@ -195,11 +290,19 @@ def fields(chapter: Chapter, platform: str | None = None) -> dict[str, Any]:
 
 
 def _fill_romaji_field(value: str, romaji: str) -> str:
-    return _str(romaji) or to_romaji(value)
+    if _str(romaji):
+        return _str(romaji)
+    roma = to_romaji_title_case(value)
+    return roma if roma != value else value
 
 
 def _romaji_or_raw(value: str) -> str:
     roma = to_romaji(value)
+    return roma if roma and roma != value else value
+
+
+def _romaji_title_or_raw(value: str) -> str:
+    roma = to_romaji_title_case(value)
     return roma if roma and roma != value else value
 
 
@@ -228,7 +331,7 @@ def ehentai_title_en(chapter: Chapter) -> str:
     override = platform_meta(chapter, "ehentai").get("gname_en")
     if _str(override):
         return _str(override)
-    event = _str(f["event"])
+    event = _str(f["event_en"]) or _romaji_title_or_raw(_str(f["event"]))
     author = _fill_romaji_field(f["author"], f["author_en"])
     circle = _fill_romaji_field(f["circle"], f["circle_en"])
     title_en = _str(f["title_en"]) or _romaji_or_raw(f["title_jp"])

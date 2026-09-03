@@ -37,6 +37,16 @@ class TestComposer(unittest.TestCase):
     def test_to_romaji(self):
         self.assertEqual(composer.to_romaji("たいさんち"), "taisanchi")
         self.assertEqual(composer.to_romaji("こんにちは"), "konnichiha")
+        self.assertEqual(composer.to_romaji("とうきょう"), "toukyou")
+        self.assertEqual(composer.to_romaji("しゃしん"), "shashin")
+        self.assertEqual(composer.to_romaji("きって"), "kitte")
+        self.assertEqual(composer.to_romaji("いっち"), "itchi")
+        self.assertEqual(composer.to_romaji("コーヒー"), "koohii")
+        self.assertEqual(composer.to_romaji("コミックマーケット"), "komikkumaaketto")
+        self.assertEqual(composer.to_romaji_title_case("たいさんち"), "Taisanchi")
+        self.assertEqual(
+            composer.to_romaji_title_case("いちだい たいさ"), "Ichidai Taisa"
+        )
         # 汉字无法自动判断读音，原样保留供手动修改
         self.assertEqual(composer.to_romaji("一代大佐"), "一代大佐")
 
@@ -89,6 +99,13 @@ class TestComposer(unittest.TestCase):
             "gname_en": "手改的英文标题"
         }
         self.assertEqual(composer.ehentai_title_en(chapter), "手改的英文标题")
+
+    def test_event_romaji_used_in_en_title_only(self):
+        chapter = _chapter(event="サンシャインクリエイション")
+        en = composer.ehentai_title_en(chapter)
+        jp = composer.ehentai_title_jp(chapter)
+        self.assertIn("(Sanshainkurieishon)", en)
+        self.assertIn("(サンシャインクリエイション)", jp)
 
 
 if __name__ == "__main__":

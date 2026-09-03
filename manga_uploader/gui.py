@@ -98,6 +98,7 @@ PLATFORM_CARDS: list[dict[str, Any]] = [
 # 漫画信息页：基础字段（写入 manga.json 根级，作为各平台自动组合的来源）
 BASE_FIELDS: list[tuple[str, str, str]] = [
     ("event", "展会（如 C105）", "text"),
+    ("event_en", "展会罗马音（自动转换，可手改）", "text"),
     ("author", "作者/画师（日文原标题侧用原名）", "text"),
     ("author_en", "作者罗马音（可留空，自动转换）", "text"),
     ("circle", "社团", "text"),
@@ -844,7 +845,7 @@ class UploaderApp:
         buttons.grid(row=row_index + 2, column=0, columnspan=4, sticky="w", pady=6)
         ttk.Button(
             buttons,
-            text="作者/社团 → 罗马音",
+            text="展会/作者/社团 → 罗马音",
             command=self._fill_romaji_names,
         ).pack(side="left", padx=4)
         ttk.Button(
@@ -883,12 +884,15 @@ class UploaderApp:
             widget.insert("1.0", "" if value is None else str(value))
 
     def _fill_romaji_names(self) -> None:
+        event = self._meta_value("event")
         author = self._meta_value("author")
         circle = self._meta_value("circle")
+        if event and not self._meta_value("event_en"):
+            self._set_meta_value("event_en", composer.to_romaji_title_case(event))
         if author and not self._meta_value("author_en"):
-            self._set_meta_value("author_en", composer.to_romaji(author))
+            self._set_meta_value("author_en", composer.to_romaji_title_case(author))
         if circle and not self._meta_value("circle_en"):
-            self._set_meta_value("circle_en", composer.to_romaji(circle))
+            self._set_meta_value("circle_en", composer.to_romaji_title_case(circle))
 
     def _fill_romaji_title(self) -> None:
         jp = self._meta_value("title_jp")
@@ -1033,7 +1037,7 @@ class UploaderApp:
         raw = copy.deepcopy(dict(base.raw))
         raw.setdefault("platforms", {})
         for field in (
-            "event", "author", "author_en", "circle", "circle_en", "group",
+            "event", "event_en", "author", "author_en", "circle", "circle_en", "group",
             "title", "title_jp", "title_en", "series", "series_en", "series_jp",
             "language", "tags", "chapter_name",
         ):
@@ -1133,7 +1137,7 @@ class UploaderApp:
 
             raw = read_meta(meta_path)
             for field in (
-                "event", "author", "author_en", "circle", "circle_en", "group",
+                "event", "event_en", "author", "author_en", "circle", "circle_en", "group",
                 "title_jp", "title_en", "series", "series_en", "series_jp",
                 "language", "chapter_name",
             ):
@@ -1300,6 +1304,7 @@ class UploaderApp:
         raw = chapter.raw
         mapping = {
             "event": raw.get("event", ""),
+            "event_en": raw.get("event_en", ""),
             "author": raw.get("author", "") or chapter.author,
             "author_en": raw.get("author_en", ""),
             "circle": raw.get("circle", ""),
