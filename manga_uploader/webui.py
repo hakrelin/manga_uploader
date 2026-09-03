@@ -116,7 +116,8 @@ PLATFORM_CARDS: list[dict[str, Any]] = [
             }
         ],
         "hint": "打开 xiaoheihe.cn 并登录后，按 F12 → Network → 复制任意请求的 Cookie 头整段粘贴。"
-        "每帖最多 30 张图，超出自动拆帖；发布到 PC游戏 社区。",
+        "≤30 页发图文，＞30 页发文章（文章单帖上限 100，超出继续拆帖）；"
+        "默认关联 东方夜雀食堂 + 东方冰之勇者记，内容声明为转载/已授权/站外 bilibili。",
         "extras": [
             ("image_text_max_pages", "图文阈值（≤N 页发图文，默认 30）"),
             ("article_max_pages", "文章单帖上限（默认 100）"),
