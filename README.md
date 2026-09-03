@@ -42,9 +42,10 @@ python -m pip install -r requirements.txt
 **一键启动**（首次运行会在程序目录自动创建 `.venv` 虚拟环境并从清华镜像安装依赖）：
 
 ```bat
-:: Windows：双击 start.bat，或
-.\start.ps1              # 本机启动（自动拉起浏览器）
-.\start.ps1 -Lan         # 局域网可访问（0.0.0.0）
+:: 浏览器前端（推荐）：双击 start.bat，或
+::   .\start-web.ps1 -Lan    # -Lan = 局域网可访问(0.0.0.0)
+:: 桌面 GUI（tkinter 版）：双击 start-gui.bat，或 .\start-gui.ps1
+:: 两者共享同一个本地 .venv（绿色 Python 3.12），首次运行自动准备
 ```
 
 ```bash
