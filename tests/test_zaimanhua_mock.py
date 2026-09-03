@@ -133,7 +133,7 @@ class TestZaimanhuaPublisherMock(unittest.TestCase):
         self.assertEqual(len(submits), 1)
         body = json.loads(submits[0]["body"])
         self.assertEqual(body["name"], "测试漫画")
-        self.assertEqual(body["chapter"], "测试漫画 第01话")
+        self.assertEqual(body["chapter"], "短篇")
         self.assertEqual(body["cate"], "3")
         self.assertEqual(len(body["pageUrls"]), 3)
         self.assertTrue(all(u.startswith("https://mock.cdn") for u in body["pageUrls"]))

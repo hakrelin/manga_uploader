@@ -69,7 +69,7 @@ class TestComicScan(unittest.TestCase):
 
 class TestConfig(unittest.TestCase):
     def test_load_example(self):
-        cfg = load_config("config.yaml")
+        cfg = load_config("config.example.yaml")
         self.assertIn("bilibili", cfg.platforms)
         self.assertIn("zaimanhua", cfg.platforms)
         self.assertTrue(cfg.platforms["bilibili"].enabled)
@@ -83,6 +83,8 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(
             cfg.platforms["ehentai"].get("proxy_url"), "http://127.0.0.1:7897"
         )
+        self.assertFalse(cfg.common.ai_enabled)
+        self.assertEqual(cfg.common.ai_timeout, 60.0)
 
     def test_missing_cookies_by_platform(self):
         from manga_uploader.config import PlatformConfig

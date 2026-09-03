@@ -13,3 +13,8 @@ report-*.json
 .venv/
 .venv*/
 venv/
+
+# 依赖/调试临时目录与临时文件
+_pylibs/
+_tmp_*.py
+_tmp_*.cs

@@ -41,6 +41,13 @@ class CommonConfig:
     # 代理：proxy_url 手动指定 http(s)://…；use_system_proxy 读取 Windows 系统代理
     proxy_url: str = ""
     use_system_proxy: bool = False
+    # 罗马音 AI 转换（OpenAI 兼容接口；空 api_key 时自动回退本地 pykakasi）
+    ai_enabled: bool = False
+    ai_base_url: str = ""
+    ai_api_key: str = ""
+    ai_model: str = ""
+    ai_prompt: str = ""
+    ai_timeout: float = 60.0
 
 
 @dataclass
@@ -72,12 +79,12 @@ DEFAULT_SETTINGS: dict[str, dict[str, Any]] = {
         "fid": 0,
         "max_pages_per_post": 9,   # 每楼最多 9 张（网页端硬上限）；第 1 楼固定只放封面
         "upload_sleep": 1.0,
-        "title_suffix": "【漫画】",
+        "title_suffix": "",
         "use_system_proxy": False,
         "proxy_url": "",
     },
     "ehentai": {
-        "category_label": "Manga",  # 按上传页选项文本模糊匹配
+        "category_label": "Doujinshi",  # 默认同人志（汉化搬运）；可选 Non-H/Manga 等
         "rating_label": "",
         "language_label": "Chinese",  # 汉化上传默认中文；原版/无字可改 Japanese / No Text
         "extra_tags": [],

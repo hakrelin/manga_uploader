@@ -27,6 +27,7 @@ import time
 from urllib.parse import quote
 
 from ..models import Chapter, CheckResult, PublishResult
+from .. import composer
 from ..util import chunk_list
 from .base import BasePublisher, PublisherError
 
@@ -82,6 +83,14 @@ class BilibiliPublisher(BasePublisher):
             return meta.get(key)
         return self.cfg.get(key, default)
 
+    def _title(self, chapter: Chapter) -> str:
+        """B站标题：【汉化组】中文标题（平台 meta.title 覆盖优先）。"""
+        return composer.platform_title(chapter, self.key)
+
+    def _body_text(self, chapter: Chapter) -> str:
+        """B站正文：作者/社团/简介 组合（平台 meta.description 为整段覆盖）。"""
+        return composer.platform_body(chapter, self.key)
+
     # ---------- 公共 ----------
 
     def check(self) -> CheckResult:
@@ -121,7 +130,7 @@ class BilibiliPublisher(BasePublisher):
         mode = self._mode(chapter)
         lines = [
             "发布平台：B站（" + ("专栏文章" if mode == "article" else "图文动态") + "）",
-            f"标题：{chapter.title}",
+            f"标题：{self._title(chapter)}",
         ]
         if mode == "article":
             original = int(self._setting(chapter, "original", 1))
@@ -138,9 +147,10 @@ class BilibiliPublisher(BasePublisher):
                 lines.append(
                     f"⚠ 超过单篇上限 {self.article_max_pages} 张，将拆成 {posts} 篇专栏"
                 )
-            if chapter.description:
+            body = self._body_text(chapter)
+            if body:
                 lines.append("正文文本（会转成 <p>…</p>）：")
-                for part in chapter.description.splitlines() or [chapter.description]:
+                for part in body.splitlines() or [body]:
                     lines.append("  " + part)
             else:
                 lines.append("（无简介文本，正文只有插图）")
@@ -180,16 +190,17 @@ class BilibiliPublisher(BasePublisher):
         posts = max(1, -(-pages // self.article_max_pages))
         rows = [
             f"发布方式：B站专栏文章（{pages} 张正文图片）",
-            f"标题：{chapter.title}",
+            f"标题：{self._title(chapter)}",
         ]
         if posts > 1:
             rows.append(f"单篇上限 {self.article_max_pages} 张，将拆成 {posts} 篇专栏")
         rows.append(
             f"正文：先存草稿再正式发布；每张图压缩至 5MB 内（允许 jpg/png）"
         )
-        if chapter.description:
-            desc = chapter.description[:80]
-            desc = desc + "…" if len(chapter.description) > 80 else desc
+        body = self._body_text(chapter)
+        if body:
+            desc = body[:80]
+            desc = desc + "…" if len(body) > 80 else desc
             rows.append(f"简介：{desc}")
         reprint = int(self._setting(chapter, "reprint", 0) or 0)
         original = int(self._setting(chapter, "original", 1))
@@ -285,10 +296,8 @@ class BilibiliPublisher(BasePublisher):
 
     def _article_content(self, chapter: Chapter, urls: list[str]) -> str:
         parts: list[str] = []
-        if chapter.author:
-            parts.append(f"<p>作者：{html.escape(chapter.author)}</p>")
-        desc = chapter.description or ""
-        for line in desc.splitlines():
+        body = self._body_text(chapter)
+        for line in body.splitlines():
             line = line.strip()
             if not line:
                 continue
@@ -307,7 +316,7 @@ class BilibiliPublisher(BasePublisher):
         category = int(self._setting(chapter, "category", 0) or 0)
         tid = int(self._setting(chapter, "tid", 4) or 4)
         data = {
-            "title": chapter.title[:64],
+            "title": self._title(chapter)[:64],
             "content": content,
             "category": str(category),
             "list_id": 0,
@@ -437,11 +446,13 @@ class BilibiliPublisher(BasePublisher):
     def _plan_dynamic(self, chapter: Chapter) -> list[str]:
         pages = len(chapter.pages)
         posts = max(1, -(-pages // self.max_pages_per_post))
+        body = self._body_text(chapter)
         return [
             f"发布方式：B站图文动态（publish_mode=dynamic）",
             f"上传 {pages} 张图片（jpg/png/gif，单条最多 {self.max_pages_per_post} 张）",
             f"预计发布 {posts} 条图文动态",
-            f"简介：{(chapter.description[:80] + '…') if len(chapter.description) > 80 else chapter.description}",
+            f"标题：{self._title(chapter)}",
+            f"正文：{(body[:80] + '…') if len(body) > 80 else body}",
         ]
 
     def _topics_text(self, chapter: Chapter) -> str:
@@ -459,10 +470,11 @@ class BilibiliPublisher(BasePublisher):
 
     def _caption(self, chapter: Chapter) -> str:
         meta = self._meta(chapter)
-        lines = [chapter.title]
-        if chapter.description:
+        lines = [self._title(chapter)]
+        body = str(meta.get("caption") or self._body_text(chapter)).strip()
+        if body:
             lines.append("")
-            lines.append(str(meta.get("caption") or chapter.description).strip())
+            lines.append(body)
         topics = self._topics_text(chapter)
         if topics:
             lines.append("")

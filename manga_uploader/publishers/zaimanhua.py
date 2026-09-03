@@ -20,6 +20,7 @@ import mimetypes
 import time
 
 from ..models import Chapter, CheckResult, PublishResult
+from .. import composer
 from .base import BasePublisher, PublisherError
 
 UPLOAD_IMG_URL = "https://v4api.zaimanhua.com/api/v1/comic2/upload/upload/img"
@@ -74,19 +75,27 @@ class ZaimanhuaPublisher(BasePublisher):
 
     def _work_name(self, chapter: Chapter) -> str:
         meta = self._meta(chapter)
-        name = (
+        return (
             str(meta.get("work_name") or "").strip()
             or str(self.cfg.get("work_name") or "").strip()
-            or str(chapter.raw.get("series_title") or "").strip()
-            or str(chapter.raw.get("title") or "").strip()
+            or composer.zaim_work_name(chapter)
         )
-        if not name:
-            name = chapter.title
-        return name
 
     def _chapter_name(self, chapter: Chapter) -> str:
         meta = self._meta(chapter)
-        return str(meta.get("chapter_name") or chapter.title).strip() or chapter.title
+        return (
+            str(meta.get("chapter_name") or "").strip()
+            or str(self.cfg.get("chapter_name") or "").strip()
+            or composer.zaim_chapter_name(chapter)
+        )
+
+    def _introduction(self, chapter: Chapter) -> str:
+        meta = self._meta(chapter)
+        return (
+            str(meta.get("introduction") or "").strip()
+            or str(self.cfg.get("introduction") or "").strip()
+            or composer.zaim_introduction(chapter)
+        )
 
     # ---------- 接口 ----------
 
@@ -113,7 +122,7 @@ class ZaimanhuaPublisher(BasePublisher):
             f"作品类型：{CATE_LABELS[cate]}",
             f"上传 {len(chapter.pages)} 张图片（压缩至单张 {self.common.max_bytes_mb:g}MB 内，"
             f"建议 jpg；最多 {self.cfg.get('max_pages_per_upload', 500)} 张）",
-            f"简介：{(chapter.description[:80] + '…') if len(chapter.description) > 80 else chapter.description}",
+            f"简介：{(self._introduction(chapter)[:80] + '…') if len(self._introduction(chapter)) > 80 else self._introduction(chapter)}",
             "提交后等待平台审核",
         ]
 
@@ -226,7 +235,7 @@ class ZaimanhuaPublisher(BasePublisher):
             body = {
                 "name": work_name,
                 "chapter": chapter_name,
-                "introduction": chapter.description[:1000],
+                "introduction": self._introduction(chapter)[:1000],
                 "downloadUrl": "",
                 "cate": cate,
                 "pageUrls": page_urls,

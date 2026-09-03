@@ -2,3 +2,4 @@ requests>=2.31,<3
 PyYAML>=6.0,<7
 Pillow>=10.0,<13
 qrcode[pil]>=7.4  # 仅 B站扫码登录需要；用 Cookie 登录可不装
+pykakasi>=2.3    # 日文→罗马音（汉字读音/分词），不装则回退基础假名转换

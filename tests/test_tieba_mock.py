@@ -209,7 +209,8 @@ class TestTiebaPublisherMock(unittest.TestCase):
 
         first = parse_qs(threads[0]["body"].decode("utf-8"))
         self.assertEqual(first["kw"][0], "漫画吧")
-        self.assertTrue(first["title"][0].startswith("【漫画】"))
+        # 标题按新规则自动生成，不再追加旧式 title_suffix
+        self.assertEqual(first["title"][0], "测试漫画 第01话")
         self.assertIn("贴吧简介", first["content"][0])
         self.assertIn("#(pic,301522372501,200,300)", first["content"][0])
         self.assertEqual(first["content"][0].count("#(pic,"), 1)  # 一楼只放封面

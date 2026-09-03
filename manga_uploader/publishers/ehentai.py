@@ -20,6 +20,7 @@ from pathlib import Path
 from urllib.parse import urljoin, urlsplit
 
 from ..models import Chapter, CheckResult, PublishResult
+from .. import composer
 from .base import BasePublisher, PublisherError
 
 UPLOAD_PAGE_URL = "https://upload.e-hentai.org/managegallery?act=new"
@@ -167,24 +168,22 @@ def _option_labels(field: _Field) -> list[str]:
 # 覆盖，也可在 GUI“上传表单填写…”里改）。行格式：
 #   label  = 用途说明（仅作展示）
 #   field  = 页面输入框的 name（不写则按 match 关键词自动找）
-#   match  = 找不到指定 name 时，按这些关键词匹配剩余文本框
-#   source = 值来源：title / series / author / description / tags /
-#            meta:<manga.json 或 config 键> / text:<固定文本>
-#            （select 框用 source: category / language / rating 走选项匹配）
+#   source = 值来源：auto:title_en / auto:title_jp / auto:comment 会自动按
+#            manga.json 元数据组合；也兼容旧值 title/description/meta:…。
 # 以下字段名按 upload.e-hentai.org/managegallery?act=new 真实页面核对。
 DEFAULT_FIELD_ROWS: list[dict] = [
-    {"label": "英文/罗马字标题", "field": "gname_en", "source": "title"},
+    {"label": "英文/罗马字标题", "field": "gname_en", "source": "auto:title_en"},
     {
         "label": "日文原标题（可选）",
         "field": "gname_jp",
         "match": ["jpn", "japanese", "original", "日文"],
-        "source": "meta:title_jpn",
+        "source": "auto:title_jp",
     },
     {
         "label": "上传者评论",
         "field": "ulcomment",
         "match": ["comment", "desc", "uploader"],
-        "source": "description",
+        "source": "auto:comment",
     },
     {"label": "同意服务条款（勾选）", "field": "tos", "source": "text:on"},
 ]
@@ -231,7 +230,7 @@ class EhentaiPublisher(BasePublisher):
     def plan(self, chapter: Chapter) -> list[str]:
         meta = self._meta(chapter)
         return [
-            f"图库名：{chapter.title}",
+            f"图库名：{composer.ehentai_title_en(chapter) or chapter.title}",
             f"分类：{meta.get('category') or self.cfg.get('category_label') or '（按上传页选项匹配）'}",
             f"标签：{', '.join(self._tags(chapter)) or '（无）'}",
             f"上传 {len(chapter.pages)} 页图片",
@@ -291,10 +290,7 @@ class EhentaiPublisher(BasePublisher):
         return ""
 
     def _mapping_rows(self) -> list[dict]:
-        """用户配置的 field_map 优先，否则用内置默认行。"""
-        rows = self.cfg.get("field_map")
-        if isinstance(rows, list) and rows:
-            return [row for row in rows if isinstance(row, dict)]
+        """标题/评论一律按新格式自动组合；旧 field_map 仅作兼容不再优先。"""
         return [dict(row) for row in DEFAULT_FIELD_ROWS]
 
     def _source_value(self, chapter: Chapter, source: str) -> str:
@@ -319,6 +315,12 @@ class EhentaiPublisher(BasePublisher):
             return str(chapter.description or "").strip()
         if source == "tags":
             return " ".join(self._tags(chapter))
+        if source == "auto:title_en":
+            return composer.ehentai_title_en(chapter)
+        if source == "auto:title_jp":
+            return composer.ehentai_title_jp(chapter)
+        if source == "auto:comment":
+            return composer.ehentai_comment(chapter)
         if source.startswith("meta:"):
             key = source[len("meta:"):].strip()
             value = meta.get(key)
