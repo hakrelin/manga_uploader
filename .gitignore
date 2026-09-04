@@ -18,3 +18,6 @@ venv/
 _pylibs/
 _tmp_*.py
 _tmp_*.cs
+
+# 商用授权字体不入公开仓库（本地放 web/assets/fonts/local-*.ttf）
+manga_uploader/web/assets/fonts/local-*.ttf

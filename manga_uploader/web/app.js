@@ -1023,12 +1023,27 @@ createApp({
       return staffLayout;
     }
 
-    async function loadStaffFont(sec) {
-      if (staffFonts[sec.font]) return;
-      const face = new FontFace(sec.font, `url(${sec.font_file})`);
+    // 字体三级回退：系统已装（组员机器都有 toolbox）→ 本地打包文件 → 开源占位
+    async function ensureStaffFont(sec) {
+      if (sec.__family) return sec.__family;
+      try {
+        if (document.fonts.check(`20px "${sec.font}"`)) {
+          sec.__family = sec.font;
+          return sec.__family;
+        }
+      } catch (e) { /* check 异常就继续走文件加载 */ }
+      try {
+        const face = new FontFace(sec.font, `url(${sec.font_file})`);
+        await face.load();
+        document.fonts.add(face);
+        sec.__family = sec.font;
+        return sec.__family;
+      } catch (e) { /* 本地文件缺失（如新 clone 没放字体）→ 占位兜底 */ }
+      const face = new FontFace(sec.fallback_font, `url(${sec.fallback_file})`);
       await face.load();
       document.fonts.add(face);
-      staffFonts[sec.font] = true;
+      sec.__family = sec.fallback_font;
+      return sec.__family;
     }
 
     async function loadStaffBase() {
@@ -1063,7 +1078,7 @@ createApp({
       return img;
     }
 
-    function drawStaff(canvas, layout, bgImg, baseImg) {
+    function drawStaff(canvas, layout, bgImg, baseImg, rowsFamily, decFamily) {
       const ctx = canvas.getContext("2d");
       const W = bgImg.naturalWidth, H = bgImg.naturalHeight;
       staffReady = W > 0;
@@ -1079,7 +1094,7 @@ createApp({
         .map((r) => [(r[0] || "").trim(), (r[1] || "").trim()])
         .filter((r) => r[0] || r[1]);
       ctx.fillStyle = layout.rows.color;
-      ctx.font = `${layout.rows.size_px * scale}px "${layout.rows.font}"`;
+      ctx.font = `${layout.rows.size_px * scale}px "${rowsFamily}"`;
       rows.forEach((r, i) => {
         const y = (layout.rows.first_center_y + i * layout.rows.line_height) * scale;
         ctx.fillText(r.join(layout.rows.join), layout.center_x * scale, y);
@@ -1087,7 +1102,7 @@ createApp({
       // 固定声明行：位置跟着行数走（加行自动下移）
       const cfg = layout.declare;
       ctx.fillStyle = cfg.color;
-      ctx.font = `${cfg.size_px * scale}px "${cfg.font}"`;
+      ctx.font = `${cfg.size_px * scale}px "${decFamily}"`;
       const firstY = layout.rows.first_center_y
         + (rows.length - 1) * layout.rows.line_height + cfg.gap_after_rows;
       cfg.lines.forEach((line, i) => {
@@ -1102,10 +1117,12 @@ createApp({
       if (!canvas || !ch) return;
       try {
         const layout = await loadStaffLayout();
-        await Promise.all([loadStaffFont(layout.rows), loadStaffFont(layout.declare)]);
+        const [rowsFamily, decFamily] = await Promise.all([
+          ensureStaffFont(layout.rows), ensureStaffFont(layout.declare),
+        ]);
         const base = await loadStaffBase();
         const bg = await loadStaffBg(ch);
-        drawStaff(canvas, layout, bg, base);
+        drawStaff(canvas, layout, bg, base, rowsFamily, decFamily);
       } catch (e) {
         toastMsg("staff 预览失败：" + e.message);
       }

@@ -1,13 +1,15 @@
 {
-  "version": 1,
-  "_comment": "staff 页布局。坐标均为设计像素（design.w × design.h 渲染到目标页时按 targetW/design.w 等比缩放，底图整体拉伸铺满）。行中心 y 直接按 PSD 光栅实测。",
+  "version": 2,
+  "_comment": "staff 页布局。坐标均为设计像素（design.w × design.h 渲染到目标页时按 targetW/design.w 等比缩放，底图整体拉伸铺满）。行中心 y 直接按 PSD 光栅实测。字体三级回退：系统已装（组员机器都装了 toolbox）→ font_file 本地兜底（local-*.ttf，商用授权不入 git）→ fallback 占位开源字体。",
   "design": { "w": 2741, "h": 3833 },
   "base": "/assets/staff_base.png",
   "fit": "stretch",
   "center_x": 1369.5,
   "rows": {
-    "font": "ZCOOL QingKe HuangYou",
-    "font_file": "/assets/fonts/ZCOOLQingKeHuangYou-Regular.ttf",
+    "font": "[toolbox]HaiBao-JF",
+    "font_file": "/assets/fonts/local-toolbox-haibao-w9.ttf",
+    "fallback_font": "ZCOOL QingKe HuangYou",
+    "fallback_file": "/assets/fonts/ZCOOLQingKeHuangYou-Regular.ttf",
     "size_px": 134.6,
     "line_height": 161.3,
     "first_center_y": 1930,
@@ -15,8 +17,10 @@
     "join": "："
   },
   "declare": {
-    "font": "ZCOOL XiaoWei",
-    "font_file": "/assets/fonts/ZCOOLXiaoWei-Regular.ttf",
+    "font": "[toolbox]YaSong-JF",
+    "font_file": "/assets/fonts/local-toolbox-yasong-w9.ttf",
+    "fallback_font": "ZCOOL XiaoWei",
+    "fallback_file": "/assets/fonts/ZCOOLXiaoWei-Regular.ttf",
     "size_px": 100.5,
     "line_height": 120.5,
     "gap_after_rows": 181,
