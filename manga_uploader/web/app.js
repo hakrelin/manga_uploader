@@ -1093,17 +1093,24 @@ createApp({
       const rows = staffRows.value
         .map((r) => [(r[0] || "").trim(), (r[1] || "").trim()])
         .filter((r) => r[0] || r[1]);
+      // 行数增减时，整块（职位行+声明）在标定区块内垂直居中，删行不留底部空洞
+      const decCount = layout.declare.lines.length;
+      const blockH = (n) => (n - 1) * layout.rows.line_height + layout.declare.gap_after_rows
+        + (decCount - 1) * layout.declare.line_height;
+      const shift = layout.auto_center_block
+        ? (blockH((layout.default_rows || []).length || rows.length) - blockH(rows.length)) / 2
+        : 0;
       ctx.fillStyle = layout.rows.color;
       ctx.font = `${layout.rows.size_px * scale}px "${rowsFamily}"`;
       rows.forEach((r, i) => {
-        const y = (layout.rows.first_center_y + i * layout.rows.line_height) * scale;
+        const y = (layout.rows.first_center_y + shift + i * layout.rows.line_height) * scale;
         ctx.fillText(r.join(layout.rows.join), layout.center_x * scale, y);
       });
       // 固定声明行：位置跟着行数走（加行自动下移）
       const cfg = layout.declare;
       ctx.fillStyle = cfg.color;
       ctx.font = `${cfg.size_px * scale}px "${decFamily}"`;
-      const firstY = layout.rows.first_center_y
+      const firstY = layout.rows.first_center_y + shift
         + (rows.length - 1) * layout.rows.line_height + cfg.gap_after_rows;
       cfg.lines.forEach((line, i) => {
         ctx.fillText(line, layout.center_x * scale, (firstY + i * cfg.line_height) * scale);

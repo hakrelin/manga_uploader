@@ -5,6 +5,7 @@
   "base": "/assets/staff_base.png",
   "fit": "stretch",
   "center_x": 1369.5,
+  "auto_center_block": true,
   "rows": {
     "font": "[toolbox]HaiBao-JF",
     "font_file": "/assets/fonts/local-toolbox-haibao-w9.ttf",
