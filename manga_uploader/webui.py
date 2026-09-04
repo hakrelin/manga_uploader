@@ -627,8 +627,11 @@ def _chapter_entry(data: dict, chapter_key: str) -> dict:
     return entry
 
 
-def read_staff_rows(comic_dir: str | Path, chapter_key: str) -> Optional[list[list[str]]]:
-    """读章节的 staff 名单（manga.json 章节条目 staff.rows，[[职位, 名字], …]）。无则 None。"""
+def read_staff_rows(comic_dir: str | Path, chapter_key: str) -> Optional[dict]:
+    """读章节的 staff 数据：{"rows": [[职位, 名字], …], "bg": 背景页 0-based 序号}。
+
+    无保存记录返回 None；有记录但缺 bg 时 bg 为 None（前端用布局默认）。
+    """
     root = Path(comic_dir)
     meta_file = find_meta_file(root)
     if meta_file is None:
@@ -646,18 +649,32 @@ def read_staff_rows(comic_dir: str | Path, chapter_key: str) -> Optional[list[li
         if str(entry.get("folder") or entry.get("key") or entry.get("name")) != key:
             continue
         staff = entry.get("staff")
-        if isinstance(staff, dict) and isinstance(staff.get("rows"), list):
+        if not isinstance(staff, dict):
+            return None
+        out: dict = {"rows": None, "bg": None}
+        if isinstance(staff.get("rows"), list):
             rows: list[list[str]] = []
             for row in staff["rows"]:
                 if isinstance(row, (list, tuple)) and len(row) == 2:
                     rows.append([str(row[0]), str(row[1])])
-            return rows
-        return None
+            out["rows"] = rows
+        bg = staff.get("bg")
+        if isinstance(bg, int) and bg >= 0:
+            out["bg"] = bg
+        return out
     return None
 
 
-def write_staff_rows(comic_dir: str | Path, chapter_key: str, rows: list) -> int:
-    """把 staff 名单写进 manga.json 章节条目的 staff.rows（空名单删字段）。返回行数。"""
+def write_staff_rows(
+    comic_dir: str | Path,
+    chapter_key: str,
+    rows: list,
+    bg: Optional[int] = None,
+) -> int:
+    """把 staff 名单（和背景页选择）写进 manga.json 章节条目的 staff 字段。
+
+    空名单且无 bg 时删字段。返回行数。
+    """
     clean: list[list[str]] = []
     for row in rows or []:
         if isinstance(row, (list, tuple)) and len(row) == 2:
@@ -672,9 +689,14 @@ def write_staff_rows(comic_dir: str | Path, chapter_key: str, rows: list) -> int
     if not isinstance(data, dict):
         data = {}
     entry = _chapter_entry(data, str(chapter_key or "root"))
-    if clean:
+    if clean or isinstance(bg, int):
         staff = entry.get("staff") if isinstance(entry.get("staff"), dict) else {}
-        staff["rows"] = clean
+        if clean:
+            staff["rows"] = clean
+        else:
+            staff.pop("rows", None)  # 名单总是整体覆盖：空即清掉旧行
+        if isinstance(bg, int) and not isinstance(bg, bool):
+            staff["bg"] = max(0, bg)
         entry["staff"] = staff
     else:
         entry.pop("staff", None)

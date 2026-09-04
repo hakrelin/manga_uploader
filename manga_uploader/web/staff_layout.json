@@ -1,13 +1,15 @@
 {
-  "version": 2,
-  "_comment": "staff 页布局。坐标均为设计像素（design.w × design.h 渲染到目标页时按 targetW/design.w 等比缩放，底图整体拉伸铺满）。行中心 y 直接按 PSD 光栅实测。字体三级回退：系统已装（组员机器都装了 toolbox）→ font_file 本地兜底（local-*.ttf，商用授权不入 git）→ fallback 占位开源字体。",
+  "version": 3,
+  "_comment": "staff 页布局。坐标均为设计像素（design.w × design.h 渲染到目标页时按 targetW/design.w 等比缩放，底图整体拉伸铺满）。行中心 y 直接按 PSD 光栅实测。字体按 font_aliases 依次探测系统字体（Windows 注册的是带字重后缀的 nameID1 名和中文别名）→ font_file 本地兜底（local-*.ttf 不入 git）→ fallback 占位。stroke 按 PSD 描边特效：宽 10 设计像素、黑色、外部。",
   "design": { "w": 2741, "h": 3833 },
   "base": "/assets/staff_base.png",
   "fit": "stretch",
   "center_x": 1369.5,
   "auto_center_block": true,
+  "bg_default_index": 1,
   "rows": {
-    "font": "[toolbox]HaiBao-JF",
+    "font": "[toolbox]HaiBao-JF-W9",
+    "font_aliases": ["[toolbox]HaiBao-JF-W9", "[toolbox]HaiBao-JF", "[工具箱]海报体-简繁-W9", "[工具箱]海报体-简繁"],
     "font_file": "/assets/fonts/local-toolbox-haibao-w9.ttf",
     "fallback_font": "ZCOOL QingKe HuangYou",
     "fallback_file": "/assets/fonts/ZCOOLQingKeHuangYou-Regular.ttf",
@@ -15,10 +17,12 @@
     "line_height": 161.3,
     "first_center_y": 1930,
     "color": "#ffffff",
+    "stroke": { "width": 10, "color": "#000000" },
     "join": "："
   },
   "declare": {
-    "font": "[toolbox]YaSong-JF",
+    "font": "[toolbox]YaSong-JF-W9",
+    "font_aliases": ["[toolbox]YaSong-JF-W9", "[toolbox]YaSong-JF", "[工具箱]雅宋体-简繁-W9", "[工具箱]雅宋体-简繁"],
     "font_file": "/assets/fonts/local-toolbox-yasong-w9.ttf",
     "fallback_font": "ZCOOL XiaoWei",
     "fallback_file": "/assets/fonts/ZCOOLXiaoWei-Regular.ttf",
@@ -26,6 +30,7 @@
     "line_height": 120.5,
     "gap_after_rows": 181,
     "color": "#ffffff",
+    "stroke": { "width": 10, "color": "#000000" },
     "lines": ["本作品由茶与金平糖", "汉化组制作", "仅供学习交流", "版权归原作者所有", "转载请保留此页"]
   },
   "default_rows": [["图源", ""], ["修图", ""], ["翻译", ""], ["嵌字", ""], ["校对", ""]]

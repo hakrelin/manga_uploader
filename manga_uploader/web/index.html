@@ -216,6 +216,13 @@ try {
 
             <template v-if="previewMode === 'card'">
               <div v-for="ch in previewChapters" :key="ch.key" class="pv-chapter">
+                <!-- 章节工具条：悬浮章节卡片时在右上角浮现 -->
+                <div class="pv-chapter-tools">
+                  <button class="pv-head-btn" title="制作 Staff 页（制作人员表，落 P2，重复生成覆盖）"
+                          @click="openStaff(ch)">📄 制作 Staff 页</button>
+                  <button class="pv-head-btn" title="按当前页序全部重命名为 001 / 002…（扩展名保持原样，不可撤销）"
+                          @click="startRenameNumeric(ch)">🔢 001 重命名</button>
+                </div>
                 <div class="pv-head">
                   <span class="pv-title">{{ metaForm.title || ch.title }}</span>
                   <span class="badge">{{ ch.page_count }} 页</span>
@@ -223,12 +230,6 @@ try {
                     <span v-for="p in ch.platforms" :key="p.key" class="pv-head-plat">
                       <span class="plat-dot" :class="'dot-' + p.key"></span>{{ PLAT_LABELS[p.key] || p.key }}
                     </span>
-                  </span>
-                  <span class="pv-head-ops">
-                    <button class="pv-head-btn" title="制作 Staff 页（制作人员表，背景=第 2 页，落在 P2）"
-                            @click="openStaff(ch)">📄 制作 Staff 页</button>
-                    <button class="pv-head-btn" title="按当前页序全部重命名为 001 / 002…（扩展名保持原样，不可撤销）"
-                            @click="startRenameNumeric(ch)">🔢 001 重命名</button>
                   </span>
                 </div>
 
@@ -256,7 +257,7 @@ try {
                       </figure>
                     </template>
                   </div>
-                  <p class="pv-page-hint">右键页面 = 替换 / 删除 / 移动 · 悬浮「＋」插入 · 章头悬浮 🔢 重命名</p>
+                  <p class="pv-page-hint">右键页面 = 替换 / 删除 / 移动 · 悬浮「＋」插入 · 悬浮章节卡片右上角 = Staff / 重命名</p>
                 </div>
 
                 <div class="pv-platforms">
@@ -598,6 +599,14 @@ try {
           <canvas ref="staffCanvas" class="staff-canvas"></canvas>
         </div>
         <div class="staff-editor">
+          <div class="staff-bg-row">
+            <span class="staff-colon">背景</span>
+            <select v-model.number="staffBgIndex" class="input staff-bg-select"
+                    @change="renderStaffPreview()">
+              <option :value="1">第 2 页（白页/黑白封面，默认）</option>
+              <option :value="0">封面（第 1 页）</option>
+            </select>
+          </div>
           <p class="staff-hint">职位行可增减（无修图/无校对的本子直接删行，整块自动居中）</p>
           <div v-for="(row, i) in staffRows" :key="i" class="staff-row">
             <input v-model="row[0]" class="input staff-role" placeholder="职位" @input="renderStaffPreview">

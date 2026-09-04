@@ -192,6 +192,7 @@ createApp({
     const staffCanvas = ref(null);
     const staffBusy = ref(false);
     const staffExportOpen = ref(false); // 确定键 ▾ 下拉（导出 PNG/JPG）
+    const staffBgIndex = ref(1); // 背景页 0-based：默认第 2 页（1），可选封面（0）
     let staffLayout = null; // staff_layout.json 缓存
     let staffBaseImg = null; // 固定半透明底图
     const staffFonts = {}; // 已加载的 webfont
@@ -1025,20 +1026,24 @@ createApp({
       return staffLayout;
     }
 
-    // 字体三级回退：系统已装（组员机器都有 toolbox）→ 本地打包文件 → 开源占位
+    // 字体三级回退：系统已装（font_aliases 依次探测，Windows 注册名带字重后缀/
+    // 中文别名）→ 本地打包文件 → 开源占位
     async function ensureStaffFont(sec) {
       if (sec.__family) return sec.__family;
+      const aliases = sec.font_aliases && sec.font_aliases.length ? sec.font_aliases : [sec.font];
+      for (const fam of aliases) {
+        try {
+          if (document.fonts.check(`20px "${fam}"`)) {
+            sec.__family = fam;
+            return fam;
+          }
+        } catch (e) { /* check 异常就试下一个 */ }
+      }
       try {
-        if (document.fonts.check(`20px "${sec.font}"`)) {
-          sec.__family = sec.font;
-          return sec.__family;
-        }
-      } catch (e) { /* check 异常就继续走文件加载 */ }
-      try {
-        const face = new FontFace(sec.font, `url(${sec.font_file})`);
+        const face = new FontFace(aliases[0], `url(${sec.font_file})`);
         await face.load();
         document.fonts.add(face);
-        sec.__family = sec.font;
+        sec.__family = aliases[0];
         return sec.__family;
       } catch (e) { /* 本地文件缺失（如新 clone 没放字体）→ 占位兜底 */ }
       const face = new FontFace(sec.fallback_font, `url(${sec.fallback_file})`);
@@ -1060,9 +1065,10 @@ createApp({
       return staffBaseImg;
     }
 
-    // 背景页：第 2 页（index 1），只有 1 页时退回封面
+    // 背景页：默认第 2 页，面板可选封面；章不够时退回封面
     function staffBgUrl(ch) {
-      const index = (ch.page_count || 0) >= 2 ? 1 : 0;
+      let index = staffBgIndex.value;
+      if (index < 0 || index >= (ch.page_count || 0)) index = 0;
       return pageUrl(ch.key, index);
     }
 
@@ -1092,6 +1098,16 @@ createApp({
       const scale = W / layout.design.w;
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
+      // 描边（PSD 外部描边）：先 2 倍宽 strokeText 再 fillText = 外扩 stroke
+      const drawText = (txt, x, y, stroke) => {
+        if (stroke && stroke.width > 0) {
+          ctx.lineJoin = "round";
+          ctx.lineWidth = stroke.width * 2 * scale;
+          ctx.strokeStyle = stroke.color;
+          ctx.strokeText(txt, x, y);
+        }
+        ctx.fillText(txt, x, y);
+      };
       const rows = staffRows.value
         .map((r) => [(r[0] || "").trim(), (r[1] || "").trim()])
         .filter((r) => r[0] || r[1]);
@@ -1106,7 +1122,7 @@ createApp({
       ctx.font = `${layout.rows.size_px * scale}px "${rowsFamily}"`;
       rows.forEach((r, i) => {
         const y = (layout.rows.first_center_y + shift + i * layout.rows.line_height) * scale;
-        ctx.fillText(r.join(layout.rows.join), layout.center_x * scale, y);
+        drawText(r.join(layout.rows.join), layout.center_x * scale, y, layout.rows.stroke);
       });
       // 固定声明行：位置跟着行数走（加行自动下移）
       const cfg = layout.declare;
@@ -1115,7 +1131,7 @@ createApp({
       const firstY = layout.rows.first_center_y + shift
         + (rows.length - 1) * layout.rows.line_height + cfg.gap_after_rows;
       cfg.lines.forEach((line, i) => {
-        ctx.fillText(line, layout.center_x * scale, (firstY + i * cfg.line_height) * scale);
+        drawText(line, layout.center_x * scale, (firstY + i * cfg.line_height) * scale, cfg.stroke);
       });
     }
 
@@ -1147,6 +1163,8 @@ createApp({
           const r = await api("/api/staff?dir=" + encodeURIComponent(comicDir.value.trim())
             + "&chapter=" + encodeURIComponent(ch.key));
           saved = r.rows && r.rows.length ? r.rows : null;
+          staffBgIndex.value = Number.isFinite(r.bg) && r.bg !== null && r.bg >= 0
+            ? r.bg : (layout.bg_default_index || 1);
         } catch (e) { /* 没保存过名单，用布局默认 */ }
         const def = layout.default_rows || [];
         staffRows.value = (saved || def).map((row) => [row[0] || "", row[1] || ""]);
@@ -1168,7 +1186,8 @@ createApp({
       try {
         const r = await api("/api/staff", {
           method: "POST", json: true,
-          body: JSON.stringify({ dir: comicDir.value.trim(), chapter: ch.key, rows: staffRows.value }),
+          body: JSON.stringify({ dir: comicDir.value.trim(), chapter: ch.key,
+            rows: staffRows.value, bg: staffBgIndex.value }),
         });
         toastMsg(`已保存名单（${r.rows} 行）`);
       } catch (e) {
@@ -1185,9 +1204,10 @@ createApp({
       if (!staffReady) { toastMsg("预览还没渲染好，先等背景图加载"); return; }
       staffBusy.value = true;
       try {
-        await api("/api/staff", { // 名单随生成一并落盘
+        await api("/api/staff", { // 名单+背景页随生成一并落盘
           method: "POST", json: true,
-          body: JSON.stringify({ dir: comicDir.value.trim(), chapter: ch.key, rows: staffRows.value }),
+          body: JSON.stringify({ dir: comicDir.value.trim(), chapter: ch.key,
+            rows: staffRows.value, bg: staffBgIndex.value }),
         });
         const blob = await new Promise((resolve, reject) =>
           canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("导出失败"))), "image/png"));

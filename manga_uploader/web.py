@@ -1256,33 +1256,38 @@ class WebHandler(BaseHTTPRequestHandler):
         return comic_dir or None, chapter_key
 
     def _api_staff_get(self, query: dict[str, list[str]]) -> None:
-        """读章节的 staff 名单（无保存过则返回 None，前端用布局默认值）。"""
+        """读章节的 staff 数据（rows + 背景页选择；无保存过则 rows=None）。"""
         comic_dir = (query.get("dir") or [""])[0].strip()
         chapter_key = (query.get("chapter") or [""])[0].strip() or "root"
         if not comic_dir:
             self._json(400, {"error": "缺少漫画目录"})
             return
         try:
-            rows = read_staff_rows(comic_dir, chapter_key)
+            saved = read_staff_rows(comic_dir, chapter_key)
         except Exception as exc:
             self._json(500, {"error": f"读取 staff 名单失败：{exc}"})
             return
-        self._json(200, {"ok": True, "rows": rows})
+        rows = saved["rows"] if saved else None
+        bg = saved["bg"] if saved else None
+        self._json(200, {"ok": True, "rows": rows, "bg": bg})
 
     def _api_staff_save(self) -> None:
-        """保存 staff 名单到 manga.json 章节条目 staff.rows。"""
+        """保存 staff 名单 + 背景页选择到 manga.json 章节条目 staff 字段。"""
         data = self._read_json()
         comic_dir = str(data.get("dir") or "").strip()
         chapter_key = str(data.get("chapter") or "").strip() or "root"
         rows = data.get("rows")
+        bg = data.get("bg")
         if not comic_dir:
             self._json(400, {"error": "缺少漫画目录"})
             return
         if not isinstance(rows, list):
             self._json(400, {"error": "rows 必须是 [[职位, 名字], …]"})
             return
+        if not isinstance(bg, int):
+            bg = None
         try:
-            count = write_staff_rows(comic_dir, chapter_key, rows)
+            count = write_staff_rows(comic_dir, chapter_key, rows, bg)
         except Exception as exc:
             self._json(500, {"error": f"保存 staff 名单失败：{exc}"})
             return
