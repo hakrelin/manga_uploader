@@ -180,14 +180,12 @@ createApp({
     const previewText = ref("");
     const previewChapters = ref([]);
     const previewMode = ref("card");
-    // 页面编辑：每章「插入到第 N 页前」位置输入 + 待选文件的编辑目标
-    const editPos = reactive({});
+    // 页面编辑：待选文件的编辑目标 + 右键菜单状态
     const pendingPageEdit = ref(null); // { key, index, mode: 'insert'|'replace' }
     const pageEditFile = ref(null);
-    // 拖拽编排：mode = page(页拖动) | file(本地图拖入) | null
-    // key=来源章节（拖出页所属），slotKey=当前悬停的章节（可能不同，跨章节不落位）
-    const dragState = reactive({ mode: null, key: null, page: null, index: null, slot: null, slotKey: null });
-    const trashOver = ref(false);
+    const pageMenu = reactive({
+      visible: false, x: 0, y: 0, ch: null, index: null, name: null,
+    });
 
     const logLines = ref([]);
     const logBox = ref(null);
@@ -765,10 +763,6 @@ createApp({
         previewText.value = r.text || "";
         previewChapters.value = r.chapters || [];
         previewMode.value = r.chapters && r.chapters.length ? "card" : "text";
-        // 每章插入位置默认尾页（count+1）
-        previewChapters.value.forEach((ch) => {
-          if (!Number.isFinite(editPos[ch.key])) editPos[ch.key] = ch.page_count + 1;
-        });
         nav.value = "workbench";
       } catch (e) {
         toastMsg(errPrefix + "：" + e.message);
@@ -812,17 +806,9 @@ createApp({
 
     // ---------------- 页面编辑（插入 / 替换 / 删除） ----------------
 
-    function startInsert(ch, mode) {
-      const count = ch.page_count;
-      let pos; // 1-based：插入到第 pos 页前（pos = count+1 即尾页）
-      if (mode === "second") pos = 2;
-      else if (mode === "last") pos = count + 1;
-      else {
-        const v = editPos[ch.key];
-        pos = Number.isFinite(v) && v >= 1 ? Math.round(v) : count + 1;
-        pos = Math.min(pos, count + 1);
-      }
-      pickPageFile({ key: ch.key, index: pos - 1, mode: "insert" });
+    function startInsert(ch, index) {
+      // index：0-based 插入位（插到第 index+1 页前；= page_count 即尾页追加）
+      pickPageFile({ key: ch.key, index, mode: "insert" });
     }
 
     function startReplace(ch, pageNo) {
@@ -854,7 +840,6 @@ createApp({
         toastMsg(p.mode === "replace"
           ? `已替换第 ${p.index + 1} 页`
           : `已插入第 ${p.index + 1} 页，共 ${r.pages} 页`);
-        if (p.mode !== "replace") editPos[p.key] = r.pages + 1; // 默认位置回到新尾页
         await loadComic(); // 刷新整本内容与预览，页码随之更新
       } catch (err) {
         toastMsg((p.mode === "replace" ? "替换" : "插入") + "失败：" + err.message);
@@ -868,7 +853,7 @@ createApp({
       deletePageDirect(ch, pageNo - 1);
     }
 
-    // 直接删除（垃圾槽用）：不确认，拖到垃圾槽本身已是明确动作
+    // 真正执行删除（调用方负责确认）
     async function deletePageDirect(ch, index) {
       busy.value = true;
       try {
@@ -885,97 +870,106 @@ createApp({
       }
     }
 
-    // ---------------- 拖拽编排（重排 / 拖入 / 垃圾槽） ----------------
+    // ---------------- 页面操作（右键菜单 / 外科级移动） ----------------
 
-    // 按 dragState.slot 在页流里插一个出让插槽（flex 自然把后续项挤开）
-    function flowRows(ch) {
-      const n = (ch.pages || []).length;
-      const rows = [];
-      const slot = (dragState.mode === "page" || dragState.mode === "file")
-        && dragState.slotKey === ch.key ? dragState.slot : null;
-      for (let i = 0; i < n; i++) {
-        if (slot !== null && slot === i) rows.push({ slot: true, key: ch.key + ":slot:" + i });
-        rows.push({ i, key: ch.key + ":" + i });
-      }
-      if (slot !== null && slot === n) rows.push({ slot: true, key: ch.key + ":slot:end" });
-      return rows;
+    function openPageMenu(e, ch, i, pgName) {
+      pageMenu.ch = ch;
+      pageMenu.index = i;
+      pageMenu.name = pgName;
+      // 粗估菜单尺寸，限制不超出视口
+      const mw = 200, mh = 280;
+      pageMenu.x = Math.max(6, Math.min(e.clientX, window.innerWidth - mw - 6));
+      pageMenu.y = Math.max(6, Math.min(e.clientY, window.innerHeight - mh - 6));
+      pageMenu.visible = true;
     }
 
-    function onPageDragStart(e, ch, i) {
-      const name = (ch.pages || [])[i];
-      dragState.mode = "page";
-      dragState.key = ch.key; // 来源章节（垃圾槽删除用）
-      dragState.page = name;
-      dragState.index = i;
-      dragState.slot = null;
-      dragState.slotKey = ch.key;
-      e.dataTransfer.effectAllowed = "move";
-      e.dataTransfer.setData("text/plain", name); // 部分浏览器必须 setData 才开始拖拽
+    function closePageMenu() {
+      pageMenu.visible = false;
+      pageMenu.ch = null;
+      pageMenu.index = null;
+      pageMenu.name = null;
     }
 
-    function onPageDragEnd() {
-      resetDrag();
+    // 右键菜单动作
+    function menuReplace() {
+      const { ch, index } = pageMenu;
+      closePageMenu();
+      startReplace(ch, index + 1); // 替换语义 A：新文件名字内容一起顶上来（名随内容）
     }
 
-    function computeSlot(e, ch) {
-      const figs = Array.from(e.currentTarget.querySelectorAll(".pv-fig"));
-      let slot = 0;
-      for (let i = 0; i < figs.length; i++) {
-        const r = figs[i].getBoundingClientRect();
-        if (e.clientY > r.top + r.height / 2) slot = i + 1;
-      }
-      dragState.slotKey = ch.key;
-      dragState.slot = slot;
+    function menuDelete() {
+      const { ch, index } = pageMenu;
+      closePageMenu();
+      startDeletePage(ch, index + 1);
     }
 
-    function onFlowDragOver(e, ch) {
-      e.preventDefault(); // 允许 drop
-      const isFile = Array.from(e.dataTransfer.types || []).includes("Files");
-      if (isFile) {
-        if (dragState.mode !== "file") dragState.mode = "file";
-        e.dataTransfer.dropEffect = "copy";
-        computeSlot(e, ch);
-      } else if (dragState.mode === "page") {
-        e.dataTransfer.dropEffect = "move";
-        computeSlot(e, ch);
-      }
+    function menuMoveToFront() {
+      const from = (pageMenu.ch.pages || []).indexOf(pageMenu.name);
+      if (from === 0) { toastMsg("已经在第一页了"); closePageMenu(); return; }
+      menuMoveTo(0);
     }
 
-    async function onFlowDrop(e, ch) {
-      e.preventDefault();
-      const files = Array.from(e.dataTransfer.files || []);
-      if (files.length) {
-        const slot = dragState.slotKey === ch.key && Number.isFinite(dragState.slot)
-          ? dragState.slot : (ch.pages || []).length;
-        resetDrag();
-        await doFileInsert(ch, slot, files);
+    function menuMoveToLast() {
+      const total = (pageMenu.ch.pages || []).length;
+      const from = (pageMenu.ch.pages || []).indexOf(pageMenu.name);
+      if (from === total - 1) { toastMsg("已经在最后一页了"); closePageMenu(); return; }
+      menuMoveTo(total - 1);
+    }
+
+    function menuMoveUp() {
+      const from = (pageMenu.ch.pages || []).indexOf(pageMenu.name);
+      if (from <= 0) { toastMsg("已经在第一页了"); closePageMenu(); return; }
+      menuMoveTo(from - 1);
+    }
+
+    function menuMoveDown() {
+      const from = (pageMenu.ch.pages || []).indexOf(pageMenu.name);
+      const total = (pageMenu.ch.pages || []).length;
+      if (from < 0 || from >= total - 1) { toastMsg("已经在最后一页了"); closePageMenu(); return; }
+      menuMoveTo(from + 1);
+    }
+
+    function menuMoveToN() {
+      const total = (pageMenu.ch.pages || []).length;
+      const input = window.prompt(
+        `把「${pageMenu.name}」移动到第几页？（1 ~ ${total}）`,
+        String(pageMenu.index + 1),
+      );
+      if (input === null) { closePageMenu(); return; }
+      const n = parseInt(input, 10);
+      closePageMenu();
+      if (!Number.isFinite(n) || n < 1 || n > total) {
+        toastMsg(`页号需在 1 ~ ${total} 之间`);
         return;
       }
-      // 只在「悬停章节 == 来源章节」时落位（跨章节拖动不重排）
-      if (dragState.mode === "page" && dragState.slotKey === ch.key
-          && dragState.key === ch.key && dragState.page) {
-        const slot = Number.isFinite(dragState.slot) ? dragState.slot : (ch.pages || []).length;
-        const page = dragState.page;
-        resetDrag();
-        await doReorder(ch, slot, page);
-        return;
-      }
-      resetDrag();
+      menuMoveTo(n - 1);
     }
 
-    async function doReorder(ch, slot, page) {
+    // 把当前右键页移到新位置（新数组下标）：本地 splice 重排 → /api/reorder 全量写回
+    function menuMoveTo(targetIndex) {
+      const ch = pageMenu.ch;
+      const name = pageMenu.name;
+      closePageMenu();
+      if (!ch || !name) return;
       const list = (ch.pages || []).slice();
-      const from = list.indexOf(page);
+      const from = list.indexOf(name);
       if (from < 0) return;
+      if (from === targetIndex) return;
+      if (targetIndex < 0 || targetIndex > list.length) return;
       list.splice(from, 1);
-      list.splice(slot - (from < slot ? 1 : 0), 0, page);
+      list.splice(targetIndex, 0, name);
+      applyOrder(ch, list, name);
+    }
+
+    async function applyOrder(ch, list, movedName) {
       busy.value = true;
       try {
-        await api("/api/reorder", {
+        const r = await api("/api/reorder", {
           method: "POST", json: true,
           body: JSON.stringify({ dir: comicDir.value.trim(), chapter: ch.key, pages: list }),
         });
-        toastMsg(`已重排：${page} → 第 ${list.indexOf(page) + 1} 页`);
+        const pos = movedName ? list.indexOf(movedName) + 1 : null;
+        toastMsg(pos ? `已移动：${movedName} → 第 ${pos} 页` : `已重排，共 ${r.pages} 页`);
         await loadComic();
       } catch (err) {
         toastMsg("重排失败：" + err.message);
@@ -984,53 +978,17 @@ createApp({
       }
     }
 
-    async function doFileInsert(ch, slot, files) {
-      const file = files && files[0];
-      if (!file || !/\.(jpg|jpeg|png|gif|webp)$/i.test(file.name)) {
-        toastMsg("拖入的必须是图片文件（jpg/png/gif/webp）");
-        return;
-      }
-      busy.value = true;
-      try {
-        const fd = new FormData();
-        fd.append("dir", comicDir.value.trim());
-        fd.append("chapter", ch.key);
-        fd.append("index", String(slot));
-        fd.append("file", file);
-        const r = await api("/api/insert", { method: "POST", body: fd });
-        toastMsg(`已插入第 ${slot + 1} 页，共 ${r.pages} 页`);
-        editPos[ch.key] = r.pages + 1;
-        await loadComic();
-      } catch (err) {
-        toastMsg("插入失败：" + err.message);
-      } finally {
-        busy.value = false;
-      }
-    }
+    // 全局：点击 / 滚动 / 窗口缩放关闭右键菜单；右键非页面处也关闭
+    document.addEventListener("click", closePageMenu);
+    document.addEventListener("contextmenu", (e) => {
+      if (!e.target.closest(".pv-fig")) closePageMenu();
+    }, true);
+    window.addEventListener("scroll", closePageMenu, true);
+    window.addEventListener("resize", closePageMenu);
 
-    function onTrashDrop(e) {
-      e.preventDefault();
-      if (dragState.mode === "page" && dragState.key != null && dragState.page) {
-        const ch = previewChapters.value.find((c) => c.key === dragState.key);
-        const idx = ch ? (ch.pages || []).indexOf(dragState.page) : -1;
-        if (ch && idx >= 0) deletePageDirect(ch, idx);
-      }
-      resetDrag();
-    }
-
-    function resetDrag() {
-      dragState.mode = null;
-      dragState.key = null;
-      dragState.page = null;
-      dragState.index = null;
-      dragState.slot = null;
-      dragState.slotKey = null;
-      trashOver.value = false;
-    }
-
-    // 命名工具：按当前页序重命名为 001.ext / 002.ext…
+    // 命名工具：按当前页序重命名为 001 / 002…（只改文件名主体，扩展名保持原样）
     function startRenameNumeric(ch) {
-      if (!window.confirm(`确认把「${ch.title || ch.key}」全部页面重命名为 001.ext / 002.ext…？\n\n按当前页序发号，重命名不可撤销。`)) return;
+      if (!window.confirm(`确认把「${ch.title || ch.key}」全部页面按当前页序重命名为 001 / 002 / …？\n\n只改文件名主体，扩展名保持原样；重命名不可撤销。`)) return;
       busy.value = true;
       api("/api/rename", {
         method: "POST", json: true,
@@ -1141,9 +1099,10 @@ createApp({
     return {
       nav, navItems, version, note, running, busy, cards, config, statuses, expanded,
       comicDir, summary, metaForm, dragOver, previewText, previewChapters, previewMode,
-      editPos, pageEditFile, startInsert, startReplace, startDeletePage, onPageEditPicked,
-      dragState, trashOver, flowRows, onPageDragStart, onPageDragEnd,
-      onFlowDragOver, onFlowDrop, onTrashDrop, startRenameNumeric,
+      pageEditFile, startInsert, startReplace, startDeletePage, onPageEditPicked,
+      pageMenu, openPageMenu, closePageMenu,
+      menuReplace, menuDelete, menuMoveToFront, menuMoveToLast, menuMoveUp, menuMoveDown, menuMoveToN,
+      startRenameNumeric,
       resetPick, saveMeta,
       logLines, logBox, logOpen, logNew, clearLog, toast, modal, lanAddr,
       theme, themeLabel, themeIcon, cycleTheme,

@@ -224,6 +224,10 @@ try {
                       <span class="plat-dot" :class="'dot-' + p.key"></span>{{ PLAT_LABELS[p.key] || p.key }}
                     </span>
                   </span>
+                  <span class="pv-head-ops">
+                    <button class="pv-head-btn" title="按当前页序全部重命名为 001 / 002…（扩展名保持原样，不可撤销）"
+                            @click="startRenameNumeric(ch)">🔢 001 重命名</button>
+                  </span>
                 </div>
 
                 <!-- B站专栏形态模拟：标题 → 作者 → 正文 → 图流（绑定编辑框，输入即更新） -->
@@ -233,39 +237,24 @@ try {
                     <span class="pv-avatar">{{ (((summary.meta||{}).author || ch.author) || "?")[0] }}</span>{{ (summary.meta||{}).author || ch.author }}
                   </div>
                   <p v-if="metaForm.description || ch.description" class="pv-post-desc">{{ metaForm.description || ch.description }}</p>
-                  <div class="pv-flow"
-                       @dragover="onFlowDragOver($event, ch)"
-                       @drop="onFlowDrop($event, ch)">
-                    <template v-for="row in flowRows(ch)" :key="row.key">
-                      <div v-if="row.slot" class="pv-drop-slot"></div>
-                      <figure v-else class="pv-fig" draggable="true"
-                              @dragstart="onPageDragStart($event, ch, row.i)"
-                              @dragend="onPageDragEnd">
-                        <img :src="pageUrl(ch.key, row.i)" loading="lazy" alt="" draggable="false">
+                  <div class="pv-flow">
+                    <template v-for="(pgName, i) in ch.pages" :key="ch.key + ':' + i">
+                      <figure class="pv-fig" @contextmenu.prevent="openPageMenu($event, ch, i, pgName)">
+                        <img :src="pageUrl(ch.key, i)" loading="lazy" alt="" draggable="false">
                         <figcaption>
-                          <span>P{{ row.i + 1 }}</span>
-                          <button class="pv-page-btn" title="用本地图片替换这一页"
-                                  @click.stop="startReplace(ch, row.i + 1)">⟳替换</button>
-                          <button class="pv-page-btn danger" title="删除这一页"
-                                  @click.stop="startDeletePage(ch, row.i + 1)">🗑删</button>
+                          <span class="pv-pnum">P{{ i + 1 }}</span>
+                          <span class="pv-pname" :title="pgName">{{ pgName }}</span>
                         </figcaption>
+                        <span class="pv-fig-hover">
+                          <button class="pv-hover-btn" title="在这一页前插入一张图"
+                                  @click.stop="startInsert(ch, i)">＋插此页前</button>
+                          <button v-if="i === ch.pages.length - 1" class="pv-hover-btn" title="在末尾追加一张图"
+                                  @click.stop="startInsert(ch, i + 1)">＋插入尾页</button>
+                        </span>
                       </figure>
                     </template>
                   </div>
-                  <!-- 插入页操作：选位置 + 快捷按钮 + 命名工具 -->
-                  <div class="pv-page-ops">
-                    <span class="pv-page-ops-label">📥 插入页</span>
-                    <input type="number" min="1" :max="ch.page_count + 1"
-                           v-model.number="editPos[ch.key]"
-                           class="input pv-page-ops-input"
-                           :title="'插入到第 N 页前；' + (ch.page_count + 1) + ' = 尾页'">
-                    <span class="pv-page-ops-hint">第 N 页前 · {{ ch.page_count + 1 }} = 尾页</span>
-                    <button class="btn btn-ghost btn-sm" @click="startInsert(ch, 'custom')">插入</button>
-                    <button class="btn btn-ghost btn-sm" @click="startInsert(ch, 'second')">插入第二页</button>
-                    <button class="btn btn-ghost btn-sm" @click="startInsert(ch, 'last')">插入尾页</button>
-                    <button class="btn btn-ghost btn-sm" @click="startRenameNumeric(ch)"
-                            title="按当前页序重命名为 001.ext / 002.ext…">🔢 001 重命名</button>
-                  </div>
+                  <p class="pv-page-hint">右键页面 = 替换 / 删除 / 移动 · 悬浮「＋」插入 · 章头悬浮 🔢 重命名</p>
                 </div>
 
                 <div class="pv-platforms">
@@ -282,12 +271,6 @@ try {
                     </details>
                   </div>
                 </div>
-              </div>
-              <!-- 垃圾槽：拖页上来即删除（固定远离页流的位，拖得远本身就是防误操作） -->
-              <div v-if="dragState.mode === 'page'" class="pv-trash" :class="{ over: trashOver }"
-                   @dragover.prevent="trashOver = true"
-                   @drop.prevent="onTrashDrop">
-                <span class="pv-trash-ico">🗑</span> 拖到这里删除
               </div>
             </template>
             <pre v-else class="preview-text">{{ previewText }}</pre>
@@ -585,6 +568,21 @@ try {
   <!-- 页面编辑共享的文件选择器（插入 / 替换用） -->
   <input type="file" ref="pageEditFile" accept="image/*,.jpg,.jpeg,.png,.gif,.webp"
          style="display:none" @change="onPageEditPicked">
+
+  <!-- 页面右键菜单 -->
+  <div v-if="pageMenu.visible" class="pv-menu" :style="{ left: pageMenu.x + 'px', top: pageMenu.y + 'px' }"
+       @contextmenu.prevent>
+    <div class="pv-menu-title" :title="pageMenu.name">P{{ pageMenu.index + 1 }} · {{ pageMenu.name }}</div>
+    <button class="pv-menu-item" @click="menuReplace">⟳ 替换</button>
+    <button class="pv-menu-item danger" @click="menuDelete">🗑 删除</button>
+    <div class="pv-menu-sep"></div>
+    <button class="pv-menu-item" @click="menuMoveToFront">⏮ 移到最前</button>
+    <button class="pv-menu-item" @click="menuMoveToLast">⏭ 移到最后</button>
+    <button class="pv-menu-item" @click="menuMoveUp">↑ 前移一页</button>
+    <button class="pv-menu-item" @click="menuMoveDown">↓ 后移一页</button>
+    <div class="pv-menu-sep"></div>
+    <button class="pv-menu-item" @click="menuMoveToN">⇥ 移动到第 N 页…</button>
+  </div>
 </div>
 
 <script>window.CSRF_TOKEN = "__CSRF_TOKEN__";</script>
