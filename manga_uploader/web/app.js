@@ -195,6 +195,7 @@ createApp({
     let staffBaseImg = null; // 固定半透明底图
     const staffFonts = {}; // 已加载的 webfont
     const staffBgCache = {}; // 章节背景页 Image 缓存
+    let staffReady = false; // 预览至少成功渲染过一次才允许生成
 
     const logLines = ref([]);
     const logBox = ref(null);
@@ -1065,6 +1066,7 @@ createApp({
     function drawStaff(canvas, layout, bgImg, baseImg) {
       const ctx = canvas.getContext("2d");
       const W = bgImg.naturalWidth, H = bgImg.naturalHeight;
+      staffReady = W > 0;
       canvas.width = W;
       canvas.height = H;
       ctx.clearRect(0, 0, W, H);
@@ -1154,6 +1156,7 @@ createApp({
       const canvas = staffCanvas.value;
       const ch = staffPanel.ch;
       if (!canvas || !ch) return;
+      if (!staffReady) { toastMsg("预览还没渲染好，先等背景图加载"); return; }
       staffBusy.value = true;
       try {
         await api("/api/staff", { // 名单随生成一并落盘
