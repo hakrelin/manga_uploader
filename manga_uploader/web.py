@@ -43,14 +43,10 @@ from .util import IMAGE_EXTS, get_logger, human_size, setup_logging
 from .webui import (
     PLATFORM_CARDS,
     build_app,
-    delete_page,
     extract_zip,
     format_full_preview,
     import_staging_base,
-    insert_page,
     looks_like_full_comic,
-    rename_numeric,
-    replace_page,
     read_staff_rows,
     save_config,
     stage_images,
@@ -808,18 +804,12 @@ class WebHandler(BaseHTTPRequestHandler):
             self._api_import_path()
         elif path == "/api/import":
             self._api_import()
-        elif path == "/api/insert":
-            self._api_page_upload("insert")
-        elif path == "/api/replace":
-            self._api_page_upload("replace")
-        elif path == "/api/delete":
-            self._api_page_delete()
-        elif path == "/api/rename":
-            self._api_rename()
         elif path == "/api/staff":
             self._api_staff_save()
         elif path == "/api/staff/render":
             self._api_staff_render()
+        elif path == "/api/apply":
+            self._api_apply_edits()
         else:
             self._json(404, {"error": f"未知接口：{path}"})
 
@@ -912,8 +902,37 @@ class WebHandler(BaseHTTPRequestHandler):
             return
         self._json(200, {"text": format_full_preview(preview), "chapters": _preview_struct(preview)})
 
+    def _read_publish_request(self) -> tuple[dict[str, Any], dict[str, bytes]]:
+        """发布/应用请求体：纯 JSON（无页面改动）或 multipart（payload + 新页图 blob）。
+
+        multipart 里 payload 字段是 JSON：{dir, config?, chapters?, edits}；
+        其余带 filename 的 part 都是待物化的新页图，filename 即清单里的 upload 引用。
+        """
+        content_type = self.headers.get("Content-Type", "")
+        if "multipart/form-data" not in content_type:
+            return self._read_json(), {}
+        boundary_match = re.search(r"boundary=(?:\"([^\"]+)\"|([^;]+))", content_type)
+        if not boundary_match:
+            raise ValueError("缺少 multipart boundary")
+        boundary = boundary_match.group(1) or boundary_match.group(2)
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = 0
+        if length <= 0 or length > 512 * 1024 * 1024:
+            raise ValueError("请求体大小异常")
+        fields, files = _split_multipart(self.rfile.read(length), boundary)
+        data = json.loads(fields.get("payload") or "{}")
+        if not isinstance(data, dict):
+            raise ValueError("payload 不是合法 JSON")
+        return data, {name: content for name, content in files}
+
     def _api_publish(self) -> None:
-        data = self._read_json()
+        try:
+            data, upload_files = self._read_publish_request()
+        except Exception as exc:
+            self._json(400, {"error": f"发布请求解析失败：{exc}"})
+            return
         comic_dir = str(data.get("dir") or "").strip()
         if not comic_dir:
             self._json(400, {"error": "缺少漫画目录"})
@@ -924,6 +943,14 @@ class WebHandler(BaseHTTPRequestHandler):
                 self._json(409, {"error": "已有发布任务在运行，请等待完成"})
                 return
             state.running = True
+        # 页面编辑的真值在前端：发布前按清单把增/删/改/排序一次性落盘
+        try:
+            _materialize_edits(comic_dir, data.get("edits"), upload_files)
+        except Exception as exc:
+            with state.publish_lock:
+                state.running = False
+            self._json(400, {"error": f"落盘页面改动失败：{exc}"})
+            return
         only = [str(c) for c in (data.get("chapters") or [])] or None
         names = _enabled_with_cookie(data.get("config") or {})
         if not names:
@@ -1134,95 +1161,7 @@ class WebHandler(BaseHTTPRequestHandler):
         self.server.state.ring.append("INFO", f"已导入漫画：{comic_dir}")
         self._json(200, {"ok": True, "dir": str(comic_dir)})
 
-    # ---------- 页面插入 / 替换 / 删除 ----------
-
-    def _api_page_upload(self, mode: str) -> None:
-        """multipart 上传新图：insert → 插到第 index 页前；replace → 替换第 index 页。"""
-        content_type = self.headers.get("Content-Type", "")
-        boundary_match = re.search(r"boundary=(?:\"([^\"]+)\"|([^;]+))", content_type)
-        if not boundary_match:
-            self._json(400, {"error": "缺少 multipart boundary"})
-            return
-        boundary = boundary_match.group(1) or boundary_match.group(2)
-        try:
-            length = int(self.headers.get("Content-Length") or 0)
-        except ValueError:
-            length = 0
-        if length <= 0 or length > 512 * 1024 * 1024:
-            self._json(400, {"error": "请求体大小异常"})
-            return
-        body = self.rfile.read(length)
-        try:
-            fields, files = _split_multipart(body, boundary)
-        except ValueError as exc:
-            self._json(400, {"error": f"解析上传失败：{exc}"})
-            return
-        comic_dir = str(fields.get("dir") or "").strip()
-        chapter_key = str(fields.get("chapter") or "").strip() or "root"
-        try:
-            index = int(str(fields.get("index") or "0").strip())
-        except ValueError:
-            index = 0
-        if not comic_dir:
-            self._json(400, {"error": "缺少漫画目录"})
-            return
-        if not files:
-            self._json(400, {"error": "没有收到图片文件"})
-            return
-        name, data = files[0]
-        ext = Path(name).suffix.lower()
-        if ext not in IMAGE_EXTS:
-            self._json(400, {"error": f"不支持的图片格式：{ext or '(无扩展名)'}"})
-            return
-        try:
-            if mode == "replace":
-                count = replace_page(comic_dir, chapter_key, index, data, ext)
-            else:
-                count = insert_page(comic_dir, chapter_key, index, data, name)
-        except Exception as exc:
-            verb = "替换" if mode == "replace" else "插入"
-            self._json(500, {"error": f"{verb}失败：{exc}"})
-            return
-        verb = "替换" if mode == "replace" else "插入"
-        self.server.state.ring.append(
-            "INFO", f"已{verb}页：{Path(comic_dir).name}（{chapter_key}，共 {count} 页）"
-        )
-        # 带回最终页名列表（插入重名会自动改名/替换语义 A 会换名），前端本地状态直接采用
-        try:
-            chapters = load_chapters(comic_dir, strict=False)
-            chapter = next((c for c in chapters if c.key == chapter_key), None)
-            names = [p.name for p in chapter.pages] if chapter else []
-        except Exception:
-            names = []
-        self._json(200, {"ok": True, "pages": count, "names": names})
-
-    def _api_page_delete(self) -> None:
-        """删除漫画某章节第 index 页，并重排后续页码保持连续。"""
-        data = self._read_json()
-        comic_dir = str(data.get("dir") or "").strip()
-        chapter_key = str(data.get("chapter") or "").strip() or "root"
-        try:
-            index = int(str(data.get("index") or "0"))
-        except (TypeError, ValueError):
-            index = 0
-        if not comic_dir:
-            self._json(400, {"error": "缺少漫画目录"})
-            return
-        try:
-            count = delete_page(comic_dir, chapter_key, index)
-        except Exception as exc:
-            self._json(500, {"error": f"删除失败：{exc}"})
-            return
-        self.server.state.ring.append(
-            "INFO", f"已删除页：{Path(comic_dir).name}（{chapter_key}，剩 {count} 页）"
-        )
-        try:
-            chapters = load_chapters(comic_dir, strict=False)
-            chapter = next((c for c in chapters if c.key == chapter_key), None)
-            names = [p.name for p in chapter.pages] if chapter else []
-        except Exception:
-            names = []
-        self._json(200, {"ok": True, "pages": count, "names": names})
+    # ---------- 页面清单落盘（发布时按前端 JSON 物化） ----------
 
     def _apply_local_pages(self, comic_dir: str, chapter_key: str, pages) -> None:
         """把前端带来的本地页序落盘（页序的真值在前端，磁盘随操作前对齐）。
@@ -1240,31 +1179,6 @@ class WebHandler(BaseHTTPRequestHandler):
         if set(names) != valid or len(names) != len(valid):
             raise ValueError("pages 必须恰好是当前章节的全部页面文件")
         write_page_order(comic_dir, chapter_key, names)
-
-    def _apply_local_pages_map(self, comic_dir: str, pages_map) -> None:
-        """批量落盘前端带来的各章节本地页序（/api/preview、/api/publish 用）。"""
-        if not isinstance(pages_map, dict):
-            return
-        for key, names in pages_map.items():
-            self._apply_local_pages(comic_dir, str(key), names)
-
-    def _api_rename(self) -> None:
-        """把章节按当前页序重命名为 001.ext / 002.ext…。"""
-        data = self._read_json()
-        comic_dir = str(data.get("dir") or "").strip()
-        chapter_key = str(data.get("chapter") or "").strip() or "root"
-        if not comic_dir:
-            self._json(400, {"error": "缺少漫画目录"})
-            return
-        try:
-            count = rename_numeric(comic_dir, chapter_key)
-        except Exception as exc:
-            self._json(500, {"error": f"重命名失败：{exc}"})
-            return
-        self.server.state.ring.append(
-            "INFO", f"已重命名为 001…：{Path(comic_dir).name}（{chapter_key}，{count} 页）"
-        )
-        self._json(200, {"ok": True, "pages": count})
 
     # ---------- Staff 页（后端零渲染：只管名单存取 + 成品 PNG 落页） ----------
 
@@ -1314,6 +1228,34 @@ class WebHandler(BaseHTTPRequestHandler):
             "INFO", f"已保存 staff 名单：{Path(comic_dir).name}（{chapter_key}，{count} 行）"
         )
         self._json(200, {"ok": True, "rows": count})
+
+    def _api_apply_edits(self) -> None:
+        """检查点：把前端带来的页面全体副本物化落盘（动文件 + 写 manga.json 页序）。
+
+        与发布同一条物化路径（_materialize_edits），但不触发发布。编辑期间前端
+        零请求攒改动，点了「应用改动」才让磁盘与 JSON 对齐——git commit 式检查点。
+        """
+        try:
+            data, upload_files = self._read_publish_request()
+        except Exception as exc:
+            self._json(400, {"error": f"请求解析失败：{exc}"})
+            return
+        comic_dir = str(data.get("dir") or "").strip()
+        if not comic_dir:
+            self._json(400, {"error": "缺少漫画目录"})
+            return
+        try:
+            _materialize_edits(comic_dir, data.get("edits"), upload_files)
+        except Exception as exc:
+            logging.getLogger(LOGGER_NAME).error(
+                "应用页面改动失败：%s", exc, exc_info=True,
+            )
+            self._json(400, {"error": f"应用页面改动失败：{exc}"})
+            return
+        self.server.state.ring.append(
+            "INFO", f"已应用页面改动：{Path(comic_dir).name}"
+        )
+        self._json(200, {"ok": True})
 
     def _api_staff_render(self) -> None:
         """接收前端 canvas 渲染好的 staff 页 PNG，落成第 2 页（重复生成覆盖）。"""
@@ -1367,6 +1309,110 @@ class WebHandler(BaseHTTPRequestHandler):
         except Exception:
             names = []
         self._json(200, {"ok": True, "pages": count, "names": names})
+
+
+def _materialize_edits(
+    comic_dir: str,
+    edits: Any,
+    upload_files: dict[str, bytes],
+) -> None:
+    """按前端提交的页面全体副本把改动一次性落盘（发布前调用）。
+
+    edits 形如 {章节key: {"pages": [item...]}}——pages 是该章**最终每一页**的完整
+    有序列表，前端保证每页都在；item 三型：
+      {"keep": 名}                     引用磁盘现有页；
+      {"rename": 新名, "from": 旧名}   重命名磁盘文件（001 重命名等）；
+      {"set": 名, "upload": 引用}      新内容写入（插入/替换，原子覆盖）。
+    两阶段事务：先做全部校验并把重命名源/新内容暂存为临时文件（此阶段任何
+    失败都会把暂存原样退回，磁盘零损伤），再统一提交（同目录 os.replace/
+    unlink，实际不会失败）。重命名两阶段化顺带保证 002→001 / 001→002 这类
+    交换不互相覆盖。每章处理完按 pages 顺序写 manga.json 页序；磁盘上有、
+    清单里没有的页面文件一律删除（差集即删除）。
+    """
+    if not edits:
+        return
+    if not isinstance(edits, dict):
+        raise ValueError("edits 必须是 {章节: {pages}}")
+    chapters = load_chapters(comic_dir, strict=False)
+    for chapter_key, edit in edits.items():
+        chapter = next((c for c in chapters if c.key == str(chapter_key)), None)
+        if chapter is None:
+            raise ValueError(f"找不到章节：{chapter_key}")
+        if not isinstance(edit, dict):
+            raise ValueError(f"章节 {chapter_key} 的编辑清单不合法")
+        folder = chapter.source_dir
+        by_name = {p.name: p for p in chapter.pages}
+        items = edit.get("pages") or []
+        moving_away = {
+            str(it.get("from"))
+            for it in items if isinstance(it, dict) and "rename" in it
+        }
+
+        # ---- 阶段一：全量校验 + 暂存（失败即整体回滚，磁盘零损伤） ----
+        staged: list[tuple[Path, str]] = []  # (暂存文件, 最终名)
+        staged_renames: list[tuple[str, Path]] = []  # (原名, 暂存文件)——回滚用
+        try:
+            for item in items:
+                if not isinstance(item, dict):
+                    raise ValueError(f"章节 {chapter_key} 存在不合法的清单项")
+                if "keep" in item:
+                    name = str(item["keep"])
+                    if name not in by_name:
+                        raise ValueError(f"页面不存在：{name}（章节 {chapter_key}）")
+                    staged.append((by_name[name], name))
+                elif "rename" in item:
+                    new_name, old_name = str(item["rename"]), str(item.get("from") or "")
+                    page = by_name.get(old_name)
+                    if page is None:
+                        raise ValueError(f"页面不存在：{old_name}（章节 {chapter_key}）")
+                    if (
+                        new_name in by_name
+                        and new_name != old_name
+                        and new_name not in moving_away
+                    ):
+                        raise ValueError(f"目标文件名已存在：{new_name}（章节 {chapter_key}）")
+                    tmp = folder / f".mu_tmp_{time.time_ns()}_{len(staged)}{page.suffix}"
+                    page.replace(tmp)
+                    staged_renames.append((old_name, tmp))
+                    staged.append((tmp, new_name))
+                elif "set" in item:
+                    name = str(item["set"])
+                    data = upload_files.get(str(item.get("upload") or ""))
+                    if data is None:
+                        raise ValueError(
+                            f"缺少上传的页面内容：{item.get('upload')}（章节 {chapter_key}）"
+                        )
+                    tmp = folder / f".mu_tmp_{time.time_ns()}_{len(staged)}{Path(name).suffix}"
+                    tmp.write_bytes(data)
+                    staged.append((tmp, name))
+                else:
+                    raise ValueError(f"章节 {chapter_key} 存在不合法的清单项")
+        except Exception:
+            # 回滚：重命名的暂存文件退回原名，其余暂存删除
+            for old_name, tmp in staged_renames:
+                tmp.replace(folder / old_name)
+            handled = {id(t) for _, t in staged_renames}
+            for tmp, _ in staged:
+                if id(tmp) not in handled and tmp.exists():
+                    tmp.unlink()
+            raise
+
+        # ---- 阶段二：统一提交（同目录 replace/unlink，实际不会失败） ----
+        final: list[Path] = []
+        consumed = {old for old, _ in staged_renames}
+        for tmp, new_name in staged:
+            target = folder / new_name
+            if tmp != target:
+                tmp.replace(target)
+            final.append(target)
+        final_names = {p.name for p in final}
+        if len(final_names) != len(final):
+            raise ValueError(f"章节 {chapter_key} 的最终页名有重复")
+        for name, page in by_name.items():
+            if name not in final_names and name not in consumed:
+                page.unlink()
+        if final:
+            write_page_order(comic_dir, str(chapter_key), [p.name for p in final])
 
 
 def _preview_struct(preview) -> list[dict[str, Any]]:

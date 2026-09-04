@@ -605,7 +605,6 @@ createApp({
           method: "POST", json: true, body: JSON.stringify({ dir: raw }),
         });
         summary.value = r;
-        pageRev += 1; // 页面内容这一代已变，页图全部换新 URL 绕开缓存
         const m = (r.meta || {});
         metaForm.title = m.title || "";
         metaForm.author = m.author || "";
@@ -767,12 +766,17 @@ createApp({
     async function previewPlan() { await runPreview("/api/plan", "生成计划失败"); }
     async function previewFull() { await runPreview("/api/preview", "全文预览失败"); }
 
-    function pageUrl(chapterKey, pgName, index) {
-      // max=0 → 后端原图直发（流式，不压缩不裁剪），逐页原样展示供核对。
-      // URL 按文件名（name 优先于 index）：排序=同一文件换位置，URL 不变缓存秒中；
-      // 插入/替换/重命名产生新文件名 → 天然新 URL，不存在“吃旧图”
+    function pageUrl(ch, pgName, index) {
+      // 页图 URL 按文件名走（服务端 name 参数）：排序=同一文件换位置，URL 不变
+      // 缓存秒中；插入/替换/重命名产生新文件名 → 天然新 URL，不存在“吃旧图”。
+      // 本地待发布的新图（blob）直接用对象 URL，预览即上传内容
+      const m = ch && ch._pageMeta ? ch._pageMeta[pgName] : null;
+      if (m && m.blob) {
+        if (!m.url) m.url = URL.createObjectURL(m.blob);
+        return m.url;
+      }
       const q = "/api/page?dir=" + encodeURIComponent(comicDir.value.trim()) +
-        "&chapter=" + encodeURIComponent(chapterKey) + "&max=0&";
+        "&chapter=" + encodeURIComponent(ch.key) + "&max=0&";
       if (pgName) return q + "name=" + encodeURIComponent(pgName);
       return q + "index=" + index;
     }
@@ -786,11 +790,73 @@ createApp({
           body: JSON.stringify({ dir: comicDir.value.trim(), config: payload() }),
         });
         previewText.value = r.text || "";
-        previewChapters.value = r.chapters || [];
+        // 页面编辑的真值在前端：每章挂本地编辑状态（待上传新图 / 磁盘文件重命名来源）
+        previewChapters.value = (r.chapters || []).map((c) =>
+          Object.assign({}, c, { _pageMeta: {} }));
         previewMode.value = r.chapters && r.chapters.length ? "card" : "text";
         nav.value = "workbench";
       } catch (e) {
         toastMsg(errPrefix + "：" + e.message);
+      } finally {
+        busy.value = false;
+      }
+    }
+
+    // 把章节的本地页面编辑整理成发布清单（无改动返回 null）。
+    // pages 是该章最终每一页的完整有序列表（全体副本），item 三型与后端
+    // _materialize_edits 对应：keep / rename+from / set+upload；删除由后端
+    // 按「磁盘有、清单没有」的差集执行
+    function chapterEdits(ch) {
+      const meta = ch._pageMeta || {};
+      if (!Object.keys(meta).length) return null;
+      const uploads = []; // [ref, blob, 文件名]
+      const pages = (ch.pages || []).map((name) => {
+        const m = meta[name];
+        if (m && m.blob) {
+          const ref = "u" + uploads.length;
+          uploads.push([ref, m.blob, name]);
+          return { set: name, upload: ref };
+        }
+        if (m && m.orig && m.orig !== name) return { rename: name, from: m.orig };
+        return { keep: name };
+      });
+      return { pages, uploads };
+    }
+
+    // 组装页面改动请求（publish 与「应用改动」共用）：
+    // 返回 {edits, fd, hasEdits}；fd 里 payload=JSON（base 字段 + edits 全体副本），
+    // 其余 part=新页图 blob
+    function buildEditsRequest(base) {
+      const edits = {};
+      let hasEdits = false;
+      previewChapters.value.forEach((ch) => {
+        const e = chapterEdits(ch);
+        if (e) { hasEdits = true; edits[ch.key] = e; }
+      });
+      const fd = new FormData();
+      if (hasEdits) {
+        fd.append("payload", JSON.stringify(Object.assign({}, base, { edits })));
+        // 后端 multipart 解析按 filename 取 part，filename 必须就是 upload 引用名
+        previewChapters.value.forEach((ch) => {
+          const e = edits[ch.key];
+          if (e) e.uploads.forEach(([ref, blob]) => fd.append(ref, blob, ref));
+        });
+      }
+      return { edits, fd, hasEdits };
+    }
+
+    // 检查点：把攒着的页面改动一次性落盘（动文件 + 写 manga.json 页序），不发布
+    async function applyPageEdits() {
+      if (!comicDir.value.trim()) { toastMsg("请先加载漫画目录"); return; }
+      const { fd, hasEdits } = buildEditsRequest({ dir: comicDir.value.trim() });
+      if (!hasEdits) { toastMsg("没有待应用的页面改动"); return; }
+      busy.value = true;
+      try {
+        await api("/api/apply", { method: "POST", body: fd });
+        toastMsg("页面改动已落盘");
+        await loadComic(); // 与磁盘重新对齐（新图从 blob URL 切回服务端 URL）
+      } catch (e) {
+        toastMsg("应用改动失败：" + e.message);
       } finally {
         busy.value = false;
       }
@@ -816,10 +882,17 @@ createApp({
       if (!window.confirm("确认发布到：" + names.join("、") + "？\n\n发布后不可撤销。")) return;
       busy.value = true;
       try {
-        await api("/api/publish", {
-          method: "POST", json: true,
-          body: JSON.stringify({ dir: comicDir.value.trim(), config: payload() }),
-        });
+        const pub = { dir: comicDir.value.trim(), config: payload() };
+        const { fd, hasEdits } = buildEditsRequest(pub);
+        if (hasEdits) {
+          // 页面编辑随发布一次性提交：payload 里带 edits，后端先物化再发布
+          await api("/api/publish", { method: "POST", body: fd });
+        } else {
+          await api("/api/publish", {
+            method: "POST", json: true,
+            body: JSON.stringify(pub),
+          });
+        }
         running.value = true;
         nav.value = "workbench";
       } catch (e) {
@@ -848,51 +921,52 @@ createApp({
       input.click();
     }
 
-    async function onPageEditPicked(e) {
+    // 选完图：插入/替换都只改前端状态（页名 + 待上传 blob），发布时统一落盘
+    function onPageEditPicked(e) {
       const file = e.target.files && e.target.files[0];
       const p = pendingPageEdit.value;
       pendingPageEdit.value = null;
       if (!file || !p) return;
-      busy.value = true;
-      try {
-        const fd = new FormData();
-        fd.append("dir", comicDir.value.trim());
-        fd.append("chapter", p.key);
-        fd.append("index", String(p.index));
-        fd.append("file", file);
-        const ep = p.mode === "replace" ? "/api/replace" : "/api/insert";
-        const r = await api(ep, { method: "POST", body: fd });
-        toastMsg(p.mode === "replace"
-          ? `已替换第 ${p.index + 1} 页`
-          : `已插入第 ${p.index + 1} 页，共 ${r.pages} 页`);
-        await loadComic(); // 刷新整本内容与预览，页码随之更新
-      } catch (err) {
-        toastMsg((p.mode === "replace" ? "替换" : "插入") + "失败：" + err.message);
-      } finally {
-        busy.value = false;
+      const ch = previewChapters.value.find((c) => c.key === p.key);
+      if (!ch) { toastMsg("章节已不存在，请重新加载"); return; }
+      const pages = ch.pages;
+      // 本地起名，与现有页名去重
+      const dot = file.name.lastIndexOf(".");
+      const base = dot >= 0 ? file.name.slice(0, dot) : file.name;
+      const ext = dot >= 0 ? file.name.slice(dot) : "";
+      let name = file.name;
+      for (let n = 1; pages.includes(name); n++) name = `${base}(${n})${ext}`;
+      if (p.mode === "replace") {
+        const old = pages[p.index];
+        const m = ch._pageMeta[old];
+        // 全体副本语义：被顶替的旧磁盘文件不在最终清单里，后端按差集自动删除；
+        // 同名顶替时 set 直接覆盖磁盘文件，无需任何删除标记
+        if (name !== old) delete ch._pageMeta[old];
+        ch._pageMeta[name] = { blob: file, orig: m ? m.orig : old };
+        pages.splice(p.index, 1, name);
+        toastMsg(`已替换第 ${p.index + 1} 页（发布时落盘）`);
+      } else {
+        pages.splice(p.index, 0, name);
+        ch._pageMeta[name] = { blob: file, orig: null };
+        toastMsg(`已插入第 ${p.index + 1} 页，共 ${pages.length} 页（发布时落盘）`);
       }
+      ch.page_count = pages.length;
     }
 
     function startDeletePage(ch, pageNo) {
-      if (!window.confirm(`确认删除第 ${pageNo} 页？\n\n删除不可撤销。`)) return;
+      if (!window.confirm(`确认删除第 ${pageNo} 页？\n\n发布时该文件将从磁盘删除。`)) return;
       deletePageDirect(ch, pageNo - 1);
     }
 
-    // 真正执行删除（调用方负责确认）
-    async function deletePageDirect(ch, index) {
-      busy.value = true;
-      try {
-        const r = await api("/api/delete", {
-          method: "POST", json: true,
-          body: JSON.stringify({ dir: comicDir.value.trim(), chapter: ch.key, index }),
-        });
-        toastMsg(`已删除第 ${index + 1} 页，剩 ${r.pages} 页`);
-        await loadComic();
-      } catch (err) {
-        toastMsg("删除失败：" + err.message);
-      } finally {
-        busy.value = false;
-      }
+    // 真正执行删除（调用方负责确认）：纯前端。全体副本里不再有这一页，
+    // 发布时后端按「磁盘有、清单没有」的差集删文件
+    function deletePageDirect(ch, index) {
+      const name = (ch.pages || [])[index];
+      if (!name) return;
+      delete ch._pageMeta[name];
+      ch.pages.splice(index, 1);
+      ch.page_count = ch.pages.length;
+      toastMsg(`已删除第 ${index + 1} 页，剩 ${ch.pages.length} 页（发布时落盘）`);
     }
 
     // ---------------- 页面操作（右键菜单 / 外科级移动） ----------------
@@ -970,7 +1044,7 @@ createApp({
       menuMoveTo(n - 1); // menuMoveTo 内部会先取 ch/name 再 closePageMenu
     }
 
-    // 把当前右键页移到新位置（新数组下标）：本地 splice 重排 → /api/reorder 全量写回
+    // 把当前右键页移到新位置（新数组下标）：纯前端 splice，UI 立即生效，发布时落盘
     function menuMoveTo(targetIndex) {
       const ch = pageMenu.ch;
       const name = pageMenu.name;
@@ -978,29 +1052,12 @@ createApp({
       if (!ch || !name) return;
       const list = (ch.pages || []).slice();
       const from = list.indexOf(name);
-      if (from < 0) return;
-      if (from === targetIndex) return;
+      if (from < 0 || from === targetIndex) return;
       if (targetIndex < 0 || targetIndex > list.length) return;
       list.splice(from, 1);
       list.splice(targetIndex, 0, name);
-      applyOrder(ch, list, name);
-    }
-
-    async function applyOrder(ch, list, movedName) {
-      busy.value = true;
-      try {
-        const r = await api("/api/reorder", {
-          method: "POST", json: true,
-          body: JSON.stringify({ dir: comicDir.value.trim(), chapter: ch.key, pages: list }),
-        });
-        const pos = movedName ? list.indexOf(movedName) + 1 : null;
-        toastMsg(pos ? `已移动：${movedName} → 第 ${pos} 页` : `已重排，共 ${r.pages} 页`);
-        await loadComic();
-      } catch (err) {
-        toastMsg("重排失败：" + err.message);
-      } finally {
-        busy.value = false;
-      }
+      ch.pages = list;
+      toastMsg(`已移动：${name} → 第 ${targetIndex + 1} 页（发布时落盘）`);
     }
 
     // 全局：点击 / 滚动 / 窗口缩放关闭右键菜单；右键非页面处也关闭
@@ -1018,21 +1075,33 @@ createApp({
     }, true);
     window.addEventListener("resize", closePageMenu);
 
-    // 命名工具：按当前页序重命名为 001 / 002…（只改文件名主体，扩展名保持原样）
+    // 命名工具：按当前页序重命名为 001 / 002…（只改文件名主体，扩展名保持原样）。
+    // 纯前端：本地重算页名 + 记录待重命名的磁盘文件，发布时统一落盘
     function startRenameNumeric(ch) {
-      if (!window.confirm(`确认把「${ch.title || ch.key}」全部页面按当前页序重命名为 001 / 002 / …？\n\n只改文件名主体，扩展名保持原样；重命名不可撤销。`)) return;
-      busy.value = true;
-      api("/api/rename", {
-        method: "POST", json: true,
-        body: JSON.stringify({ dir: comicDir.value.trim(), chapter: ch.key }),
-      }).then(() => {
-        toastMsg(`已重命名为 001…（${ch.key}）`);
-        return loadComic();
-      }).catch((err) => {
-        toastMsg("重命名失败：" + err.message);
-      }).finally(() => {
-        busy.value = false;
+      if (!window.confirm(`确认把「${ch.title || ch.key}」全部页面按当前页序重命名为 001 / 002 / …？\n\n只改文件名主体，扩展名保持原样；发布时落盘。`)) return;
+      const plan = [];
+      const seen = new Set();
+      for (let i = 0; i < ch.pages.length; i++) {
+        const old = ch.pages[i];
+        const dot = old.lastIndexOf(".");
+        const ext = dot >= 0 ? old.slice(dot) : "";
+        const neu = String(i + 1).padStart(3, "0") + ext;
+        if (seen.has(neu)) { toastMsg(`重命名产生重复文件名：${neu}，已取消`); return; }
+        seen.add(neu);
+        plan.push([old, neu]);
+      }
+      plan.forEach(([old, neu]) => {
+        if (neu === old) return;
+        const m = ch._pageMeta[old];
+        if (m) {
+          delete ch._pageMeta[old];
+          ch._pageMeta[neu] = m; // 本地新图只改名；待重命名的磁盘引用（orig）随条目走
+        } else {
+          ch._pageMeta[neu] = { blob: null, orig: old };
+        }
       });
+      ch.pages = plan.map(([, neu]) => neu);
+      toastMsg("已按页序重命名为 001…（发布时落盘）");
     }
 
     // ---------------- staff 页（前端 canvas 渲染：预览==成品同源） ----------------
@@ -1105,11 +1174,12 @@ createApp({
       return staffBaseImg;
     }
 
-    // 背景页：默认第 2 页，面板可选封面；章不够时退回封面
+    // 背景页：默认第 2 页，面板可选任意页；章不够时退回封面
     function staffBgUrl(ch) {
       let index = staffBgIndex.value;
-      if (index < 0 || index >= (ch.page_count || 0)) index = 0;
-      return pageUrl(ch.key, index);
+      const pages = ch.pages || [];
+      if (index < 0 || index >= pages.length) index = 0;
+      return pageUrl(ch, pages[index], index);
     }
 
     async function loadStaffBg(ch) {
@@ -1229,10 +1299,14 @@ createApp({
       if (!staffReady) { toastMsg("预览还没渲染好，先等背景图加载"); return; }
       staffBusy.value = true;
       try {
+        // 无待发布改动时把本地页序一并带给后端（staff 页插回位置才符合所见）；
+        // 有改动时磁盘页名与本地对不上，跳过（本地状态仍以前端为准）
+        const clean = !Object.keys(ch._pageMeta || {}).length;
+        const body = { dir: comicDir.value.trim(), chapter: ch.key,
+          rows: staffRows.value, bg: staffBgIndex.value };
+        if (clean) body.pages = ch.pages;
         await api("/api/staff", { // 名单+背景页随生成一并落盘
-          method: "POST", json: true,
-          body: JSON.stringify({ dir: comicDir.value.trim(), chapter: ch.key,
-            rows: staffRows.value, bg: staffBgIndex.value }),
+          method: "POST", json: true, body: JSON.stringify(body),
         });
         const blob = await new Promise((resolve, reject) =>
           canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("导出失败"))), "image/png"));
@@ -1389,7 +1463,7 @@ createApp({
       startRenameNumeric,
       staffPanel, staffRows, staffCanvas, staffBusy, staffExportOpen,
       staffBgPage, staffBgStep, onStaffBgChange, staffFontStatus,
-      chapterToolsOpen, toggleChapterTools,
+      chapterToolsOpen, toggleChapterTools, applyPageEdits,
       openStaff, closeStaff, renderStaffPreview, saveStaffRows, renderStaffPage, exportStaffImage,
       resetPick, saveMeta,
       logLines, logBox, logOpen, logNew, clearLog, toast, modal, lanAddr,

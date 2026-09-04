@@ -236,7 +236,7 @@ try {
                   <div class="pv-flow">
                     <template v-for="(pgName, i) in ch.pages" :key="ch.key + ':' + i">
                       <figure class="pv-fig" @contextmenu.prevent="openPageMenu($event, ch, i, pgName)">
-                        <img :src="pageUrl(ch.key, pgName, i)" loading="lazy" alt="" draggable="false">
+                        <img :src="pageUrl(ch, pgName, i)" loading="lazy" alt="" draggable="false">
                         <figcaption>
                           <span class="pv-pnum">P{{ i + 1 }}</span>
                           <span class="pv-pname" :title="pgName">{{ pgName }}</span>
@@ -477,6 +477,8 @@ try {
     <button class="pv-menu-item" @click="chapterToolsOpen = null; openStaff(ch)">📄 制作 Staff 页 · {{ ch.title || ch.key }}</button>
     <button class="pv-menu-item" @click="chapterToolsOpen = null; startRenameNumeric(ch)">🔢 001 重命名 · {{ ch.title || ch.key }}</button>
   </template>
+  <div class="pv-menu-sep"></div>
+  <button class="pv-menu-item" @click="chapterToolsOpen = null; applyPageEdits()">💾 应用页面改动（落盘）</button>
 </div>
 <button v-if="logLines.length" class="log-fab" @click="logOpen = !logOpen">
   📋<span v-if="logNew && !logOpen" class="log-badge">{{ logNew }}</span>
