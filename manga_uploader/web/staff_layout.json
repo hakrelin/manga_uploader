@@ -1,6 +1,6 @@
 {
   "version": 4,
-  "_comment": "staff 页布局。坐标均为设计像素（design.w × design.h 渲染到目标页时按 targetW/design.w 等比缩放，底图整体拉伸铺满）。版权声明与组名 logo 已固化在 staff_base.png（PSD 原字体+描边，换组/换文案需重导底图）；canvas 只画职位行。职位行围绕 block_center_y（设计 5 行块的中心，PSD 实测）居中，增删行上下均匀伸缩。字体按 font_aliases 依次探测系统（Windows 注册名是 nameID1 带字重后缀和中文别名）→ font_file 本地兜底（不入 git）→ fallback 占位。描边按 PSD：宽 10 设计像素、黑、外部。",
+  "_comment": "staff 页布局。坐标均为设计像素（design.w × design.h 渲染到目标页时按 targetW/design.w 等比缩放，底图整体拉伸铺满）。版权声明与组名 logo 已固化在 staff_base.png（PSD 原字体+描边，换组/换文案需重导底图）；canvas 只画职位行。职位行围绕 block_center_y（设计 5 行块的中心，PSD 实测）居中，增删行上下均匀伸缩。字体三级回退：font_file 本地打包（FontFace，确定性）→ font_aliases 依次度量探测系统（fonts.check 对未知家族恒真不可用；Windows 注册名是 nameID1 带字重后缀和中文别名）→ fallback 占位。描边按 PSD：宽 10 设计像素、黑、外部。",
   "design": { "w": 2741, "h": 3833 },
   "base": "/assets/staff_base.png",
   "fit": "stretch",
@@ -8,7 +8,7 @@
   "bg_default_index": 1,
   "rows": {
     "font": "[toolbox]HaiBao-JF-W9",
-    "font_aliases": ["[toolbox]HaiBao-JF-W9", "[toolbox]HaiBao-JF", "[工具箱]海报体-简繁-W9", "[工具箱]海报体-简繁", "toolboxHaiBaoJF-W9", "HaiBao-JF-W9"],
+    "font_aliases": ["[toolbox]HaiBao-JF-W9", "[toolbox]HaiBao-JF", "[工具箱]海报体-简繁-W9", "[工具箱]海报体-简繁", "toolboxHaiBaoJF-W9", "HaiBao-JF-W9", "toolbox HaiBao W9", "HaiBao W9", "海报体 W9", "海报体"],
     "font_file": "/assets/fonts/local-toolbox-haibao-w9.ttf",
     "fallback_font": "ZCOOL QingKe HuangYou",
     "fallback_file": "/assets/fonts/ZCOOLQingKeHuangYou-Regular.ttf",

@@ -996,6 +996,9 @@ class WebHandler(BaseHTTPRequestHandler):
         try:
             composed = _book_to_compose(comic_dir, book)
         except Exception as exc:
+            logging.getLogger(LOGGER_NAME).error(
+                "组合失败：%s", exc, exc_info=True,
+            )
             self._json(500, {"error": f"组合失败：{exc}"})
             return
         self._json(200, {"ok": True, **composed})

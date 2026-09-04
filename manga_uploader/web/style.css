@@ -950,9 +950,21 @@ html, body {
   gap: 8px;
 }
 .staff-hint { font-size: 11px; color: var(--text-3); margin: 0; }
-.staff-font-status { color: var(--text-2); }
 .staff-bg-row { display: flex; align-items: center; gap: 8px; }
-.staff-bg-input { width: 84px; flex: none; }
+.staff-bg-input { width: 72px; flex: none; text-align: center; }
+.staff-step-btns { display: flex; flex-direction: column; gap: 2px; }
+.staff-step {
+  border: 1px solid var(--border);
+  background: var(--surface-3);
+  color: var(--text-2);
+  font-size: 9px;
+  line-height: 1;
+  padding: 3px 7px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+.staff-step:hover { color: var(--accent); border-color: var(--accent); }
 .staff-row { display: flex; align-items: center; gap: 6px; }
 .staff-role { width: 96px; flex: none; }
 .staff-name { flex: 1; min-width: 0; }

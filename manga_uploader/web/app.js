@@ -197,7 +197,6 @@ createApp({
       get: () => staffBgIndex.value + 1, // 界面用 1-based 页码
       set: (v) => { staffBgIndex.value = Number.isFinite(v) ? Math.max(1, v) - 1 : 1; },
     });
-    const staffFontStatus = ref(""); // 面板里显示实际用上的字体来源，方便排查
     const chapterToolsOpen = ref(null); // 展开章节工具菜单的章节 key
     let staffLayout = null; // staff_layout.json 缓存
     let staffBaseImg = null; // 固定半透明底图
@@ -955,12 +954,12 @@ createApp({
       );
       if (input === null) { closePageMenu(); return; }
       const n = parseInt(input, 10);
-      closePageMenu();
       if (!Number.isFinite(n) || n < 1 || n > total) {
+        closePageMenu();
         toastMsg(`页号需在 1 ~ ${total} 之间`);
         return;
       }
-      menuMoveTo(n - 1);
+      menuMoveTo(n - 1); // menuMoveTo 内部会先取 ch/name 再 closePageMenu
     }
 
     // 把当前右键页移到新位置（新数组下标）：本地 splice 重排 → /api/reorder 全量写回
@@ -1038,39 +1037,44 @@ createApp({
       return staffLayout;
     }
 
-    // 字体三级回退：系统已装（font_aliases 依次探测，Windows 注册名带字重后缀/
-    // 中文别名）→ 本地打包文件 → 开源占位
+    // 度量法探测系统字体：fonts.check 会把未知家族也判 true（回退也算可用），
+    // 必须比宽度——候选家族渲染宽度和 monospace 不同才说明真有这个字体
+    function staffFontAvailable(family) {
+      try {
+        const c = document.createElement("canvas").getContext("2d");
+        const s = "茶与金平糖汉化組ABCabc123、之";
+        c.font = `72px "${family}", monospace`;
+        const wa = c.measureText(s).width;
+        c.font = `72px monospace`;
+        const wm = c.measureText(s).width;
+        return Math.abs(wa - wm) > 0.5;
+      } catch (e) {
+        return false;
+      }
+    }
+
+    // 字体三级回退：本地字体文件（FontFace，确定性）→ 系统字体（度量探测）→ 占位
     async function ensureStaffFont(sec) {
       if (sec.__family) return sec.__family;
       const aliases = sec.font_aliases && sec.font_aliases.length ? sec.font_aliases : [sec.font];
-      for (const fam of aliases) {
-        try {
-          if (document.fonts.check(`20px "${fam}"`)) {
-            sec.__family = fam;
-            sec.__source = "system";
-            return fam;
-          }
-        } catch (e) { /* check 异常就试下一个 */ }
-      }
       try {
         const face = new FontFace(aliases[0], `url(${sec.font_file})`);
         await face.load();
         document.fonts.add(face);
         sec.__family = aliases[0];
-        sec.__source = "local";
         return sec.__family;
-      } catch (e) { /* 本地文件缺失（如新 clone 没放字体）→ 占位兜底 */ }
+      } catch (e) { /* 本地没放字体文件 → 探测系统 */ }
+      for (const fam of aliases) {
+        if (staffFontAvailable(fam)) {
+          sec.__family = fam;
+          return fam;
+        }
+      }
       const face = new FontFace(sec.fallback_font, `url(${sec.fallback_file})`);
       await face.load();
       document.fonts.add(face);
       sec.__family = sec.fallback_font;
-      sec.__source = "fallback";
       return sec.__family;
-    }
-
-    function staffFontSourceTag(sec) {
-      return sec.__source === "system" ? "系统"
-        : sec.__source === "local" ? "字体文件" : "占位⚠";
     }
 
     async function loadStaffBase() {
@@ -1149,8 +1153,6 @@ createApp({
       try {
         const layout = await loadStaffLayout();
         const rowsFamily = await ensureStaffFont(layout.rows);
-        staffFontStatus.value = `字体：职位行 ${rowsFamily}（${staffFontSourceTag(layout.rows)}）`
-          + ` · 声明已固化在底图`;
         const base = await loadStaffBase();
         const bg = await loadStaffBg(ch);
         drawStaff(canvas, layout, bg, base, rowsFamily);
@@ -1243,6 +1245,12 @@ createApp({
     // 章节 ⚙ 工具菜单开关
     function toggleChapterTools(key) {
       chapterToolsOpen.value = chapterToolsOpen.value === key ? null : key;
+    }
+
+    // 背景页翻页（▲=上一页 / ▼=下一页）
+    function staffBgStep(delta) {
+      staffBgPage.value = (Number(staffBgPage.value) || 1) + delta;
+      onStaffBgChange();
     }
 
     // 导出预览成品为图片文件（不落页）：a[download] 存盘
@@ -1363,7 +1371,7 @@ createApp({
       menuReplace, menuDelete, menuMoveToFront, menuMoveToLast, menuMoveUp, menuMoveDown, menuMoveToN,
       startRenameNumeric,
       staffPanel, staffRows, staffCanvas, staffBusy, staffExportOpen,
-      staffBgPage, staffFontStatus, onStaffBgChange,
+      staffBgPage, staffBgStep, onStaffBgChange,
       chapterToolsOpen, toggleChapterTools,
       openStaff, closeStaff, renderStaffPreview, saveStaffRows, renderStaffPage, exportStaffImage,
       resetPick, saveMeta,
