@@ -819,8 +819,23 @@ html, body {
 }
 
 /* 章节 ⚙ 工具按钮：常驻悬浮在卡片右上角，点击展开菜单 */
-/* 章节 ⚙ 工具：悬浮按钮（与右下角「看日志」同一悬浮位，往上叠） */
-.log-fab.tool-fab { bottom: 80px; }
+/* 章节 ⚙ 工具：独立悬浮按钮（右下角「看日志」上方），样式自持不蹭 log-fab */
+.tool-fab {
+  position: fixed;
+  right: 22px;
+  bottom: 80px;
+  z-index: 60;
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: var(--shadow-md);
+  font-size: 19px;
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+.tool-fab:hover { border-color: var(--accent); }
 .tool-fab-menu {
   position: fixed;
   right: 22px;

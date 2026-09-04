@@ -470,7 +470,7 @@ try {
 </div>
 
 <!-- ============ 浮动按钮：章节工具 ⚙ + 看日志 📋 ============ -->
-<button v-if="previewChapters.length" class="log-fab tool-fab" title="章节工具"
+<button v-if="previewChapters.length" class="tool-fab" title="章节工具"
         @click.stop="toggleChapterTools()">⚙</button>
 <div v-if="chapterToolsOpen" class="pv-chapter-menu tool-fab-menu" @click.stop>
   <template v-for="ch in previewChapters" :key="ch.key">
@@ -480,7 +480,7 @@ try {
   <div class="pv-menu-sep"></div>
   <button class="pv-menu-item" @click="chapterToolsOpen = null; applyPageEdits()">💾 应用页面改动（落盘）</button>
 </div>
-<button v-if="logLines.length" class="log-fab" @click="logOpen = !logOpen">
+<button class="log-fab" title="运行日志" @click="logOpen = !logOpen">
   📋<span v-if="logNew && !logOpen" class="log-badge">{{ logNew }}</span>
 </button>
 <div v-if="logOpen" class="modal-mask" @click.self="logOpen = false">
@@ -488,6 +488,7 @@ try {
     <div class="modal-head">
       <div class="modal-title">运行日志</div>
       <button class="btn btn-ghost btn-sm" @click="clearLog">清空</button>
+      <button class="btn btn-ghost btn-sm" @click="logOpen = false">关闭</button>
     </div>
     <div class="modal-body">
       <div class="logbox tall" ref="logBox">
