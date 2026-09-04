@@ -872,6 +872,90 @@ html, body {
 .pv-menu-item.danger:hover { color: var(--danger); }
 .pv-menu-sep { height: 1px; margin: 4px 6px; background: var(--border); }
 
+/* staff 页生成面板 */
+.staff-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 350;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.45);
+}
+.staff-box {
+  display: flex;
+  flex-direction: column;
+  width: min(1060px, 94vw);
+  max-height: 90vh;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-md);
+}
+.staff-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+  font-weight: 600;
+}
+.staff-close {
+  border: 0;
+  background: transparent;
+  color: var(--text-3);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.staff-close:hover { color: var(--text); background: var(--surface-3); }
+.staff-body {
+  display: flex;
+  gap: 18px;
+  padding: 16px;
+  overflow: auto;
+}
+.staff-editor {
+  width: 340px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.staff-hint { font-size: 11px; color: var(--text-3); margin: 0; }
+.staff-row { display: flex; align-items: center; gap: 6px; }
+.staff-role { width: 96px; flex: none; }
+.staff-name { flex: 1; min-width: 0; }
+.staff-colon { color: var(--text-3); flex: none; }
+.staff-row-del {
+  flex: none;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  color: var(--text-3);
+  font-size: 13px;
+  padding: 2px 4px;
+}
+.staff-row-del:hover { color: var(--danger); }
+.staff-actions { display: flex; gap: 8px; margin-top: 6px; }
+.staff-preview {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+}
+.staff-canvas {
+  max-width: 100%;
+  max-height: 72vh;
+  height: auto;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface-3);
+}
+
 /* 各平台发布参数 */
 .pv-platforms {
   margin-top: 12px;

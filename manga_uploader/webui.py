@@ -586,6 +586,138 @@ def _sync_cover_refs(meta_dir: Path, rename_map: dict[str, str]) -> None:
         )
 
 
+# ---------------------------------------------------------------- Staff 页
+
+# staff 页固定文件名：重复生成覆盖同页不堆叠
+STAFF_PAGE_NAME = "staff.png"
+
+
+def _dump_meta(meta_file: Path, data: dict) -> None:
+    """按扩展名把 meta 写回磁盘（JSON/YAML，UTF-8，中文原样）。"""
+    if meta_file.suffix.lower() in (".yaml", ".yml"):
+        import yaml
+
+        meta_file.write_text(
+            yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8"
+        )
+    else:
+        meta_file.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+
+
+def _chapter_entry(data: dict, chapter_key: str) -> dict:
+    """在 manga.json 的 chapters 里定位章节条目，没有则创建（与 write_page_order 一致）。"""
+    entries = data.get("chapters")
+    if not isinstance(entries, list):
+        entries = []
+        data["chapters"] = entries
+    entry = next(
+        (
+            e
+            for e in entries
+            if isinstance(e, dict)
+            and str(e.get("folder") or e.get("key") or e.get("name")) == chapter_key
+        ),
+        None,
+    )
+    if entry is None:
+        entry = {"folder": chapter_key}
+        entries.append(entry)
+    return entry
+
+
+def read_staff_rows(comic_dir: str | Path, chapter_key: str) -> Optional[list[list[str]]]:
+    """读章节的 staff 名单（manga.json 章节条目 staff.rows，[[职位, 名字], …]）。无则 None。"""
+    root = Path(comic_dir)
+    meta_file = find_meta_file(root)
+    if meta_file is None:
+        return None
+    try:
+        data = read_meta(meta_file)
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    key = str(chapter_key or "root")
+    for entry in data.get("chapters") or []:
+        if not isinstance(entry, dict):
+            continue
+        if str(entry.get("folder") or entry.get("key") or entry.get("name")) != key:
+            continue
+        staff = entry.get("staff")
+        if isinstance(staff, dict) and isinstance(staff.get("rows"), list):
+            rows: list[list[str]] = []
+            for row in staff["rows"]:
+                if isinstance(row, (list, tuple)) and len(row) == 2:
+                    rows.append([str(row[0]), str(row[1])])
+            return rows
+        return None
+    return None
+
+
+def write_staff_rows(comic_dir: str | Path, chapter_key: str, rows: list) -> int:
+    """把 staff 名单写进 manga.json 章节条目的 staff.rows（空名单删字段）。返回行数。"""
+    clean: list[list[str]] = []
+    for row in rows or []:
+        if isinstance(row, (list, tuple)) and len(row) == 2:
+            role = str(row[0]).strip()
+            name = str(row[1]).strip()
+            if role or name:
+                clean.append([role, name])
+
+    root = Path(comic_dir)
+    meta_file = find_meta_file(root)
+    data = read_meta(meta_file) if meta_file else {}
+    if not isinstance(data, dict):
+        data = {}
+    entry = _chapter_entry(data, str(chapter_key or "root"))
+    if clean:
+        staff = entry.get("staff") if isinstance(entry.get("staff"), dict) else {}
+        staff["rows"] = clean
+        entry["staff"] = staff
+    else:
+        entry.pop("staff", None)
+
+    _dump_meta(meta_file or (root / "manga.json"), data)
+    return len(clean)
+
+
+def upsert_staff_page(comic_dir: str | Path, chapter_key: str, data: bytes) -> int:
+    """把前端渲染好的 staff 页 PNG 落成章节第 2 页（封面后），重复生成覆盖不堆叠。
+
+    固定文件名 staff.png：已存在则原子覆盖、重新插回 index 1；否则直接插入。
+    后端零渲染，只存文件 + 管页序。返回章节页数。
+    """
+    from io import BytesIO
+
+    from PIL import Image
+
+    try:
+        with Image.open(BytesIO(data)) as img:
+            img.load()
+    except Exception as exc:
+        raise ValueError(f"无法识别图片内容：{exc}") from exc
+
+    chapters = load_chapters(comic_dir, strict=False)
+    chapter = next((c for c in chapters if c.key == chapter_key), None)
+    if chapter is None:
+        raise ValueError(f"找不到章节：{chapter_key}")
+    folder = chapter.source_dir
+
+    tmp = folder / f".mu_tmp_{time.time_ns()}.png"
+    tmp.write_bytes(data)
+    os.replace(tmp, folder / STAFF_PAGE_NAME)
+
+    current = [p.name for p in chapter.pages]
+    if STAFF_PAGE_NAME in current:
+        current.remove(STAFF_PAGE_NAME)
+    pos = 1 if current else 0  # 封面（第 1 页）之后
+    current.insert(pos, STAFF_PAGE_NAME)
+    write_page_order(comic_dir, chapter_key, current)
+    return len(current)
+
+
 # ------------------------------------------------------------ 配置组装/保存
 
 def build_app(payload: dict[str, Any]) -> AppConfig:

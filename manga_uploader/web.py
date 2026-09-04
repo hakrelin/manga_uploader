@@ -51,11 +51,14 @@ from .webui import (
     looks_like_full_comic,
     rename_numeric,
     replace_page,
+    read_staff_rows,
     save_config,
     stage_images,
     unwrap_single_dir,
+    upsert_staff_page,
     write_page_order,
     write_quick_meta,
+    write_staff_rows,
     bilibili_qr_new,
     bilibili_qr_poll,
 )
@@ -570,6 +573,8 @@ class WebHandler(BaseHTTPRequestHandler):
             self._pick_dir((parse_qs(parsed.query).get("kind") or ["dir"])[0])
         elif path == "/api/page":
             self._api_page(parse_qs(parsed.query))
+        elif path == "/api/staff":
+            self._api_staff_get(parse_qs(parsed.query))
         else:
             self._json(404, {"error": f"未知接口：{path}"})
 
@@ -802,6 +807,10 @@ class WebHandler(BaseHTTPRequestHandler):
             self._api_reorder()
         elif path == "/api/rename":
             self._api_rename()
+        elif path == "/api/staff":
+            self._api_staff_save()
+        elif path == "/api/staff/render":
+            self._api_staff_render()
         else:
             self._json(404, {"error": f"未知接口：{path}"})
 
@@ -1235,6 +1244,90 @@ class WebHandler(BaseHTTPRequestHandler):
             return
         self.server.state.ring.append(
             "INFO", f"已重命名为 001…：{Path(comic_dir).name}（{chapter_key}，{count} 页）"
+        )
+        self._json(200, {"ok": True, "pages": count})
+
+    # ---------- Staff 页（后端零渲染：只管名单存取 + 成品 PNG 落页） ----------
+
+    def _staff_target(self) -> tuple[Optional[str], Optional[str]]:
+        data = self._read_json()
+        comic_dir = str(data.get("dir") or "").strip()
+        chapter_key = str(data.get("chapter") or "").strip() or "root"
+        return comic_dir or None, chapter_key
+
+    def _api_staff_get(self, query: dict[str, list[str]]) -> None:
+        """读章节的 staff 名单（无保存过则返回 None，前端用布局默认值）。"""
+        comic_dir = (query.get("dir") or [""])[0].strip()
+        chapter_key = (query.get("chapter") or [""])[0].strip() or "root"
+        if not comic_dir:
+            self._json(400, {"error": "缺少漫画目录"})
+            return
+        try:
+            rows = read_staff_rows(comic_dir, chapter_key)
+        except Exception as exc:
+            self._json(500, {"error": f"读取 staff 名单失败：{exc}"})
+            return
+        self._json(200, {"ok": True, "rows": rows})
+
+    def _api_staff_save(self) -> None:
+        """保存 staff 名单到 manga.json 章节条目 staff.rows。"""
+        data = self._read_json()
+        comic_dir = str(data.get("dir") or "").strip()
+        chapter_key = str(data.get("chapter") or "").strip() or "root"
+        rows = data.get("rows")
+        if not comic_dir:
+            self._json(400, {"error": "缺少漫画目录"})
+            return
+        if not isinstance(rows, list):
+            self._json(400, {"error": "rows 必须是 [[职位, 名字], …]"})
+            return
+        try:
+            count = write_staff_rows(comic_dir, chapter_key, rows)
+        except Exception as exc:
+            self._json(500, {"error": f"保存 staff 名单失败：{exc}"})
+            return
+        self.server.state.ring.append(
+            "INFO", f"已保存 staff 名单：{Path(comic_dir).name}（{chapter_key}，{count} 行）"
+        )
+        self._json(200, {"ok": True, "rows": count})
+
+    def _api_staff_render(self) -> None:
+        """接收前端 canvas 渲染好的 staff 页 PNG，落成第 2 页（重复生成覆盖）。"""
+        content_type = self.headers.get("Content-Type", "")
+        boundary_match = re.search(r"boundary=(?:\"([^\"]+)\"|([^;]+))", content_type)
+        if not boundary_match:
+            self._json(400, {"error": "缺少 multipart boundary"})
+            return
+        boundary = boundary_match.group(1) or boundary_match.group(2)
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = 0
+        if length <= 0 or length > 512 * 1024 * 1024:
+            self._json(400, {"error": "请求体大小异常"})
+            return
+        body = self.rfile.read(length)
+        try:
+            fields, files = _split_multipart(body, boundary)
+        except ValueError as exc:
+            self._json(400, {"error": f"解析上传失败：{exc}"})
+            return
+        comic_dir = str(fields.get("dir") or "").strip()
+        chapter_key = str(fields.get("chapter") or "").strip() or "root"
+        if not comic_dir:
+            self._json(400, {"error": "缺少漫画目录"})
+            return
+        if not files:
+            self._json(400, {"error": "没有收到 staff 页图片"})
+            return
+        _name, data = files[0]
+        try:
+            count = upsert_staff_page(comic_dir, chapter_key, data)
+        except Exception as exc:
+            self._json(500, {"error": f"staff 页落页失败：{exc}"})
+            return
+        self.server.state.ring.append(
+            "INFO", f"已生成 staff 页：{Path(comic_dir).name}（{chapter_key}，共 {count} 页）"
         )
         self._json(200, {"ok": True, "pages": count})
 

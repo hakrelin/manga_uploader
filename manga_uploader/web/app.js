@@ -186,6 +186,15 @@ createApp({
     const pageMenu = reactive({
       visible: false, x: 0, y: 0, ch: null, index: null, name: null,
     });
+    // staff 页生成面板（前端 canvas 渲染，预览==成品同源）
+    const staffPanel = reactive({ open: false, ch: null });
+    const staffRows = ref([]); // [[职位, 名字], …]
+    const staffCanvas = ref(null);
+    const staffBusy = ref(false);
+    let staffLayout = null; // staff_layout.json 缓存
+    let staffBaseImg = null; // 固定半透明底图
+    const staffFonts = {}; // 已加载的 webfont
+    const staffBgCache = {}; // 章节背景页 Image 缓存
 
     const logLines = ref([]);
     const logBox = ref(null);
@@ -1003,6 +1012,170 @@ createApp({
       });
     }
 
+    // ---------------- staff 页（前端 canvas 渲染：预览==成品同源） ----------------
+
+    async function loadStaffLayout() {
+      if (staffLayout) return staffLayout;
+      const resp = await fetch("/staff_layout.json");
+      if (!resp.ok) throw new Error("staff_layout.json 读取失败");
+      staffLayout = await resp.json();
+      return staffLayout;
+    }
+
+    async function loadStaffFont(sec) {
+      if (staffFonts[sec.font]) return;
+      const face = new FontFace(sec.font, `url(${sec.font_file})`);
+      await face.load();
+      document.fonts.add(face);
+      staffFonts[sec.font] = true;
+    }
+
+    async function loadStaffBase() {
+      if (staffBaseImg) return staffBaseImg;
+      const layout = await loadStaffLayout();
+      staffBaseImg = await new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = () => reject(new Error("staff 底图加载失败"));
+        img.src = layout.base;
+      });
+      return staffBaseImg;
+    }
+
+    // 背景页：第 2 页（index 1），只有 1 页时退回封面
+    function staffBgUrl(ch) {
+      const index = (ch.page_count || 0) >= 2 ? 1 : 0;
+      return pageUrl(ch.key, index);
+    }
+
+    async function loadStaffBg(ch) {
+      const url = staffBgUrl(ch);
+      const hit = staffBgCache[ch.key];
+      if (hit && hit.url === url) return hit.img;
+      const img = await new Promise((resolve, reject) => {
+        const im = new Image();
+        im.onload = () => resolve(im);
+        im.onerror = () => reject(new Error("背景页加载失败"));
+        im.src = url;
+      });
+      staffBgCache[ch.key] = { url, img };
+      return img;
+    }
+
+    function drawStaff(canvas, layout, bgImg, baseImg) {
+      const ctx = canvas.getContext("2d");
+      const W = bgImg.naturalWidth, H = bgImg.naturalHeight;
+      canvas.width = W;
+      canvas.height = H;
+      ctx.clearRect(0, 0, W, H);
+      ctx.drawImage(bgImg, 0, 0); // 背景=第 2 页整页
+      ctx.drawImage(baseImg, 0, 0, W, H); // 固定底图拉伸铺满（整页设计稿）
+      const scale = W / layout.design.w;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      const rows = staffRows.value
+        .map((r) => [(r[0] || "").trim(), (r[1] || "").trim()])
+        .filter((r) => r[0] || r[1]);
+      ctx.fillStyle = layout.rows.color;
+      ctx.font = `${layout.rows.size_px * scale}px "${layout.rows.font}"`;
+      rows.forEach((r, i) => {
+        const y = (layout.rows.first_center_y + i * layout.rows.line_height) * scale;
+        ctx.fillText(r.join(layout.rows.join), layout.center_x * scale, y);
+      });
+      // 固定声明行：位置跟着行数走（加行自动下移）
+      const cfg = layout.declare;
+      ctx.fillStyle = cfg.color;
+      ctx.font = `${cfg.size_px * scale}px "${cfg.font}"`;
+      const firstY = layout.rows.first_center_y
+        + (rows.length - 1) * layout.rows.line_height + cfg.gap_after_rows;
+      cfg.lines.forEach((line, i) => {
+        ctx.fillText(line, layout.center_x * scale, (firstY + i * cfg.line_height) * scale);
+      });
+    }
+
+    async function renderStaffPreview() {
+      if (!staffPanel.open) return;
+      const canvas = staffCanvas.value;
+      const ch = staffPanel.ch;
+      if (!canvas || !ch) return;
+      try {
+        const layout = await loadStaffLayout();
+        await Promise.all([loadStaffFont(layout.rows), loadStaffFont(layout.declare)]);
+        const base = await loadStaffBase();
+        const bg = await loadStaffBg(ch);
+        drawStaff(canvas, layout, bg, base);
+      } catch (e) {
+        toastMsg("staff 预览失败：" + e.message);
+      }
+    }
+
+    async function openStaff(ch) {
+      staffPanel.ch = ch;
+      staffPanel.open = true;
+      try {
+        const layout = await loadStaffLayout();
+        let saved = null;
+        try {
+          const r = await api("/api/staff?dir=" + encodeURIComponent(comicDir.value.trim())
+            + "&chapter=" + encodeURIComponent(ch.key));
+          saved = r.rows && r.rows.length ? r.rows : null;
+        } catch (e) { /* 没保存过名单，用布局默认 */ }
+        const def = layout.default_rows || [];
+        staffRows.value = (saved || def).map((row) => [row[0] || "", row[1] || ""]);
+        await renderStaffPreview();
+      } catch (e) {
+        toastMsg("staff 面板打开失败：" + e.message);
+      }
+    }
+
+    function closeStaff() {
+      staffPanel.open = false;
+      staffPanel.ch = null;
+    }
+
+    async function saveStaffRows() {
+      const ch = staffPanel.ch;
+      if (!ch) return;
+      staffBusy.value = true;
+      try {
+        const r = await api("/api/staff", {
+          method: "POST", json: true,
+          body: JSON.stringify({ dir: comicDir.value.trim(), chapter: ch.key, rows: staffRows.value }),
+        });
+        toastMsg(`已保存名单（${r.rows} 行）`);
+      } catch (e) {
+        toastMsg("保存名单失败：" + e.message);
+      } finally {
+        staffBusy.value = false;
+      }
+    }
+
+    async function renderStaffPage() {
+      const canvas = staffCanvas.value;
+      const ch = staffPanel.ch;
+      if (!canvas || !ch) return;
+      staffBusy.value = true;
+      try {
+        await api("/api/staff", { // 名单随生成一并落盘
+          method: "POST", json: true,
+          body: JSON.stringify({ dir: comicDir.value.trim(), chapter: ch.key, rows: staffRows.value }),
+        });
+        const blob = await new Promise((resolve, reject) =>
+          canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("导出失败"))), "image/png"));
+        const fd = new FormData();
+        fd.append("dir", comicDir.value.trim());
+        fd.append("chapter", ch.key);
+        fd.append("file", blob, "staff.png");
+        const r = await api("/api/staff/render", { method: "POST", body: fd });
+        toastMsg(`已生成 staff 页（第 2 页，共 ${r.pages} 页）`);
+        await loadComic();
+      } catch (e) {
+        toastMsg("staff 生成失败：" + e.message);
+      } finally {
+        staffBusy.value = false;
+      }
+    }
+
     // ---------------- Modal 确定 ----------------
 
     async function modalOk() {
@@ -1103,6 +1276,8 @@ createApp({
       pageMenu, openPageMenu, closePageMenu,
       menuReplace, menuDelete, menuMoveToFront, menuMoveToLast, menuMoveUp, menuMoveDown, menuMoveToN,
       startRenameNumeric,
+      staffPanel, staffRows, staffCanvas, staffBusy,
+      openStaff, closeStaff, renderStaffPreview, saveStaffRows, renderStaffPage,
       resetPick, saveMeta,
       logLines, logBox, logOpen, logNew, clearLog, toast, modal, lanAddr,
       theme, themeLabel, themeIcon, cycleTheme,

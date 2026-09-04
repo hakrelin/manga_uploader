@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "_comment": "staff 页布局。坐标均为设计像素（design.w × design.h 渲染到目标页时按 targetW/design.w 等比缩放，底图整体拉伸铺满）。行中心 y 直接按 PSD 光栅实测。",
+  "design": { "w": 2741, "h": 3833 },
+  "base": "/assets/staff_base.png",
+  "fit": "stretch",
+  "center_x": 1369.5,
+  "rows": {
+    "font": "ZCOOL QingKe HuangYou",
+    "font_file": "/assets/fonts/ZCOOLQingKeHuangYou-Regular.ttf",
+    "size_px": 134.6,
+    "line_height": 161.3,
+    "first_center_y": 1930,
+    "color": "#ffffff",
+    "join": "："
+  },
+  "declare": {
+    "font": "ZCOOL XiaoWei",
+    "font_file": "/assets/fonts/ZCOOLXiaoWei-Regular.ttf",
+    "size_px": 100.5,
+    "line_height": 120.5,
+    "gap_after_rows": 181,
+    "color": "#ffffff",
+    "lines": ["本作品由茶与金平糖", "汉化组制作", "仅供学习交流", "版权归原作者所有", "转载请保留此页"]
+  },
+  "default_rows": [["图源", ""], ["修图", ""], ["翻译", ""], ["嵌字", ""], ["校对", ""]]
+}
