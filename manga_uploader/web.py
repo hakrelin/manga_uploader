@@ -1343,10 +1343,34 @@ def _materialize_edits(
         folder = chapter.source_dir
         by_name = {p.name: p for p in chapter.pages}
         items = edit.get("pages") or []
+        # 最终清单里会出现哪些名字及出现次数（keep/set 名字 + rename 新名）。
+        # rename 目标与磁盘残留旧页同名是允许的：那个旧页会被差集删除或覆盖。
+        # 真正冲突的是“目标名同时被其它清单条目占用”（同一名字出现两次）。
+        name_use: dict[str, int] = {}
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            if "keep" in it:
+                name = str(it["keep"])
+                name_use[name] = name_use.get(name, 0) + 1
+            elif "rename" in it:
+                name = str(it["rename"])
+                name_use[name] = name_use.get(name, 0) + 1
+            elif "set" in it:
+                name = str(it["set"])
+                name_use[name] = name_use.get(name, 0) + 1
+        final_names = set(name_use)
         moving_away = {
             str(it.get("from"))
             for it in items if isinstance(it, dict) and "rename" in it
         }
+        # 阶段一前置校验：最终页名出现两次以上（set/rename/keep 指向同名）
+        # 必须在改任何文件之前拦截——否则阶段二写盘后才报错会留下损坏状态。
+        dup_names = [name for name, count in name_use.items() if count > 1]
+        if dup_names:
+            raise ValueError(
+                f"最终页名重复：{', '.join(sorted(dup_names))}（章节 {chapter_key}）"
+            )
 
         # ---- 阶段一：全量校验 + 暂存（失败即整体回滚，磁盘零损伤） ----
         staged: list[tuple[Path, str]] = []  # (暂存文件, 最终名)
@@ -1365,12 +1389,6 @@ def _materialize_edits(
                     page = by_name.get(old_name)
                     if page is None:
                         raise ValueError(f"页面不存在：{old_name}（章节 {chapter_key}）")
-                    if (
-                        new_name in by_name
-                        and new_name != old_name
-                        and new_name not in moving_away
-                    ):
-                        raise ValueError(f"目标文件名已存在：{new_name}（章节 {chapter_key}）")
                     tmp = folder / f".mu_tmp_{time.time_ns()}_{len(staged)}{page.suffix}"
                     page.replace(tmp)
                     staged_renames.append((old_name, tmp))
@@ -1398,6 +1416,22 @@ def _materialize_edits(
             raise
 
         # ---- 阶段二：统一提交（同目录 replace/unlink，实际不会失败） ----
+        # rename/set 的目标可能与“最终清单之外”的磁盘旧页同名
+        # （例如删除第 2 页后把第 3 页重命名为 002）。先清掉这些差集旧页，
+        # 避免 replace 覆盖后被 unlink 误删新内容。rename 源已在阶段一
+        # 移入暂存目录，此处不会误删。
+        final_wanted = {
+            str(it["keep"]) if "keep" in it else
+            str(it["rename"]) if "rename" in it else
+            str(it["set"]) if "set" in it else ""
+            for it in items if isinstance(it, dict)
+        }
+        for name, page in by_name.items():
+            if name not in final_wanted and name not in moving_away:
+                try:
+                    page.unlink()
+                except FileNotFoundError:
+                    pass
         final: list[Path] = []
         consumed = {old for old, _ in staged_renames}
         for tmp, new_name in staged:
@@ -1410,7 +1444,10 @@ def _materialize_edits(
             raise ValueError(f"章节 {chapter_key} 的最终页名有重复")
         for name, page in by_name.items():
             if name not in final_names and name not in consumed:
-                page.unlink()
+                try:
+                    page.unlink()
+                except FileNotFoundError:
+                    pass
         if final:
             write_page_order(comic_dir, str(chapter_key), [p.name for p in final])
 

@@ -769,12 +769,15 @@ createApp({
     function pageUrl(ch, pgName, index) {
       // 页图 URL 按文件名走（服务端 name 参数）：排序=同一文件换位置，URL 不变
       // 缓存秒中；插入/替换/重命名产生新文件名 → 天然新 URL，不存在“吃旧图”。
-      // 本地待发布的新图（blob）直接用对象 URL，预览即上传内容
+      // 本地待发布的新图（blob）直接用对象 URL，预览即上传内容；
+      // 纯重命名（blob 为空但有 orig 磁盘文件）在落盘前按磁盘原名取图，
+      // 否则新名 404，预览破图。
       const m = ch && ch._pageMeta ? ch._pageMeta[pgName] : null;
       if (m && m.blob) {
         if (!m.url) m.url = URL.createObjectURL(m.blob);
         return m.url;
       }
+      if (m && m.orig && m.orig !== pgName) pgName = m.orig;
       const q = "/api/page?dir=" + encodeURIComponent(comicDir.value.trim()) +
         "&chapter=" + encodeURIComponent(ch.key) + "&max=0&";
       if (pgName) return q + "name=" + encodeURIComponent(pgName);
@@ -1313,6 +1316,10 @@ createApp({
         const fd = new FormData();
         fd.append("dir", comicDir.value.trim());
         fd.append("chapter", ch.key);
+        // 无待发布改动时把本地页序带给后端：staff 页插回与所见一致的位置。
+        // 有 blob/重命名等改动时磁盘集合与前端不一致，后端会拒绝页序校验，
+        // 提示先点「应用页面改动」落盘（生成 staff 本身也需要基于真实文件）。
+        if (clean) fd.append("pages", JSON.stringify(ch.pages || []));
         fd.append("file", blob, "staff.png");
         const r = await api("/api/staff/render", { method: "POST", body: fd });
         toastMsg(`已生成 staff 页（第 2 页，共 ${r.pages} 页）`);
