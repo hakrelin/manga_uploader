@@ -151,7 +151,17 @@ async function api(path, opts = {}) {
   const headers = Object.assign({}, opts.headers || {});
   if (opts.json) headers["Content-Type"] = "application/json";
   headers["X-CSRF-Token"] = CSRF;
-  const resp = await fetch(path, Object.assign({}, opts, { headers }));
+  let resp;
+  try {
+    resp = await fetch(path, Object.assign({}, opts, { headers }));
+  } catch (e) {
+    // fetch 网络层失败（连不上/服务重启/端口变了）：给可直接行动的中文提示
+    throw new Error(
+      "无法连接本地服务。请确认黑色启动窗口里的网址"
+      + "（形如 http://127.0.0.1:8971/）并用该地址打开页面，"
+      + "或重新运行 start.bat 后刷新重试"
+    );
+  }
   if (!resp.ok) {
     let msg = "HTTP " + resp.status;
     try { const j = await resp.json(); if (j && j.error) msg = j.error; } catch (e) {}

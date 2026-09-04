@@ -4,6 +4,9 @@ param()
 
 . (Join-Path $PSScriptRoot "_common.ps1")
 
+# 无论从哪里双击启动，都切到项目根目录运行（配置文件/输出目录相对路径才稳定）
+Set-Location -LiteralPath $ProjRoot
+
 $venvPy = Ensure-PyEnv
 
 Write-Host "[启动] 漫画发布器 GUI…" -ForegroundColor Green

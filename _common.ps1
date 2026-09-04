@@ -29,6 +29,19 @@ function Test-Env {
     return ($LASTEXITCODE -eq 0)
 }
 
+function Test-VenvLocal {
+    # .venv 是否是在本机/本目录创建的：venv 会记录创建时 Python 的绝对路径，
+    # 直接把别人的 .venv 拷过来时该路径不存在，必须重建
+    $cfg = Join-Path $ProjRoot ".venv\pyvenv.cfg"
+    if (-not (Test-Path $cfg)) { return $true }
+    $homeLine = Select-String -Path $cfg -Pattern '^home\s*=\s*(.+)$' | Select-Object -First 1
+    if ($homeLine -and $homeLine.Matches.Count -gt 0) {
+        $homePath = $homeLine.Matches[0].Groups[1].Value.Trim()
+        if ($homePath -and -not (Test-Path $homePath)) { return $false }
+    }
+    return $true
+}
+
 # 读取 Windows 系统代理（开了代理时 curl 直连镜像会失败，需要显式走代理）
 function Get-SystemProxy {
     try {
@@ -46,11 +59,26 @@ function Ensure-PyEnv {
     # 1) .venv 已就绪 → 直接用
     if (Test-Path $venvPy) {
         if (Test-Env) { return $venvPy }
-        Write-Host "[提示] .venv 不可用（版本不对或依赖缺失），重建…"
+        if (-not (Test-VenvLocal)) {
+            Write-Host "[提示] 检测到 .venv 来自其他机器（Python 路径在本机不存在），自动重建（首次约需下载 110MB 绿色 Python，只此一次）…" -ForegroundColor Yellow
+        } else {
+            Write-Host "[提示] .venv 不可用（版本不对或依赖缺失），重建…"
+        }
         Remove-Item -Recurse -Force (Join-Path $ProjRoot ".venv")
     }
 
     # 2) 绿色 Python 3.12（仅在缺失时下载一次，约 110MB）
+    Write-Host ""
+    if (Test-Path $greenPy) {
+        Write-Host "[初始化] 第 1/3 步：使用已有的绿色 Python（.tools\python\python.exe）" -ForegroundColor Cyan
+    } else {
+        Write-Host "[初始化] 第 1/3 步：准备绿色 Python 3.12（本机没有 .tools 和可用的 .venv，约 110MB，只下载一次）…" -ForegroundColor Cyan
+        # 网络预检：给出更明确的失败提示（镜像/代理问题最常见）
+        & curl.exe -sI --connect-timeout 8 --max-time 10 "https://registry.npmmirror.com" *> $null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "[提示] 连不上 npmmirror（下载源）。若开着代理但下载仍失败，可检查代理端口；程序会继续尝试 GitHub 源。" -ForegroundColor Yellow
+        }
+    }
     if (-not (Test-Path $greenPy)) {
         New-Item -ItemType Directory -Force -Path $toolsDir | Out-Null
         $pyUrl = "cpython-$PyVer%2B$PyTag-x86_64-pc-windows-msvc-install_only.tar.gz"
@@ -88,14 +116,16 @@ function Ensure-PyEnv {
     }
 
     # 3) 建 .venv
-    Write-Host "[初始化] 创建虚拟环境 .venv（仅首次）…"
+    Write-Host ""
+    Write-Host "[初始化] 第 2/3 步：创建虚拟环境 .venv（仅首次）…" -ForegroundColor Cyan
     & $greenPy -m venv (Join-Path $ProjRoot ".venv")
     if (-not (Test-Path $venvPy)) {
         Fail-Custom "[错误] .venv 创建失败，请把上面的输出发给开发者"
     }
 
     # 4) 依赖（版本由 requirements.txt 控制）
-    Write-Host "[初始化] 安装依赖（清华镜像）…"
+    Write-Host ""
+    Write-Host "[初始化] 第 3/3 步：安装依赖（requirements.txt，清华镜像优先）…" -ForegroundColor Cyan
     & $venvPy -m pip install -i $PipMirror --timeout 60 -r (Join-Path $ProjRoot "requirements.txt")
     if ($LASTEXITCODE -ne 0) {
         Write-Host "[提示] 清华镜像拉取失败，改用官方源重试…"
@@ -104,5 +134,7 @@ function Ensure-PyEnv {
     if (-not (Test-Env)) {
         Fail-Custom "[错误] 依赖安装失败，请把上面的输出发给开发者"
     }
+    Write-Host ""
+    Write-Host "[就绪] 环境初始化完成，后续启动不再重复下载。" -ForegroundColor Green
     return $venvPy
 }

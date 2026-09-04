@@ -821,10 +821,19 @@ class WebHandler(BaseHTTPRequestHandler):
 
     def _config_path(self) -> Path:
         explicit = self.server.state.config_path
-        try:
-            return load_config(explicit).path or (Path.cwd() / "config.yaml")
-        except ConfigError:
-            return Path.cwd() / "config.yaml"
+        if explicit:
+            try:
+                return load_config(explicit).path or Path(explicit)
+            except ConfigError:
+                return Path(explicit)
+        # 未指定路径时，按「启动目录 → 项目根目录」找已有配置；
+        # 都找不到则落在启动目录，由 save_config 新建
+        for root in (Path.cwd(), Path(__file__).resolve().parent.parent):
+            for name in ("config.yaml", "config.yml", "config.json"):
+                candidate = root / name
+                if candidate.is_file():
+                    return candidate
+        return Path.cwd() / "config.yaml"
 
     def _api_config(self) -> None:
         data = self._read_json()
@@ -835,6 +844,10 @@ class WebHandler(BaseHTTPRequestHandler):
         try:
             path = save_config(self._config_path(), payload)
         except Exception as exc:
+            self.server.state.ring.append(
+                "ERROR",
+                f"保存配置失败：{exc}",
+            )
             self._json(500, {"error": f"保存失败：{exc}"})
             return
         self.server.state.ring.append("INFO", f"已保存配置：{path}")

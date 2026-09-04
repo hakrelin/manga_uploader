@@ -16,7 +16,13 @@ import zipfile
 from pathlib import Path
 from typing import Any, Optional
 
-from .config import CommonConfig, PlatformConfig, AppConfig, DEFAULT_SETTINGS
+from .config import (
+    AppConfig,
+    CommonConfig,
+    ConfigError,
+    DEFAULT_SETTINGS,
+    PlatformConfig,
+)
 from .comic import META_FILES, find_meta_file, load_chapters, read_meta
 from .publishers.ehentai import DEFAULT_FIELD_ROWS
 from .publishers.zaimanhua import CATE_LABELS
@@ -665,7 +671,12 @@ def save_config(config_path: str | Path, payload: dict[str, Any]) -> Path:
 
     仅覆盖 common 与各平台 enabled/cookies/settings；文件里其它内容原样保留。
     """
-    import yaml
+    try:
+        import yaml
+    except ImportError as exc:
+        raise ConfigError(
+            "缺少 PyYAML 依赖：请重新运行 start-web.ps1（或 pip install pyyaml）"
+        ) from exc
 
     path = Path(config_path)
     raw: dict[str, Any] = {}
@@ -697,10 +708,24 @@ def save_config(config_path: str | Path, payload: dict[str, Any]) -> Path:
                 "settings": item.get("settings") if isinstance(item.get("settings"), dict) else {},
             }
 
-    path.write_text(
-        yaml.safe_dump(raw, allow_unicode=True, sort_keys=False),
-        encoding="utf-8",
-    )
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # 先写同目录临时文件再原子替换：避免写入中断把 config 写坏，
+        # 同时能拿到更明确的权限/占用错误
+        tmp = path.with_name(
+            f".{path.name}.mu-tmp-{os.getpid()}-{time.time_ns()}"
+        )
+        tmp.write_text(
+            yaml.safe_dump(raw, allow_unicode=True, sort_keys=False),
+            encoding="utf-8",
+        )
+        os.replace(tmp, path)
+    except OSError as exc:
+        raise ConfigError(
+            f"无法写入配置文件 {path}：{exc}。"
+            "请把程序放到可写目录（不要放在 Program Files 等只读位置），"
+            "或检查该文件是否被其他程序占用"
+        ) from exc
     return path
 
 

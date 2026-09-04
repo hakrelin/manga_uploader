@@ -1,3 +1,4 @@
 @echo off
-rem 漫画发布器 · 图形界面（tkinter GUI）一键启动（双击入口，转发给 start-gui.ps1）
+rem Manga uploader - legacy tkinter GUI launcher (double-click entry, forwards to start-gui.ps1)
+chcp 65001 >nul
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0start-gui.ps1"
