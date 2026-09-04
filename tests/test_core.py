@@ -97,6 +97,21 @@ class TestConfig(unittest.TestCase):
         bilibili = PlatformConfig(name="bilibili", cookies={"SESSDATA": "s", "bili_jct": "c"})
         self.assertEqual(missing_cookies(bilibili), [])
 
+    def test_book_to_compose_series_only_no_crash(self):
+        """回归：系列预填但日文标题/作者/社团/展会全空时，
+        ehentai_title_jp 的 parts 为空，parts[-1] 曾 IndexError（/api/compose 500）。"""
+        book = {
+            "title": "测试本",
+            "series": "东方",
+            "series_jp": "東方Project",
+            "series_en": "Touhou Project",
+            "language": "Chinese",
+        }
+        out = _book_to_compose("examples/my_comic", book)
+        eh = out["platforms_content"]["ehentai"]
+        self.assertIn("(東方Project)", eh["gname_jp"])
+        self.assertIn("(Touhou Project)", eh["gname_en"])
+
     def test_book_to_compose_local_romaji_and_default_language(self):
         book = {
             "title": "魔理沙啊愿你安息",

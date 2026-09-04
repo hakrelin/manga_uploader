@@ -646,7 +646,11 @@ def ehentai_title_en(chapter: Chapter) -> str:
     if main:
         parts.append(main)
     if series:
-        parts[-1] = f"{parts[-1]} ({series})"
+        # parts 可能为空（标题/作者/社团/展会全留空但系列已预填）——系列单独成段
+        if parts:
+            parts[-1] = f"{parts[-1]} ({series})"
+        else:
+            parts.append(f"({series})")
     language = _str(f["language"]).lower()
     if "chinese" in language or "中文" in language or "中国" in language or f["group"]:
         parts.append("[Chinese]")
@@ -678,7 +682,11 @@ def ehentai_title_jp(chapter: Chapter) -> str:
     if title_jp:
         parts.append(title_jp)
     if series_jp:
-        parts[-1] = f"{parts[-1]} ({series_jp})"
+        # parts 可能为空（日文标题/作者/社团/展会全留空但系列已预填）——系列单独成段
+        if parts:
+            parts[-1] = f"{parts[-1]} ({series_jp})"
+        else:
+            parts.append(f"({series_jp})")
     if f["group"] or "chinese" in _str(f["language"]).lower() or "中文" in _str(f["language"]):
         parts.append("[中国翻訳]")
     if f["group"]:
