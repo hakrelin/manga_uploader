@@ -191,6 +191,7 @@ createApp({
     const staffRows = ref([]); // [[职位, 名字], …]
     const staffCanvas = ref(null);
     const staffBusy = ref(false);
+    const staffFontStatus = ref(""); // 面板里显示实际选用的字体与来源，排查“变雅黑”用
     const staffExportOpen = ref(false); // 确定键 ▾ 下拉（导出 PNG/JPG）
     const staffBgIndex = ref(1); // 背景页 0-based：默认第 2 页（1），面板可改任意页
     const staffBgPage = computed({
@@ -1062,11 +1063,13 @@ createApp({
         await face.load();
         document.fonts.add(face);
         sec.__family = aliases[0];
+        sec.__source = "local";
         return sec.__family;
       } catch (e) { /* 本地没放字体文件 → 探测系统 */ }
       for (const fam of aliases) {
         if (staffFontAvailable(fam)) {
           sec.__family = fam;
+          sec.__source = "system";
           return fam;
         }
       }
@@ -1074,7 +1077,13 @@ createApp({
       await face.load();
       document.fonts.add(face);
       sec.__family = sec.fallback_font;
+      sec.__source = "fallback";
       return sec.__family;
+    }
+
+    function staffFontSourceTag(sec) {
+      return sec.__source === "local" ? "本地字体文件"
+        : sec.__source === "system" ? "系统字体" : "开源占位⚠（没找到海宝体）";
     }
 
     async function loadStaffBase() {
@@ -1153,6 +1162,7 @@ createApp({
       try {
         const layout = await loadStaffLayout();
         const rowsFamily = await ensureStaffFont(layout.rows);
+        staffFontStatus.value = `字体：${rowsFamily}（${staffFontSourceTag(layout.rows)}）`;
         const base = await loadStaffBase();
         const bg = await loadStaffBg(ch);
         drawStaff(canvas, layout, bg, base, rowsFamily);
@@ -1371,7 +1381,7 @@ createApp({
       menuReplace, menuDelete, menuMoveToFront, menuMoveToLast, menuMoveUp, menuMoveDown, menuMoveToN,
       startRenameNumeric,
       staffPanel, staffRows, staffCanvas, staffBusy, staffExportOpen,
-      staffBgPage, staffBgStep, onStaffBgChange,
+      staffBgPage, staffBgStep, onStaffBgChange, staffFontStatus,
       chapterToolsOpen, toggleChapterTools,
       openStaff, closeStaff, renderStaffPreview, saveStaffRows, renderStaffPage, exportStaffImage,
       resetPick, saveMeta,

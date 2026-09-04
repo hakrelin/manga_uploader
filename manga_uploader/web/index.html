@@ -610,6 +610,7 @@ try {
               <button class="staff-step" title="下一页" @click="staffBgStep(1)">▼</button>
             </span>
           </div>
+          <p class="staff-hint staff-font-status">{{ staffFontStatus }}</p>
           <div v-for="(row, i) in staffRows" :key="i" class="staff-row">
             <input v-model="row[0]" class="input staff-role" placeholder="职位" @input="renderStaffPreview">
             <span class="staff-colon">：</span>
