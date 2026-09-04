@@ -235,6 +235,7 @@ createApp({
     const toast = ref("");
 
     const modal = ref(null);
+    const helpOpen = ref(false);
     let composeTimer = null;
     let composing = false;
 
@@ -1596,7 +1597,7 @@ createApp({
       openStaff, closeStaff, renderStaffPreview, saveStaffRows, renderStaffPage, exportStaffImage,
       fillStaffTemplate,
       resetPick, saveMeta,
-      logLines, logBox, logOpen, logNew, clearLog, toast, modal, lanAddr,
+      logLines, logBox, logOpen, logNew, clearLog, toast, modal, helpOpen, lanAddr,
       theme, themeLabel, themeIcon, cycleTheme,
       aiForm, aiStatus, aiSave, aiTest, dictOpen,
       PLAT_LABELS, pageUrl, META_EXTRA, META_EXTRA_EXTRA, PLATFORM_CONTENT_SCHEMA, platformContent,

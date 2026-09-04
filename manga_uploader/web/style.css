@@ -1254,6 +1254,30 @@ html, body {
   border-top: 1px solid var(--border);
 }
 
+.help-modal { max-width: 860px; }
+.help-body {
+  font-size: 13px;
+  line-height: 1.85;
+}
+.help-body h3 {
+  margin: 4px 0 2px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+  font-size: 14px;
+}
+.help-body ul,
+.help-body ol {
+  margin: 4px 0 8px;
+  padding-left: 22px;
+}
+.help-body li { margin: 2px 0; }
+.help-body code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--surface-3);
+  font-size: 12px;
+}
+
 .qr-box {
   display: flex;
   align-items: center;

@@ -32,6 +32,9 @@ try {
       </button>
     </nav>
     <div class="sidebar-foot">
+      <button class="btn btn-ghost btn-sm theme-btn" @click="helpOpen = true" title="打开使用说明">
+        <span class="theme-ico">❓</span>使用说明
+      </button>
       <button class="btn btn-ghost btn-sm theme-btn" @click="cycleTheme" title="切换主题">
         <span class="theme-ico">{{ themeIcon }}</span>{{ themeLabel }}
       </button>
@@ -531,6 +534,57 @@ try {
         </div>
         <div v-if="!logLines.length" class="log-empty">（暂无日志）</div>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 使用说明 ============ -->
+<div v-if="helpOpen" class="modal-mask" @click.self="helpOpen = false">
+  <div class="modal help-modal">
+    <div class="modal-head">
+      <div class="modal-title">📖 使用说明</div>
+      <button class="btn btn-ghost btn-sm" @click="helpOpen = false">✕</button>
+    </div>
+    <div class="modal-body help-body">
+      <h3>总流程</h3>
+      <ol>
+        <li>① 导入 / 选择一本漫画（文件夹、ZIP、CBZ 或图片）；</li>
+        <li>① 填写中文标题、作者、简介等基本信息，并检查各平台发布内容；</li>
+        <li>「平台账号」页启用平台并填入 Cookie（B 站可扫码登录）；</li>
+        <li>② 点「全文预览」逐平台核对标题、正文与页序，可对页面做增删/排序；</li>
+        <li>② 点「一键发布」，顶部进度条会显示当前平台与阶段。</li>
+      </ol>
+
+      <h3>漫画导入与内容</h3>
+      <ul>
+        <li>把 ZIP / CBZ / 图片拖入①区即可导入；也可点“选择文件夹 / 压缩包”，或在路径栏输入目录后回车。</li>
+        <li>单张超过 10MB 的图片发布时会自动压缩；预览里显示的是缩略图，不影响上传原图。</li>
+        <li>基本信息里的中文标题是各平台标题的主要来源；输入日文标题后可自动回填罗马音（可在账号页配置 AI 接口）。</li>
+        <li>“各平台发布内容”默认按漫画信息自动组合，留空即自动，手写后会以手写内容为准，保存后写回 manga.json。</li>
+      </ul>
+
+      <h3>页面编辑与 staff 页</h3>
+      <ul>
+        <li>右键页面可插入、替换、删除、移动；所有改动先落在预览里，点「应用页面改动」或一键发布时才真正写盘。</li>
+        <li>「001 重命名」会把整章按当前页序改成 001 / 002 / …；staff 页会保留为「封面名+staff」（如 001staff.png），方便按文件名排序的平台。</li>
+        <li>点右下角 ⚙ →「制作 Staff 页」：先选背景页（默认封面），职位名单可点「填入常用职位」再改，点「插入 / 替换」即生成到封面之后；重复生成会覆盖旧 staff 页。</li>
+        <li>不需要模板 staff 页时，右键删除后点「应用页面改动」即可真正移除；之后想用自己的 staff 图，正常插入/替换即可。</li>
+      </ul>
+
+      <h3>平台账号与发布</h3>
+      <ul>
+        <li>在对应平台已登录的浏览器里复制 Cookie 填入；过期会被检查接口提示，重新复制即可。</li>
+        <li>常用参数（B 站发专栏/动态、贴吧每楼图数、小黑盒草稿与图文/文章、再漫画类型等）都在平台卡片里设置，不用手改配置文件。</li>
+        <li>e-hentai 建议用 zip 整包上传：打包与站点处理阶段会较慢，属正常现象，等进度条走完即可。</li>
+        <li>发布前建议用「全文预览」检查格式与缺页；正式发布后不可撤销，小范围测试可先启用小黑盒“存草稿”。</li>
+      </ul>
+
+      <h3>网络与设置</h3>
+      <ul>
+        <li>e-hentai 等海外站连不上时，在「设置」里勾选使用系统代理或填手动代理；国内平台请勿走海外代理，容易触发风控。</li>
+        <li>上传失败时，程序会把原始响应存到 output/debug（如文件名含 ehentai-upload-page 的 html），可直接把文件发出来排查。</li>
+        <li>如果同时开了多个服务实例（例如 8970 与 8971），请关掉旧实例只留最新一个，避免新版页面配旧版后端。</li>
+      </ul>
     </div>
   </div>
 </div>
