@@ -819,21 +819,23 @@ html, body {
 }
 
 /* 章节 ⚙ 工具按钮：常驻悬浮在卡片右上角，点击展开菜单 */
-.pv-chapter-fab-wrap { position: absolute; top: -14px; right: 16px; z-index: 6; }
-.pv-chapter-fab {
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  border: 1px solid var(--border);
+/* 章节 ⚙ 工具：悬浮按钮（与右下角「看日志」同一悬浮位，往上叠） */
+.log-fab.tool-fab { bottom: 80px; }
+.tool-fab-menu {
+  position: fixed;
+  right: 22px;
+  bottom: 138px;
+  z-index: 60;
+  min-width: 200px;
+  max-width: min(360px, calc(100vw - 44px));
+  max-height: min(50vh, 420px);
+  overflow-y: auto;
+  padding: 4px;
   background: var(--surface-2);
-  color: var(--text-2);
-  font-size: 15px;
-  line-height: 1;
-  cursor: pointer;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.16);
-  transition: color 0.15s, border-color 0.15s;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.22);
 }
-.pv-chapter-fab:hover { color: var(--accent); border-color: var(--accent); }
 .pv-chapter-menu {
   position: absolute;
   top: 38px;
@@ -952,17 +954,17 @@ html, body {
 .staff-hint { font-size: 11px; color: var(--text-3); margin: 0; }
 .staff-font-status { color: var(--text-2); }
 .staff-bg-row { display: flex; align-items: center; gap: 8px; }
-.staff-bg-input { width: 72px; flex: none; text-align: center; }
-.staff-step-btns { display: flex; flex-direction: column; gap: 2px; }
+.staff-bg-input { width: 56px; flex: none; text-align: center; }
 .staff-step {
   border: 1px solid var(--border);
   background: var(--surface-3);
   color: var(--text-2);
-  font-size: 9px;
+  font-size: 12px;
   line-height: 1;
-  padding: 3px 7px;
-  border-radius: 4px;
+  padding: 6px 10px;
+  border-radius: 6px;
   cursor: pointer;
+  white-space: nowrap;
   transition: color 0.15s, border-color 0.15s;
 }
 .staff-step:hover { color: var(--accent); border-color: var(--accent); }

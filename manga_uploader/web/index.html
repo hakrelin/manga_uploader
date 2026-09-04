@@ -216,15 +216,6 @@ try {
 
             <template v-if="previewMode === 'card'">
               <div v-for="ch in previewChapters" :key="ch.key" class="pv-chapter">
-                <!-- 章节 ⚙ 工具按钮：点击展开 -->
-                <div class="pv-chapter-fab-wrap">
-                  <button class="pv-chapter-fab" title="章节工具"
-                          @click.stop="toggleChapterTools(ch.key)">⚙</button>
-                  <div v-if="chapterToolsOpen === ch.key" class="pv-chapter-menu" @click.stop>
-                    <button class="pv-menu-item" @click="chapterToolsOpen = null; openStaff(ch)">📄 制作 Staff 页</button>
-                    <button class="pv-menu-item" @click="chapterToolsOpen = null; startRenameNumeric(ch)">🔢 001 重命名</button>
-                  </div>
-                </div>
                 <div class="pv-head">
                   <span class="pv-title">{{ metaForm.title || ch.title }}</span>
                   <span class="badge">{{ ch.page_count }} 页</span>
@@ -245,7 +236,7 @@ try {
                   <div class="pv-flow">
                     <template v-for="(pgName, i) in ch.pages" :key="ch.key + ':' + i">
                       <figure class="pv-fig" @contextmenu.prevent="openPageMenu($event, ch, i, pgName)">
-                        <img :src="pageUrl(ch.key, i)" loading="lazy" alt="" draggable="false">
+                        <img :src="pageUrl(ch.key, pgName, i)" loading="lazy" alt="" draggable="false">
                         <figcaption>
                           <span class="pv-pnum">P{{ i + 1 }}</span>
                           <span class="pv-pname" :title="pgName">{{ pgName }}</span>
@@ -478,7 +469,15 @@ try {
   </main>
 </div>
 
-<!-- ============ 浮动日志按钮 + 日志弹窗 ============ -->
+<!-- ============ 浮动按钮：章节工具 ⚙ + 看日志 📋 ============ -->
+<button v-if="previewChapters.length" class="log-fab tool-fab" title="章节工具"
+        @click.stop="toggleChapterTools()">⚙</button>
+<div v-if="chapterToolsOpen" class="pv-chapter-menu tool-fab-menu" @click.stop>
+  <template v-for="ch in previewChapters" :key="ch.key">
+    <button class="pv-menu-item" @click="chapterToolsOpen = null; openStaff(ch)">📄 制作 Staff 页 · {{ ch.title || ch.key }}</button>
+    <button class="pv-menu-item" @click="chapterToolsOpen = null; startRenameNumeric(ch)">🔢 001 重命名 · {{ ch.title || ch.key }}</button>
+  </template>
+</div>
 <button v-if="logLines.length" class="log-fab" @click="logOpen = !logOpen">
   📋<span v-if="logNew && !logOpen" class="log-badge">{{ logNew }}</span>
 </button>
@@ -603,12 +602,10 @@ try {
         <div class="staff-editor">
           <div class="staff-bg-row">
             <span class="staff-colon">背景页</span>
+            <button class="staff-step" title="上一页（页码 -1）" @click="staffBgStep(-1)">◀ 上一页</button>
             <input type="text" inputmode="numeric" class="input staff-bg-input"
                    v-model.number="staffBgPage" @change="onStaffBgChange">
-            <span class="staff-step-btns">
-              <button class="staff-step" title="上一页" @click="staffBgStep(-1)">▲</button>
-              <button class="staff-step" title="下一页" @click="staffBgStep(1)">▼</button>
-            </span>
+            <button class="staff-step" title="下一页（页码 +1）" @click="staffBgStep(1)">下一页 ▶</button>
           </div>
           <p class="staff-hint staff-font-status">{{ staffFontStatus }}</p>
           <div v-for="(row, i) in staffRows" :key="i" class="staff-row">

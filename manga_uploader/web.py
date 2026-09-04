@@ -656,10 +656,12 @@ class WebHandler(BaseHTTPRequestHandler):
         self._json(200, result)
 
     def _api_page(self, query: dict[str, list[str]]) -> None:
-        """返回某章节第 index 页。max<=0/缺省 → 原图直发（流式，不经内存）；max>0 → 缩略。"""
+        """返回某章节的页图。name（文件名）优先于 index——URL 按文件而不是按页号，
+        前端纯前端排序后同一文件 URL 不变，浏览器缓存天然命中；max<=0/缺省 → 原图直发。"""
         try:
             comic_dir = (query.get("dir") or [""])[0]
             chapter_key = (query.get("chapter") or [""])[0]
+            page_name = (query.get("name") or [""])[0]
             index = int((query.get("index") or ["0"])[0])
             raw_max = (query.get("max") or [""])[0]
             max_px = int(raw_max) if str(raw_max).strip() else 0
@@ -675,10 +677,19 @@ class WebHandler(BaseHTTPRequestHandler):
             self._json(404, {"error": str(exc)})
             return
         chapter = next((c for c in chapters if c.key == chapter_key), None)
-        if chapter is None or index < 0 or index >= len(chapter.pages):
+        if chapter is None:
             self._json(404, {"error": "页面不存在"})
             return
-        path = chapter.pages[index]
+        if page_name:
+            path = next((p for p in chapter.pages if p.name == page_name), None)
+            if path is None:
+                self._json(404, {"error": f"页面不存在：{page_name}"})
+                return
+        else:
+            if index < 0 or index >= len(chapter.pages):
+                self._json(404, {"error": "页面不存在"})
+                return
+            path = chapter.pages[index]
 
         if max_px <= 0:
             # 原图直发：流式写回，不整读进内存、不做任何压缩
@@ -803,8 +814,6 @@ class WebHandler(BaseHTTPRequestHandler):
             self._api_page_upload("replace")
         elif path == "/api/delete":
             self._api_page_delete()
-        elif path == "/api/reorder":
-            self._api_reorder()
         elif path == "/api/rename":
             self._api_rename()
         elif path == "/api/staff":
@@ -1178,7 +1187,14 @@ class WebHandler(BaseHTTPRequestHandler):
         self.server.state.ring.append(
             "INFO", f"已{verb}页：{Path(comic_dir).name}（{chapter_key}，共 {count} 页）"
         )
-        self._json(200, {"ok": True, "pages": count})
+        # 带回最终页名列表（插入重名会自动改名/替换语义 A 会换名），前端本地状态直接采用
+        try:
+            chapters = load_chapters(comic_dir, strict=False)
+            chapter = next((c for c in chapters if c.key == chapter_key), None)
+            names = [p.name for p in chapter.pages] if chapter else []
+        except Exception:
+            names = []
+        self._json(200, {"ok": True, "pages": count, "names": names})
 
     def _api_page_delete(self) -> None:
         """删除漫画某章节第 index 页，并重排后续页码保持连续。"""
@@ -1200,37 +1216,37 @@ class WebHandler(BaseHTTPRequestHandler):
         self.server.state.ring.append(
             "INFO", f"已删除页：{Path(comic_dir).name}（{chapter_key}，剩 {count} 页）"
         )
-        self._json(200, {"ok": True, "pages": count})
-
-    def _api_reorder(self) -> None:
-        """按新页序重排章节（只写 manga.json 的 pages，不移动/重命名文件）。"""
-        data = self._read_json()
-        comic_dir = str(data.get("dir") or "").strip()
-        chapter_key = str(data.get("chapter") or "").strip() or "root"
-        pages = data.get("pages")
-        if not comic_dir:
-            self._json(400, {"error": "缺少漫画目录"})
-            return
-        if not isinstance(pages, list):
-            self._json(400, {"error": "缺少 pages 列表"})
-            return
         try:
             chapters = load_chapters(comic_dir, strict=False)
             chapter = next((c for c in chapters if c.key == chapter_key), None)
-            if chapter is None:
-                raise ValueError(f"找不到章节：{chapter_key}")
-            valid = {p.name for p in chapter.pages}
-            names = [str(p) for p in pages]
-            if not names or set(names) != valid:
-                raise ValueError("pages 必须恰好是当前章节的全部页面文件")
-            write_page_order(comic_dir, chapter_key, names)
-        except Exception as exc:
-            self._json(500, {"error": f"重排失败：{exc}"})
+            names = [p.name for p in chapter.pages] if chapter else []
+        except Exception:
+            names = []
+        self._json(200, {"ok": True, "pages": count, "names": names})
+
+    def _apply_local_pages(self, comic_dir: str, chapter_key: str, pages) -> None:
+        """把前端带来的本地页序落盘（页序的真值在前端，磁盘随操作前对齐）。
+
+        pages 为该章节完整文件名列表；集合必须与磁盘章节页面完全一致。
+        """
+        if not isinstance(pages, list) or not pages:
             return
-        self.server.state.ring.append(
-            "INFO", f"已重排页序：{Path(comic_dir).name}（{chapter_key}，{len(names)} 页）"
-        )
-        self._json(200, {"ok": True, "pages": len(names)})
+        chapters = load_chapters(comic_dir, strict=False)
+        chapter = next((c for c in chapters if c.key == chapter_key), None)
+        if chapter is None:
+            raise ValueError(f"找不到章节：{chapter_key}")
+        valid = {p.name for p in chapter.pages}
+        names = [str(p) for p in pages]
+        if set(names) != valid or len(names) != len(valid):
+            raise ValueError("pages 必须恰好是当前章节的全部页面文件")
+        write_page_order(comic_dir, chapter_key, names)
+
+    def _apply_local_pages_map(self, comic_dir: str, pages_map) -> None:
+        """批量落盘前端带来的各章节本地页序（/api/preview、/api/publish 用）。"""
+        if not isinstance(pages_map, dict):
+            return
+        for key, names in pages_map.items():
+            self._apply_local_pages(comic_dir, str(key), names)
 
     def _api_rename(self) -> None:
         """把章节按当前页序重命名为 001.ext / 002.ext…。"""
@@ -1325,6 +1341,13 @@ class WebHandler(BaseHTTPRequestHandler):
         if not comic_dir:
             self._json(400, {"error": "缺少漫画目录"})
             return
+        try:  # 前端带来的本地页序先落盘，staff 页插回位置才符合当前所见
+            self._apply_local_pages(
+                comic_dir, chapter_key, json.loads(fields.get("pages") or "null"),
+            )
+        except Exception as exc:
+            self._json(400, {"error": f"页序不一致：{exc}"})
+            return
         if not files:
             self._json(400, {"error": "没有收到 staff 页图片"})
             return
@@ -1337,7 +1360,13 @@ class WebHandler(BaseHTTPRequestHandler):
         self.server.state.ring.append(
             "INFO", f"已生成 staff 页：{Path(comic_dir).name}（{chapter_key}，共 {count} 页）"
         )
-        self._json(200, {"ok": True, "pages": count})
+        try:
+            chapters = load_chapters(comic_dir, strict=False)
+            chapter = next((c for c in chapters if c.key == chapter_key), None)
+            names = [p.name for p in chapter.pages] if chapter else []
+        except Exception:
+            names = []
+        self._json(200, {"ok": True, "pages": count, "names": names})
 
 
 def _preview_struct(preview) -> list[dict[str, Any]]:

@@ -165,6 +165,9 @@ createApp({
     const expanded = reactive({});
 
     const comicDir = ref("");
+    // 本地页序改动过的章节（key 集合）：排序纯前端生效，落盘推迟到发布/预览/
+    // 涉及磁盘页序的操作前统一 flush，后端最终按这份 JSON 决定发送
+    const dirtyPageChapters = new Set();
     const summary = ref(null);
     const metaForm = reactive({ title: "", author: "", description: "", language: "Chinese" });
     META_EXTRA.forEach((f) => { metaForm[f.key] = ""; });
@@ -602,6 +605,7 @@ createApp({
           method: "POST", json: true, body: JSON.stringify({ dir: raw }),
         });
         summary.value = r;
+        pageRev += 1; // 页面内容这一代已变，页图全部换新 URL 绕开缓存
         const m = (r.meta || {});
         metaForm.title = m.title || "";
         metaForm.author = m.author || "";
@@ -763,11 +767,14 @@ createApp({
     async function previewPlan() { await runPreview("/api/plan", "生成计划失败"); }
     async function previewFull() { await runPreview("/api/preview", "全文预览失败"); }
 
-    function pageUrl(chapterKey, index) {
-      // max=0 → 后端原图直发（流式，不压缩不裁剪），逐页原样展示供核对
-      return "/api/page?dir=" + encodeURIComponent(comicDir.value.trim()) +
-        "&chapter=" + encodeURIComponent(chapterKey) +
-        "&index=" + index + "&max=0";
+    function pageUrl(chapterKey, pgName, index) {
+      // max=0 → 后端原图直发（流式，不压缩不裁剪），逐页原样展示供核对。
+      // URL 按文件名（name 优先于 index）：排序=同一文件换位置，URL 不变缓存秒中；
+      // 插入/替换/重命名产生新文件名 → 天然新 URL，不存在“吃旧图”
+      const q = "/api/page?dir=" + encodeURIComponent(comicDir.value.trim()) +
+        "&chapter=" + encodeURIComponent(chapterKey) + "&max=0&";
+      if (pgName) return q + "name=" + encodeURIComponent(pgName);
+      return q + "index=" + index;
     }
 
     async function runPreview(endpoint, errPrefix) {
@@ -1252,9 +1259,9 @@ createApp({
       renderStaffPreview();
     }
 
-    // 章节 ⚙ 工具菜单开关
-    function toggleChapterTools(key) {
-      chapterToolsOpen.value = chapterToolsOpen.value === key ? null : key;
+    // 章节 ⚙ 工具菜单开关（悬浮按钮，全局唯一，菜单里按章节分行）
+    function toggleChapterTools() {
+      chapterToolsOpen.value = chapterToolsOpen.value ? null : true;
     }
 
     // 背景页翻页（▲=上一页 / ▼=下一页）
