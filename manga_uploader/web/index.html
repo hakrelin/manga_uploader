@@ -651,6 +651,9 @@ try {
             <button class="staff-row-del" title="删掉这行" @click="staffRows.splice(i, 1); renderStaffPreview()">🗑</button>
           </div>
           <button class="btn btn-ghost btn-sm" @click="staffRows.push(['', '']); renderStaffPreview()">＋ 加一行</button>
+          <button class="btn btn-ghost btn-sm" @click="fillStaffTemplate" title="填入图源/修图/翻译/嵌字/校对 5 行常用职位">
+            填入常用职位
+          </button>
           <div class="staff-actions">
             <button class="btn btn-ghost btn-sm" :disabled="staffBusy" @click="saveStaffRows">保存名单</button>
             <div class="staff-split">

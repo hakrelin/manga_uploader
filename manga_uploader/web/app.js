@@ -845,7 +845,7 @@ createApp({
     async function previewPlan() { await runPreview("/api/plan", "生成计划失败"); }
     async function previewFull() { await runPreview("/api/preview", "全文预览失败"); }
 
-    function pageUrl(ch, pgName, index) {
+    function pageUrl(ch, pgName, index, maxPx = 720) {
       // 页图 URL 按文件名走（服务端 name 参数）：排序=同一文件换位置，URL 不变
       // 缓存秒中；插入/替换/重命名产生新文件名 → 天然新 URL，不存在“吃旧图”。
       // 本地待发布的新图（blob）直接用对象 URL，预览即上传内容；
@@ -858,7 +858,7 @@ createApp({
       }
       if (m && m.orig && m.orig !== pgName) pgName = m.orig;
       const q = "/api/page?dir=" + encodeURIComponent(comicDir.value.trim()) +
-        "&chapter=" + encodeURIComponent(ch.key) + "&max=0&";
+        "&chapter=" + encodeURIComponent(ch.key) + "&max=" + (Number(maxPx) || 0) + "&";
       if (pgName) return q + "name=" + encodeURIComponent(pgName);
       return q + "index=" + index;
     }
@@ -874,7 +874,7 @@ createApp({
         previewText.value = r.text || "";
         // 页面编辑的真值在前端：每章挂本地编辑状态（待上传新图 / 磁盘文件重命名来源）
         previewChapters.value = (r.chapters || []).map((c) =>
-          Object.assign({}, c, { _pageMeta: {} }));
+          Object.assign({}, c, { _pageMeta: {}, _dirty: false }));
         previewMode.value = r.chapters && r.chapters.length ? "card" : "text";
         nav.value = "workbench";
       } catch (e) {
@@ -890,7 +890,9 @@ createApp({
     // 按「磁盘有、清单没有」的差集执行
     function chapterEdits(ch) {
       const meta = ch._pageMeta || {};
-      if (!Object.keys(meta).length) return null;
+      // 只要动过页面（含纯删除/纯排序），就提交完整清单让后端按差集落盘；
+      // 否则删除/排序会被静默丢掉，重载后旧页面又“复活”。
+      if (!ch._dirty && !Object.keys(meta).length) return null;
       const uploads = []; // [ref, blob, 文件名]
       const pages = (ch.pages || []).map((name) => {
         const m = meta[name];
@@ -1026,10 +1028,12 @@ createApp({
         if (name !== old) delete ch._pageMeta[old];
         ch._pageMeta[name] = { blob: file, orig: m ? m.orig : old };
         pages.splice(p.index, 1, name);
+        ch._dirty = true;
         toastMsg(`已替换第 ${p.index + 1} 页（发布时落盘）`);
       } else {
         pages.splice(p.index, 0, name);
         ch._pageMeta[name] = { blob: file, orig: null };
+        ch._dirty = true;
         toastMsg(`已插入第 ${p.index + 1} 页，共 ${pages.length} 页（发布时落盘）`);
       }
       ch.page_count = pages.length;
@@ -1048,6 +1052,7 @@ createApp({
       delete ch._pageMeta[name];
       ch.pages.splice(index, 1);
       ch.page_count = ch.pages.length;
+      ch._dirty = true;
       toastMsg(`已删除第 ${index + 1} 页，剩 ${ch.pages.length} 页（发布时落盘）`);
     }
 
@@ -1139,6 +1144,7 @@ createApp({
       list.splice(from, 1);
       list.splice(targetIndex, 0, name);
       ch.pages = list;
+      ch._dirty = true;
       toastMsg(`已移动：${name} → 第 ${targetIndex + 1} 页（发布时落盘）`);
     }
 
@@ -1159,15 +1165,39 @@ createApp({
 
     // 命名工具：按当前页序重命名为 001 / 002…（只改文件名主体，扩展名保持原样）。
     // 纯前端：本地重算页名 + 记录待重命名的磁盘文件，发布时统一落盘
+    function isStaffPageName(name) {
+      const dot = String(name || "").lastIndexOf(".");
+      const stem = (dot >= 0 ? String(name).slice(0, dot) : String(name || "")).toLowerCase();
+      return stem === "staff" || stem.endsWith("staff");
+    }
+
     function startRenameNumeric(ch) {
       if (!window.confirm(`确认把「${ch.title || ch.key}」全部页面按当前页序重命名为 001 / 002 / …？\n\n只改文件名主体，扩展名保持原样；发布时落盘。`)) return;
       const plan = [];
       const seen = new Set();
+      let seq = 1;
+      const pad3 = (n) => String(n).padStart(3, "0");
+      const stemOf = (name) => {
+        const dot = String(name).lastIndexOf(".");
+        return dot >= 0 ? String(name).slice(0, dot) : String(name);
+      };
       for (let i = 0; i < ch.pages.length; i++) {
         const old = ch.pages[i];
         const dot = old.lastIndexOf(".");
         const ext = dot >= 0 ? old.slice(dot) : "";
-        const neu = String(i + 1).padStart(3, "0") + ext;
+        const prev = plan.length ? plan[plan.length - 1][1] : null;
+        let neu;
+        if (isStaffPageName(old)) {
+          // staff 页不参与 001/002 编号：跟随前一页的新名称并保留 staff 标识，
+          // 例如 001.png 后的 staff 页保持 001staff.png，按文件名排序时正好
+          // 落在封面与第 2 页之间，也不会被当成普通页“抹掉身份”。
+          const base = prev && !isStaffPageName(prev) ? stemOf(prev) : pad3(seq);
+          neu = base + "staff" + ext;
+          if (!prev || isStaffPageName(prev)) seq += 1; // staff 在队首/连续时的编号占位
+        } else {
+          neu = pad3(seq) + ext;
+          seq += 1;
+        }
         if (seen.has(neu)) { toastMsg(`重命名产生重复文件名：${neu}，已取消`); return; }
         seen.add(neu);
         plan.push([old, neu]);
@@ -1183,6 +1213,7 @@ createApp({
         }
       });
       ch.pages = plan.map(([, neu]) => neu);
+      ch._dirty = true;
       toastMsg("已按页序重命名为 001…（发布时落盘）");
     }
 
@@ -1261,7 +1292,7 @@ createApp({
       let index = staffBgIndex.value;
       const pages = ch.pages || [];
       if (index < 0 || index >= pages.length) index = 0;
-      return pageUrl(ch, pages[index], index);
+      return pageUrl(ch, pages[index], index, 0); // staff 背景要原图精度，不用预览缩略图
     }
 
     async function loadStaffBg(ch) {
@@ -1339,15 +1370,26 @@ createApp({
         try {
           const r = await api("/api/staff?dir=" + encodeURIComponent(comicDir.value.trim())
             + "&chapter=" + encodeURIComponent(ch.key));
-          saved = r.rows && r.rows.length ? r.rows : null;
+          saved = Array.isArray(r.rows) ? r.rows : null; // 显式保存过空名单也要尊重
           staffBgIndex.value = Number.isFinite(r.bg) && r.bg !== null && r.bg >= 0
             ? r.bg : (layout.bg_default_index || 0);
-        } catch (e) { /* 没保存过名单，用布局默认 */ }
-        const def = layout.default_rows || [];
-        staffRows.value = (saved || def).map((row) => [row[0] || "", row[1] || ""]);
+        } catch (e) { /* 读取失败时保持空白名单 */ }
+        // 不再自动塞“常用职位模版”：默认空白，需要时点「填入常用职位」
+        staffRows.value = (saved || []).map((row) => [row[0] || "", row[1] || ""]);
         await renderStaffPreview();
       } catch (e) {
         toastMsg("staff 面板打开失败：" + e.message);
+      }
+    }
+
+    // 用户主动填回常用职位模版（图源/修图/翻译/嵌字/校对）
+    async function fillStaffTemplate() {
+      try {
+        const layout = await loadStaffLayout();
+        staffRows.value = (layout.default_rows || []).map((row) => [row[0] || "", row[1] || ""]);
+        renderStaffPreview();
+      } catch (e) {
+        toastMsg("读取职位模版失败：" + e.message);
       }
     }
 
@@ -1382,8 +1424,9 @@ createApp({
       staffBusy.value = true;
       try {
         // 无待发布改动时把本地页序一并带给后端（staff 页插回位置才符合所见）；
-        // 有改动时磁盘页名与本地对不上，跳过（本地状态仍以前端为准）
-        const clean = !Object.keys(ch._pageMeta || {}).length;
+        // 有改动（含删除/移动）时磁盘页名与本地对不上，跳过页序校验，
+        // 让后端按当前磁盘页序插 staff，避免“删了模板页再生成”报页数不一致。
+        const clean = !ch._dirty && !Object.keys(ch._pageMeta || {}).length;
         const body = { dir: comicDir.value.trim(), chapter: ch.key,
           rows: staffRows.value, bg: staffBgIndex.value };
         if (clean) body.pages = ch.pages;
@@ -1551,6 +1594,7 @@ createApp({
       staffBgPage, staffBgStep, onStaffBgChange, staffFontStatus,
       chapterToolsOpen, toggleChapterTools, applyPageEdits,
       openStaff, closeStaff, renderStaffPreview, saveStaffRows, renderStaffPage, exportStaffImage,
+      fillStaffTemplate,
       resetPick, saveMeta,
       logLines, logBox, logOpen, logNew, clearLog, toast, modal, lanAddr,
       theme, themeLabel, themeIcon, cycleTheme,

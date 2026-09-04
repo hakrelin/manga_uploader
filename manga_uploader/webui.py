@@ -494,15 +494,18 @@ def write_staff_rows(
     if not isinstance(data, dict):
         data = {}
     entry = _chapter_entry(data, str(chapter_key or "root"))
-    if clean or isinstance(bg, int):
+    have_bg = isinstance(bg, int) and not isinstance(bg, bool)
+    if isinstance(rows, list) or have_bg:
         staff = entry.get("staff") if isinstance(entry.get("staff"), dict) else {}
-        if clean:
+        if isinstance(rows, list):
+            # 空名单也原样保存：用户清空模板后重开面板不应又被默认职位顶回来
             staff["rows"] = clean
-        else:
-            staff.pop("rows", None)  # 名单总是整体覆盖：空即清掉旧行
-        if isinstance(bg, int) and not isinstance(bg, bool):
+        if have_bg:
             staff["bg"] = max(0, bg)
-        entry["staff"] = staff
+        if clean or have_bg:
+            entry["staff"] = staff
+        else:
+            entry.pop("staff", None)
     else:
         entry.pop("staff", None)
 
@@ -514,8 +517,9 @@ def upsert_staff_page(comic_dir: str | Path, chapter_key: str, data: bytes) -> i
     """把前端渲染好的 staff 页 PNG 落成章节第 2 页（封面后），重复生成覆盖不堆叠。
 
     文件名取封面页名 + staff（如 001staff.png），便于按文件名排序的平台
-    把 staff 页固定在封面之后；生成前会先移除旧的 staff 页（staff.* 或
-    旧的封面名+staff），避免改名后堆积。后端零渲染，只存文件 + 管页序。
+    把 staff 页固定在封面之后；只清理“本工具生成的旧 staff 页”
+    （历史固定名 staff.* + manga.json 记录的上一版文件名），不碰用户
+    自己命名/加入的 xxxstaff 图片。后端零渲染，只存文件 + 管页序。
     返回章节页数。
     """
     from io import BytesIO
@@ -535,8 +539,28 @@ def upsert_staff_page(comic_dir: str | Path, chapter_key: str, data: bytes) -> i
     folder = chapter.source_dir
 
     current = [p.name for p in chapter.pages]
-    # 清掉旧 staff 页（旧固定名 staff.* 或改名前的封面名+staff），不进入新页序
-    for name in [n for n in current if is_staff_page_name(n)]:
+    # 读取本工具上次生成的 staff 文件名（manga.json 章节条目 staff.file）
+    prev_tool_file = None
+    meta_file = find_meta_file(Path(comic_dir))
+    meta_data = read_meta(meta_file) if meta_file else {}
+    for entry in meta_data.get("chapters") or []:
+        if not isinstance(entry, dict):
+            continue
+        if str(entry.get("folder") or entry.get("key") or entry.get("name")) != str(chapter_key or "root"):
+            continue
+        staff_rec = entry.get("staff")
+        if isinstance(staff_rec, dict):
+            prev_tool_file = str(staff_rec.get("file") or "").strip() or None
+
+    stale: set[str] = set()
+    for name in current:
+        # 历史固定名 staff.*（任何图片扩展名）
+        if Path(name).stem.lower() == "staff":
+            stale.add(name)
+        # 上一版工具生成的动态名（封面改名后也能找到旧文件）
+        if prev_tool_file and name == prev_tool_file:
+            stale.add(name)
+    for name in stale:
         current.remove(name)
         try:
             os.remove(folder / name)
@@ -547,10 +571,24 @@ def upsert_staff_page(comic_dir: str | Path, chapter_key: str, data: bytes) -> i
     tmp.write_bytes(data)
     cover = current[0] if current else None
     name = staff_page_name(cover) if cover else "staff.png"
+    if name in current:  # 同名重复生成：先移出页序再原子覆盖
+        current.remove(name)
     os.replace(tmp, folder / name)
-    if name not in current:
-        pos = 1 if current else 0  # 封面（第 1 页）之后
-        current.insert(pos, name)
+    pos = 1 if current else 0  # 封面（第 1 页）之后
+    current.insert(pos, name)
+
+    # 记录本工具生成的 staff 文件名，下次生成只清理它，避免误删用户自建页
+    try:
+        meta_file = find_meta_file(Path(comic_dir))
+        meta_data = read_meta(meta_file) if meta_file else {}
+        entry = _chapter_entry(meta_data, str(chapter_key or "root"))
+        staff_rec = entry.get("staff") if isinstance(entry.get("staff"), dict) else {}
+        staff_rec["file"] = name
+        entry["staff"] = staff_rec
+        _dump_meta(meta_file or (Path(comic_dir) / "manga.json"), meta_data)
+    except Exception:  # pragma: no cover - 标记写失败不阻塞落页
+        pass
+
     write_page_order(comic_dir, chapter_key, current)
     return len(current)
 

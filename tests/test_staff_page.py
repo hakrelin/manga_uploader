@@ -11,8 +11,10 @@ from PIL import Image
 from manga_uploader.comic import load_chapters
 from manga_uploader.webui import (
     is_staff_page_name,
+    read_staff_rows,
     staff_page_name,
     upsert_staff_page,
+    write_staff_rows,
 )
 
 
@@ -114,6 +116,55 @@ class TestUpsertStaffPage(unittest.TestCase):
             _pages(self.root),
             ["000.jpg", "000staff.png", "002.jpg", "003.jpg"],
         )
+
+    def test_001_rename_keeps_staff_identity(self):
+        """001 重命名后 staff 页应保留为“封面名+staff”，而不是被当普通页编号。"""
+        from manga_uploader.web import _materialize_edits
+
+        names = ["001.jpg", "002.jpg", "003.jpg", "004.jpg", "005.jpg", "staff.png"]
+        _make_comic(
+            self.root,
+            names,
+            pages=["001.jpg", "staff.png", "002.jpg", "003.jpg", "004.jpg", "005.jpg"],
+        )
+        # 与前端 001 重命名一致：普通页继续编号，staff 页保留 staff 后缀
+        items = [
+            {"keep": "001.jpg"},
+            {"rename": "001staff.png", "from": "staff.png"},
+            {"keep": "002.jpg"},
+            {"keep": "003.jpg"},
+            {"keep": "004.jpg"},
+            {"keep": "005.jpg"},
+        ]
+        _materialize_edits(self.root, {"root": {"pages": items}}, {})
+        files = sorted(p.name for p in self.root.iterdir() if p.suffix in (".jpg", ".png"))
+        self.assertEqual(
+            files,
+            ["001.jpg", "001staff.png", "002.jpg", "003.jpg", "004.jpg", "005.jpg"],
+        )
+        self.assertEqual(
+            _pages(self.root),
+            ["001.jpg", "001staff.png", "002.jpg", "003.jpg", "004.jpg", "005.jpg"],
+        )
+
+    def test_empty_staff_rows_stay_empty(self):
+        """清空名单后重开不应又被默认职位模版顶回来。"""
+        _make_comic(self.root, ["001.jpg", "002.jpg"])
+        write_staff_rows(self.root, "root", [], bg=0)
+        saved = read_staff_rows(self.root, "root")
+        self.assertIsNotNone(saved)
+        self.assertEqual(saved["rows"], [])
+        self.assertEqual(saved["bg"], 0)
+
+    def test_regeneration_keeps_user_owned_staff_like_page(self):
+        """只清理工具自产 staff 页，不删除用户自己命名/加入的 xxxstaff 图。"""
+        _make_comic(self.root, ["001.jpg", "002.jpg", "003.jpg", "mystaff.png"])
+        before_files = sorted(p.name for p in self.root.iterdir() if p.suffix == ".png")
+        self.assertIn("mystaff.png", before_files)
+        upsert_staff_page(self.root, "root", _png_bytes())
+        files = sorted(p.name for p in self.root.iterdir() if p.suffix in (".jpg", ".png"))
+        self.assertIn("mystaff.png", files)
+        self.assertIn("001staff.png", files)
 
 
 if __name__ == "__main__":
