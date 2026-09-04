@@ -939,7 +939,30 @@ html, body {
   padding: 2px 4px;
 }
 .staff-row-del:hover { color: var(--danger); }
-.staff-actions { display: flex; gap: 8px; margin-top: 6px; }
+.staff-actions { display: flex; gap: 8px; margin-top: 6px; align-items: stretch; }
+/* 确定分裂键：主键=插入/替换，▾=导出 PNG/JPG */
+.staff-split { position: relative; display: flex; }
+.staff-split-main { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.staff-split-tri {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  border-left: 1px solid rgba(255, 255, 255, 0.35);
+  padding-left: 8px;
+  padding-right: 8px;
+  font-size: 10px;
+}
+.staff-split-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 20;
+  min-width: 132px;
+  padding: 4px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.22);
+}
 .staff-preview {
   flex: 1;
   min-width: 0;

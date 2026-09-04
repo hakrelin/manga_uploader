@@ -191,6 +191,7 @@ createApp({
     const staffRows = ref([]); // [[职位, 名字], …]
     const staffCanvas = ref(null);
     const staffBusy = ref(false);
+    const staffExportOpen = ref(false); // 确定键 ▾ 下拉（导出 PNG/JPG）
     let staffLayout = null; // staff_layout.json 缓存
     let staffBaseImg = null; // 固定半透明底图
     const staffFonts = {}; // 已加载的 webfont
@@ -990,6 +991,7 @@ createApp({
 
     // 全局：点击 / 滚动 / 窗口缩放关闭右键菜单；右键非页面处也关闭
     document.addEventListener("click", closePageMenu);
+    document.addEventListener("click", () => { staffExportOpen.value = false; });
     document.addEventListener("contextmenu", (e) => {
       if (!e.target.closest(".pv-fig")) closePageMenu();
     }, true);
@@ -1203,6 +1205,23 @@ createApp({
       }
     }
 
+    // 导出预览成品为图片文件（不落页）：a[download] 存盘
+    function exportStaffImage(fmt) {
+      const canvas = staffCanvas.value;
+      if (!canvas) return;
+      if (!staffReady) { toastMsg("预览还没渲染好，先等背景图加载"); return; }
+      staffExportOpen.value = false;
+      canvas.toBlob((blob) => {
+        if (!blob) { toastMsg("导出失败"); return; }
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = "staff." + fmt;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+        toastMsg("已导出 staff." + fmt);
+      }, fmt === "jpg" ? "image/jpeg" : "image/png", 0.92);
+    }
+
     // ---------------- Modal 确定 ----------------
 
     async function modalOk() {
@@ -1303,8 +1322,8 @@ createApp({
       pageMenu, openPageMenu, closePageMenu,
       menuReplace, menuDelete, menuMoveToFront, menuMoveToLast, menuMoveUp, menuMoveDown, menuMoveToN,
       startRenameNumeric,
-      staffPanel, staffRows, staffCanvas, staffBusy,
-      openStaff, closeStaff, renderStaffPreview, saveStaffRows, renderStaffPage,
+      staffPanel, staffRows, staffCanvas, staffBusy, staffExportOpen,
+      openStaff, closeStaff, renderStaffPreview, saveStaffRows, renderStaffPage, exportStaffImage,
       resetPick, saveMeta,
       logLines, logBox, logOpen, logNew, clearLog, toast, modal, lanAddr,
       theme, themeLabel, themeIcon, cycleTheme,

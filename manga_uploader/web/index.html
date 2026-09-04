@@ -225,8 +225,8 @@ try {
                     </span>
                   </span>
                   <span class="pv-head-ops">
-                    <button class="pv-head-btn" title="自动生成 staff 页（制作人员表，背景=第 2 页）"
-                            @click="openStaff(ch)">📄 Staff</button>
+                    <button class="pv-head-btn" title="制作 Staff 页（制作人员表，背景=第 2 页，落在 P2）"
+                            @click="openStaff(ch)">📄 制作 Staff 页</button>
                     <button class="pv-head-btn" title="按当前页序全部重命名为 001 / 002…（扩展名保持原样，不可撤销）"
                             @click="startRenameNumeric(ch)">🔢 001 重命名</button>
                   </span>
@@ -586,16 +586,19 @@ try {
     <button class="pv-menu-item" @click="menuMoveToN">⇥ 移动到第 N 页…</button>
   </div>
 
-  <!-- staff 页生成面板：填名单 → canvas 实时预览 → 生成/覆盖 -->
+  <!-- staff 页生成面板：左预览 / 右编辑名单，确定=插入/替换，▾ 导出图片 -->
   <div v-if="staffPanel.open" class="staff-mask" @click.self="closeStaff">
     <div class="staff-box">
       <div class="staff-head">
-        <span>📄 Staff 页 · {{ staffPanel.ch ? (staffPanel.ch.title || staffPanel.ch.key) : "" }}</span>
+        <span>📄 制作 Staff 页 · {{ staffPanel.ch ? (staffPanel.ch.title || staffPanel.ch.key) : "" }}</span>
         <button class="staff-close" title="关闭" @click="closeStaff">✕</button>
       </div>
       <div class="staff-body">
+        <div class="staff-preview">
+          <canvas ref="staffCanvas" class="staff-canvas"></canvas>
+        </div>
         <div class="staff-editor">
-          <p class="staff-hint">职位行（背景自动用第 2 页，生成后落在 P2，重复生成覆盖）</p>
+          <p class="staff-hint">职位行可增减（无修图/无校对的本子直接删行，整块自动居中）</p>
           <div v-for="(row, i) in staffRows" :key="i" class="staff-row">
             <input v-model="row[0]" class="input staff-role" placeholder="职位" @input="renderStaffPreview">
             <span class="staff-colon">：</span>
@@ -605,12 +608,20 @@ try {
           <button class="btn btn-ghost btn-sm" @click="staffRows.push(['', '']); renderStaffPreview()">＋ 加一行</button>
           <div class="staff-actions">
             <button class="btn btn-ghost btn-sm" :disabled="staffBusy" @click="saveStaffRows">保存名单</button>
-            <button class="btn btn-primary btn-sm" :disabled="staffBusy" @click="renderStaffPage">生成 / 覆盖 staff 页</button>
+            <div class="staff-split">
+              <button class="btn btn-primary btn-sm staff-split-main" :disabled="staffBusy"
+                      title="名单随生成一并保存；成品落成 P2，重复生成覆盖"
+                      @click="renderStaffPage">插入 / 替换</button>
+              <button class="btn btn-primary btn-sm staff-split-tri" :disabled="staffBusy"
+                      title="导出为图片文件（不落页）"
+                      @click.stop="staffExportOpen = !staffExportOpen">▾</button>
+              <div v-if="staffExportOpen" class="staff-split-menu">
+                <button class="pv-menu-item" @click="exportStaffImage('png')">导出为 PNG</button>
+                <button class="pv-menu-item" @click="exportStaffImage('jpg')">导出为 JPG</button>
+              </div>
+            </div>
           </div>
-          <p class="staff-hint">名单存 manga.json；成品由前端 canvas 按第 2 页原分辨率渲染导出。</p>
-        </div>
-        <div class="staff-preview">
-          <canvas ref="staffCanvas" class="staff-canvas"></canvas>
+          <p class="staff-hint">名单存 manga.json；成品由前端 canvas 按第 2 页原分辨率渲染，落页固定 P2（封面后），重复生成覆盖。</p>
         </div>
       </div>
     </div>
