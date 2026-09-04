@@ -48,6 +48,32 @@ class BasePublisher(ABC):
 
     # ---------- 通用 ----------
 
+    def progress(
+        self,
+        stage: str,
+        done: int,
+        total: int,
+        message: str = "",
+        *,
+        chapter_key: str = "",
+    ) -> None:
+        """发布进度事件（Web 前端进度条用；CLI 下仅作为日志输出）。"""
+        try:
+            self.log.info(
+                "进度 %s：%s", self.display_name, message or stage,
+                extra={"progress": {
+                    "platform": self.key,
+                    "label": self.display_name,
+                    "chapter": str(chapter_key or ""),
+                    "stage": str(stage or ""),
+                    "done": max(0, int(done or 0)),
+                    "total": max(0, int(total or 0)),
+                    "message": str(message or ""),
+                }},
+            )
+        except Exception:  # pragma: no cover - 进度事件不影响发布主流程
+            pass
+
     def missing_cookies(self) -> list[str]:
         return missing_cookies(self.cfg)
 
@@ -93,6 +119,13 @@ class BasePublisher(ABC):
                     max_height=self.common.max_height or 0,
                     quality=self.common.quality,
                     max_bytes=max_bytes,
+                )
+                self.progress(
+                    "prepare",
+                    index,
+                    len(chapter.pages),
+                    f"准备图片 {index}/{len(chapter.pages)}：{page.name}",
+                    chapter_key=chapter.key,
                 )
             except (ValueError, RuntimeError) as exc:
                 raise PublisherError(str(exc)) from exc

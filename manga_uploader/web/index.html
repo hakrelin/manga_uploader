@@ -60,6 +60,39 @@ try {
 
       <div v-if="note" class="banner">{{ note }}</div>
 
+      <!-- 发布进度条：由后端 progress 事件实时更新 -->
+      <div v-if="pubProgress.active" class="pub-progress">
+        <div class="pub-progress-head">
+          <span class="pulse-dot"></span>
+          <span class="pub-progress-title">发布进度</span>
+          <span class="pub-progress-hint">大包上传/站点处理阶段可能较慢，请耐心等待</span>
+          <span v-if="pubProgress.overall.total" class="pub-overall">
+            总体 {{ pubProgress.overall.done }}/{{ pubProgress.overall.total }}
+          </span>
+        </div>
+        <div v-if="pubChips.length" class="pub-chips">
+          <span v-for="p in pubChips" :key="p.platform" class="pub-chip"
+                :class="{ on: p.platform === pubProgress.cur.platform }">
+            {{ PLAT_LABELS[p.platform] || p.label || p.platform }}
+            <template v-if="p.stage"> · {{ stageLabel(p.stage) }}</template>
+            <em v-if="p.total"> {{ p.done }}/{{ p.total }}</em>
+          </span>
+        </div>
+        <div class="pub-bar-row">
+          <div class="pub-bar">
+            <div class="pub-bar-fill" :class="{ indet: !pubProgress.cur.total }"
+                 :style="pubProgress.cur.total ? { width: pubPercent + '%' } : null"></div>
+          </div>
+          <span class="pub-bar-text">
+            <template v-if="pubProgress.cur.platform">
+              {{ PLAT_LABELS[pubProgress.cur.platform] || pubProgress.cur.label || pubProgress.cur.platform }} ·
+            </template>
+            {{ pubProgress.cur.message || stageLabel(pubProgress.cur.stage) || '正在发布…' }}
+            <template v-if="pubProgress.cur.total">（{{ pubProgress.cur.done }}/{{ pubProgress.cur.total }}）</template>
+          </span>
+        </div>
+      </div>
+
       <!-- ① 漫画与内容 -->
       <div class="card">
         <div class="card-head">
@@ -105,11 +138,11 @@ try {
               <div class="edit-grid">
                 <div class="field">
                   <label class="field-label">中文标题</label>
-                  <input type="text" v-model="metaForm.title" class="input" placeholder="如 百年先の君へ">
+                  <input type="text" v-model="metaForm.title" class="input" placeholder="中文标题（各平台标题以此为准）">
                 </div>
                 <div class="field">
                   <label class="field-label">日文原标题</label>
-                  <input type="text" v-model="metaForm.title_jp" class="input" placeholder="如 マリサよ安らかに">
+                  <input type="text" v-model="metaForm.title_jp" class="input" placeholder="日文原标题（可留空）">
                 </div>
                 <div class="field">
                   <label class="field-label">作者 / 画师</label>
@@ -472,7 +505,7 @@ try {
 <!-- ============ 浮动按钮：章节工具 ⚙ + 看日志 📋 ============ -->
 <button v-if="previewChapters.length" class="tool-fab" title="章节工具"
         @click.stop="toggleChapterTools()">⚙</button>
-<div v-if="chapterToolsOpen" class="pv-chapter-menu tool-fab-menu" @click.stop>
+<div v-if="chapterToolsOpen" class="tool-fab-menu" @click.stop>
   <template v-for="ch in previewChapters" :key="ch.key">
     <button class="pv-menu-item" @click="chapterToolsOpen = null; openStaff(ch)">📄 制作 Staff 页 · {{ ch.title || ch.key }}</button>
     <button class="pv-menu-item" @click="chapterToolsOpen = null; startRenameNumeric(ch)">🔢 001 重命名 · {{ ch.title || ch.key }}</button>

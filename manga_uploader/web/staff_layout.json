@@ -5,7 +5,7 @@
   "base": "/assets/staff_base.png",
   "fit": "stretch",
   "center_x": 1369.5,
-  "bg_default_index": 1,
+  "bg_default_index": 0,
   "rows": {
     "font": "[toolbox]HaiBao-JF-W9",
     "font_aliases": ["[toolbox]HaiBao-JF-W9", "[toolbox]HaiBao-JF", "[工具箱]海报体-简繁-W9", "[工具箱]海报体-简繁", "toolboxHaiBaoJF-W9", "HaiBao-JF-W9", "toolbox HaiBao W9", "HaiBao W9", "海报体 W9", "海报体"],

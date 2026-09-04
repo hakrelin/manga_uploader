@@ -511,6 +511,7 @@ class XiaoheihePublisher(BasePublisher):
             hashtags = self._hashtags()
             decl = self._declaration()
             total = len(groups)
+            page_done = 0
             for index, group in enumerate(groups, 1):
                 try:
                     self.log.info(
@@ -522,8 +523,24 @@ class XiaoheihePublisher(BasePublisher):
                     )
                     uploaded = []
                     for page_index, page in enumerate(group, 1):
+                        self.progress(
+                            "upload",
+                            page_done,
+                            len(pages),
+                            f"正在上传图片 {page_done + 1}/{len(pages)}"
+                            f"（第 {index}/{total} 帖）",
+                            chapter_key=chapter.key,
+                        )
                         item = self._upload_page(page)
                         uploaded.append(item)
+                        page_done += 1
+                        self.progress(
+                            "upload",
+                            page_done,
+                            len(pages),
+                            f"已上传图片 {page_done}/{len(pages)}",
+                            chapter_key=chapter.key,
+                        )
                         self.log.info(
                             "小黑盒[%s] 第 %d/%d 帖图片 %d/%d 上传完成：%s",
                             mode_label,
@@ -625,6 +642,14 @@ class XiaoheihePublisher(BasePublisher):
                         mode_label,
                         "已保存草稿" if self._publish_draft() else "发布成功",
                         url,
+                    )
+                    self.progress(
+                        "post",
+                        index,
+                        total,
+                        f"第 {index}/{total} 帖"
+                        f"{'已保存草稿' if self._publish_draft() else '已发布'}",
+                        chapter_key=chapter.key,
                     )
                 except PublisherError as exc:
                     errors.append(f"第 {index} 帖失败：{exc}")

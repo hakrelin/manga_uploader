@@ -536,6 +536,8 @@ class EhentaiPublisher(BasePublisher):
         if not chapter.pages:
             return PublishResult.skipped(self.key, chapter, "没有图片")
         try:
+            self.progress("prepare", 0, len(chapter.pages),
+                          "开始准备 e-hentai 上传文件", chapter_key=chapter.key)
             page = self.http.get(UPLOAD_PAGE_URL)
             if not _is_upload_page_url(page.url):
                 self.http._dump(page, tag="ehentai-upload-page")
@@ -578,6 +580,8 @@ class EhentaiPublisher(BasePublisher):
         files: list[tuple[str, tuple[str, object, str]]] = []
         handles: list = []
         try:
+            self.progress("upload", 0, len(pages),
+                          f"正在逐张上传 {len(pages)} 个文件（可能较慢，请耐心等待）")
             for index, page_item in enumerate(pages, 1):
                 mime = mimetypes.guess_type(page_item.path.name)[0] or "application/octet-stream"
                 handle = open(page_item.path, "rb")
@@ -623,6 +627,18 @@ class EhentaiPublisher(BasePublisher):
                 for page_item, arcname in zip(pages, names):
                     # 站点按归档内文件名生成页码，只保留页序名（对齐人工 zip 上传的 01.png）
                     zf.write(page_item.path, arcname=arcname)
+            self.progress(
+                "zip",
+                len(pages),
+                len(pages),
+                f"ZIP 打包完成（{os.path.getsize(zip_path) / 1048576:.1f} MB）",
+            )
+            self.progress(
+                "upload",
+                0,
+                0,
+                "正在上传 ZIP 归档到 e-hentai（这一步比较慢，请耐心等待，不要关闭页面）",
+            )
             self.log.info("POST 上传 zip（%d 页，%s）到 %s", len(pages), zip_path, action)
             with open(zip_path, "rb") as fh:
                 return self.http.post(
@@ -702,11 +718,25 @@ class EhentaiPublisher(BasePublisher):
         count = self._count_registered_pages(manage_url, text)
         if count == 0:
             # 首页面里就有页码选择框也算已入册；完全没有则等待异步入库
+            self.progress(
+                "wait",
+                0,
+                page_count,
+                "e-hentai 正在处理上传文件，等待草稿入库…",
+                chapter_key=chapter.key,
+            )
             deadline = time.time() + float(self.cfg.get("upload_wait", 90) or 90)
             while time.time() < deadline:
                 time.sleep(4)
                 count = self._count_registered_pages(manage_url)
                 if count > 0:
+                    self.progress(
+                        "wait",
+                        count,
+                        page_count,
+                        f"站点已确认在册 {count}/{page_count} 页",
+                        chapter_key=chapter.key,
+                    )
                     break
         if count == 0:
             return PublishResult.failed(
@@ -723,6 +753,13 @@ class EhentaiPublisher(BasePublisher):
                 count,
                 page_count,
             )
+        self.progress(
+            "wait",
+            count,
+            page_count,
+            f"草稿已入库 {count}/{page_count} 页",
+            chapter_key=chapter.key,
+        )
         actual_pages = count
         if not self.cfg.get("publish_after_upload", True):
             return PublishResult.ok(
@@ -739,6 +776,13 @@ class EhentaiPublisher(BasePublisher):
             )
 
         self.log.info("草稿 %s 在册 %d/%d 页，继续正式发布", ulgid, actual_pages, page_count)
+        self.progress(
+            "publish",
+            actual_pages,
+            page_count,
+            "正在正式发布草稿…",
+            chapter_key=chapter.key,
+        )
         separator = "&" if "?" in manage_url else "?"
         publish_url = manage_url + separator + "act=publish&from=gallery"
         try:

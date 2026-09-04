@@ -221,6 +221,13 @@ class ZaimanhuaPublisher(BasePublisher):
         try:
             page_urls: list[str] = []
             for index, page in enumerate(pages, 1):
+                self.progress(
+                    "upload",
+                    index - 1,
+                    len(pages),
+                    f"正在上传图片 {index}/{len(pages)}：{page.path.name}",
+                    chapter_key=chapter.key,
+                )
                 self.log.info(
                     "上传图片 %d/%d：%s（%s）",
                     index,
@@ -229,6 +236,13 @@ class ZaimanhuaPublisher(BasePublisher):
                     f"{page.size_bytes / 1024 / 1024:.2f}MB",
                 )
                 page_urls.append(self._upload_page(page))
+                self.progress(
+                    "upload",
+                    index,
+                    len(pages),
+                    f"已上传图片 {index}/{len(pages)}",
+                    chapter_key=chapter.key,
+                )
                 if self.common.interval_seconds:
                     time.sleep(float(self.common.interval_seconds))
 

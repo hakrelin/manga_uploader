@@ -380,8 +380,21 @@ def write_page_order(
 
 # ---------------------------------------------------------------- Staff 页
 
-# staff 页固定文件名：重复生成覆盖同页不堆叠
-STAFF_PAGE_NAME = "staff.png"
+def staff_page_name(cover_name: str) -> str:
+    """staff 页文件名：封面页名 + staff（如封面 001.jpg → 001staff.png）。
+
+    部分平台按文件名排序：001staff.png 会自然排在封面（001）与下一页
+    （002）之间，staff 页的位置由文件名即可保证，不依赖 manga.json
+    的 pages 字段覆盖。
+    """
+    stem = Path(str(cover_name or "")).stem.strip()
+    return f"{stem or '001'}staff.png"
+
+
+def is_staff_page_name(name: str) -> bool:
+    """判断是否为本工具生成的 staff 页（旧固定名 staff.* 或 封面名+staff）。"""
+    stem = Path(str(name)).stem.lower()
+    return stem == "staff" or stem.endswith("staff")
 
 
 def _dump_meta(meta_file: Path, data: dict) -> None:
@@ -500,8 +513,10 @@ def write_staff_rows(
 def upsert_staff_page(comic_dir: str | Path, chapter_key: str, data: bytes) -> int:
     """把前端渲染好的 staff 页 PNG 落成章节第 2 页（封面后），重复生成覆盖不堆叠。
 
-    固定文件名 staff.png：已存在则原子覆盖、重新插回 index 1；否则直接插入。
-    后端零渲染，只存文件 + 管页序。返回章节页数。
+    文件名取封面页名 + staff（如 001staff.png），便于按文件名排序的平台
+    把 staff 页固定在封面之后；生成前会先移除旧的 staff 页（staff.* 或
+    旧的封面名+staff），避免改名后堆积。后端零渲染，只存文件 + 管页序。
+    返回章节页数。
     """
     from io import BytesIO
 
@@ -519,15 +534,23 @@ def upsert_staff_page(comic_dir: str | Path, chapter_key: str, data: bytes) -> i
         raise ValueError(f"找不到章节：{chapter_key}")
     folder = chapter.source_dir
 
+    current = [p.name for p in chapter.pages]
+    # 清掉旧 staff 页（旧固定名 staff.* 或改名前的封面名+staff），不进入新页序
+    for name in [n for n in current if is_staff_page_name(n)]:
+        current.remove(name)
+        try:
+            os.remove(folder / name)
+        except OSError:
+            pass  # 物理文件删不掉也不阻塞生成（不在页序里就不会发布）
+
     tmp = folder / f".mu_tmp_{time.time_ns()}.png"
     tmp.write_bytes(data)
-    os.replace(tmp, folder / STAFF_PAGE_NAME)
-
-    current = [p.name for p in chapter.pages]
-    if STAFF_PAGE_NAME in current:
-        current.remove(STAFF_PAGE_NAME)
-    pos = 1 if current else 0  # 封面（第 1 页）之后
-    current.insert(pos, STAFF_PAGE_NAME)
+    cover = current[0] if current else None
+    name = staff_page_name(cover) if cover else "staff.png"
+    os.replace(tmp, folder / name)
+    if name not in current:
+        pos = 1 if current else 0  # 封面（第 1 页）之后
+        current.insert(pos, name)
     write_page_order(comic_dir, chapter_key, current)
     return len(current)
 

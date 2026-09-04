@@ -110,6 +110,18 @@ const PLAT_LABELS = {
   zaimanhua: "再漫画",
 };
 
+const STAGE_LABELS = {
+  overall: "总体",
+  prepare: "准备图片",
+  upload: "上传图片",
+  zip: "打包 ZIP",
+  wait: "站点处理",
+  publish: "正式发布",
+  article: "发布专栏",
+  dynamic: "发布动态",
+  post: "发布帖子",
+};
+
 function parseCookies(text) {
   text = (text || "").trim();
   if (!text) return {};
@@ -163,6 +175,14 @@ createApp({
     const config = reactive({ common: {}, platforms: {} });
     const statuses = reactive({});
     const expanded = reactive({});
+    // 发布进度条（后端 publish 日志里的 progress 事件驱动）
+    const pubProgress = reactive({
+      active: false,
+      cur: { platform: "", label: "", stage: "", done: 0, total: 0, message: "" },
+      overall: { done: 0, total: 0 },
+      platforms: {},
+    });
+    let pubDoneTimer = null;
 
     const comicDir = ref("");
     // 本地页序改动过的章节（key 集合）：排序纯前端生效，落盘推迟到发布/预览/
@@ -196,7 +216,7 @@ createApp({
     const staffBusy = ref(false);
     const staffFontStatus = ref(""); // 面板里显示实际选用的字体与来源，排查“变雅黑”用
     const staffExportOpen = ref(false); // 确定键 ▾ 下拉（导出 PNG/JPG）
-    const staffBgIndex = ref(1); // 背景页 0-based：默认第 2 页（1），面板可改任意页
+    const staffBgIndex = ref(0); // 背景页 0-based：默认第 1 页（封面），面板可改任意页
     const staffBgPage = computed({
       get: () => staffBgIndex.value + 1, // 界面用 1-based 页码
       set: (v) => { staffBgIndex.value = Number.isFinite(v) ? Math.max(1, v) - 1 : 1; },
@@ -359,6 +379,70 @@ createApp({
       const names = cards.value.filter(connected).map((c) => c.label.split("（")[0]);
       return "发布到：" + (names.length ? names.join("、") : "（未配置，去「平台账号」连接）");
     });
+    // ---------------- 发布进度条 ----------------
+
+    const pubChips = computed(() =>
+      Object.values(pubProgress.platforms).filter((p) => p && p.platform));
+    const pubPercent = computed(() => {
+      const total = pubProgress.cur.total || 0;
+      if (!total) return 0;
+      const done = pubProgress.cur.done || 0;
+      return Math.min(100, Math.max(0, Math.round((done / total) * 100)));
+    });
+
+    function stageLabel(stage) {
+      return STAGE_LABELS[stage] || stage || "";
+    }
+
+    function startPublishUi() {
+      running.value = true;
+      pubProgress.active = true;
+      pubProgress.cur = { platform: "", label: "", stage: "", done: 0, total: 0, message: "" };
+      pubProgress.overall.done = 0;
+      pubProgress.overall.total = 0;
+      Object.keys(pubProgress.platforms).forEach((k) => delete pubProgress.platforms[k]);
+      if (pubDoneTimer) clearTimeout(pubDoneTimer);
+      pubDoneTimer = null;
+    }
+
+    function finishPublishUi() {
+      running.value = false;
+      pubProgress.cur.message = pubProgress.cur.message || "发布流程结束，详见右侧日志";
+      // 短暂保留最终状态，随后收起进度面板
+      if (pubDoneTimer) clearTimeout(pubDoneTimer);
+      pubDoneTimer = setTimeout(() => { pubProgress.active = false; }, 8000);
+    }
+
+    function handleLogEvent(d) {
+      if (!d || typeof d.seq !== "number") return;
+      // 结构化进度事件：只驱动进度条，不塞进日志抽屉
+      if (d.progress && typeof d.progress === "object") {
+        const p = d.progress;
+        pubProgress.active = true;
+        pubProgress.cur = {
+          platform: p.platform || "",
+          label: p.label || "",
+          stage: p.stage || "",
+          done: Number(p.done) || 0,
+          total: Number(p.total) || 0,
+          message: p.message || "",
+        };
+        if (p.stage === "overall") {
+          pubProgress.overall.done = Number(p.done) || 0;
+          pubProgress.overall.total = Number(p.total) || 0;
+        } else if (p.platform) {
+          pubProgress.platforms[p.platform] = Object.assign({}, pubProgress.cur);
+        }
+        return;
+      }
+      logLines.value.push(d);
+      if (logLines.value.length > 2000) logLines.value.splice(0, logLines.value.length - 2000);
+      if (d.msg && /开始发布到/.test(d.msg)) startPublishUi();
+      if (d.msg && /发布完成：|发布任务异常/.test(d.msg)) finishPublishUi();
+      if (!logOpen.value) logNew.value += 1;
+      scrollLog();
+    }
+
     // 小黑盒发布快捷设置：让工作台的开关/下拉直接改 config.platforms.xiaoheihe.settings
     const xhSettings = computed(() => {
       const p = config.platforms.xiaoheihe;
@@ -405,6 +489,7 @@ createApp({
           config.platforms[k] = v;
         }
         running.value = !!st.running;
+        if (running.value) pubProgress.active = true; // 页面打开时已有任务在跑：先显示不确定进度
       } catch (e) {
         toastMsg("加载配置失败：" + e.message);
       }
@@ -419,13 +504,7 @@ createApp({
       es.onmessage = (e) => {
         let d = null;
         try { d = JSON.parse(e.data); } catch (err) { return; }
-        if (!d || typeof d.seq !== "number") return;
-        logLines.value.push(d);
-        if (logLines.value.length > 2000) logLines.value.splice(0, logLines.value.length - 2000);
-        if (d.msg && /开始发布到/.test(d.msg)) running.value = true;
-        if (d.msg && /发布完成：/.test(d.msg)) running.value = false;
-        if (!logOpen.value) logNew.value += 1;
-        scrollLog();
+        handleLogEvent(d);
       };
       es.onerror = () => { /* EventSource 自动重连 */ };
     }
@@ -1177,7 +1256,7 @@ createApp({
       return staffBaseImg;
     }
 
-    // 背景页：默认第 2 页，面板可选任意页；章不够时退回封面
+    // 背景页：默认第 1 页（封面），面板可选任意页；页不够时退回封面
     function staffBgUrl(ch) {
       let index = staffBgIndex.value;
       const pages = ch.pages || [];
@@ -1206,7 +1285,7 @@ createApp({
       canvas.width = W;
       canvas.height = H;
       ctx.clearRect(0, 0, W, H);
-      ctx.drawImage(bgImg, 0, 0); // 背景=第 2 页整页
+      ctx.drawImage(bgImg, 0, 0); // 背景=第 1 页（封面）整页
       ctx.drawImage(baseImg, 0, 0, W, H); // 固定底图拉伸铺满（整页设计稿）
       const scale = W / layout.design.w;
       ctx.textAlign = "center";
@@ -1262,7 +1341,7 @@ createApp({
             + "&chapter=" + encodeURIComponent(ch.key));
           saved = r.rows && r.rows.length ? r.rows : null;
           staffBgIndex.value = Number.isFinite(r.bg) && r.bg !== null && r.bg >= 0
-            ? r.bg : (layout.bg_default_index || 1);
+            ? r.bg : (layout.bg_default_index || 0);
         } catch (e) { /* 没保存过名单，用布局默认 */ }
         const def = layout.default_rows || [];
         staffRows.value = (saved || def).map((row) => [row[0] || "", row[1] || ""]);
@@ -1480,6 +1559,7 @@ createApp({
       SOURCE_CHOICES, CATE_OPTIONS,
       markPlatformTouched,
       anyUnconfigured, publishTargetsText, xhSettings,
+      pubProgress, pubChips, pubPercent, stageLabel,
       platShort, platStatus, connected, extrasOf, extraLabel,
       saveConfig, openAccount, toggleExpand, openLogin,
       checkOne, checkAll, pasteCookie, qrLogin, detectProxy,

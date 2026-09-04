@@ -78,10 +78,13 @@ class LogRing:
         self.seq = 0
         self.capacity = capacity
 
-    def append(self, level: str, msg: str) -> int:
+    def append(self, level: str, msg: str, progress: Optional[dict] = None) -> int:
         with self.cond:
             self.seq += 1
-            self.entries.append({"seq": self.seq, "level": level, "msg": msg})
+            entry: dict[str, Any] = {"seq": self.seq, "level": level, "msg": msg}
+            if isinstance(progress, dict) and progress:
+                entry["progress"] = progress
+            self.entries.append(entry)
             if len(self.entries) > self.capacity:
                 self.entries = self.entries[-self.capacity:]
             self.cond.notify_all()
@@ -107,7 +110,10 @@ class RingHandler(logging.Handler):
             msg = self.format(record)
         except Exception:  # pragma: no cover
             return
-        self.ring.append(record.levelname, msg)
+        progress = getattr(record, "progress", None)
+        if not isinstance(progress, dict):
+            progress = None
+        self.ring.append(record.levelname, msg, progress=progress)
 
 
 # ---------------------------------------------------------------- 全局状态

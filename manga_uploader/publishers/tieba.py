@@ -453,12 +453,29 @@ class TiebaPublisher(BasePublisher):
             cover_group, rest_groups = self._floor_plan(pages)
             groups = [cover_group] + rest_groups
             thread_tid: str | None = None
+            page_done = 0
             for index, group in enumerate(groups, 1):
                 try:
                     images: list[dict] = []
                     for page in group:
+                        self.progress(
+                            "upload",
+                            page_done,
+                            len(pages),
+                            f"正在上传图片 {page_done + 1}/{len(pages)}：{page.path.name}"
+                            f"（第 {index}/{len(groups)} 楼）",
+                            chapter_key=chapter.key,
+                        )
                         self.log.info("上传图片 %s（第 %d/%d 组）", page.path.name, index, len(groups))
                         images.append(self._upload_image(page, tbs, forum))
+                        page_done += 1
+                        self.progress(
+                            "upload",
+                            page_done,
+                            len(pages),
+                            f"已上传图片 {page_done}/{len(pages)}",
+                            chapter_key=chapter.key,
+                        )
                         time.sleep(float(self.cfg.get("upload_sleep", 1.0) or 0))
 
                     # 正文只放主题帖一楼，后续楼层只放图片，避免每楼重复

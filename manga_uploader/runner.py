@@ -38,6 +38,22 @@ class Runner:
         path.mkdir(parents=True, exist_ok=True)
         return path
 
+    def _progress_overall(self, done: int, total: int, message: str) -> None:
+        """总体进度事件（用于前端“总体 x/y 个发布任务”）。"""
+        self.log.info(
+            "进度 总体：%s",
+            message,
+            extra={"progress": {
+                "platform": "",
+                "label": "",
+                "chapter": "",
+                "stage": "overall",
+                "done": max(0, int(done)),
+                "total": max(0, int(total)),
+                "message": message,
+            }},
+        )
+
     def cleanup_prepared_all(self) -> None:
         """整批发布结束后统一删除共享的图片预处理结果。
 
@@ -192,9 +208,23 @@ class Runner:
             if parallel and len(chapters) > 1:
                 results = self._run_parallel(chapters, enabled)
             else:
+                unit_total = max(1, len(chapters) * len(enabled))
+                unit_done = 0
                 for chapter in chapters:
                     for name, _ in enabled:
+                        self._progress_overall(
+                            unit_done,
+                            unit_total,
+                            f"正在发布到 {name}（{chapter.title or chapter.key}），"
+                            f"第 {unit_done + 1}/{unit_total} 项",
+                        )
                         results.append(self._publish_one(name, chapter))
+                        unit_done += 1
+                        self._progress_overall(
+                            unit_done,
+                            unit_total,
+                            f"{name} 完成 {unit_done}/{unit_total} 项",
+                        )
         finally:
             self.cleanup_prepared_all()
         self._write_report(results)
@@ -219,6 +249,7 @@ class Runner:
 
     def _run_parallel(self, chapters: list[Chapter], enabled: list[tuple[str, bool]]) -> list[PublishResult]:
         results: list[PublishResult] = []
+        unit_total = max(1, len(chapters) * len(enabled))
 
         def task(chapter: Chapter) -> list[PublishResult]:
             return [self._publish_one(name, chapter) for name, _ in enabled]
@@ -231,6 +262,11 @@ class Runner:
                 except Exception as exc:  # pragma: no cover
                     chapter = futures[future]
                     results.append(PublishResult.failed("unknown", chapter, str(exc)))
+                self._progress_overall(
+                    len(results),
+                    unit_total,
+                    f"已完成 {len(results)}/{unit_total} 个发布任务",
+                )
         return results
 
     def _write_report(self, results: list[PublishResult]) -> Path:

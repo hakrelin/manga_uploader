@@ -387,10 +387,19 @@ class BilibiliPublisher(BasePublisher):
             groups = chunk_list(pages, self.article_max_pages)
             published: list[str] = []
             errors: list[str] = []
+            page_done = 0
             for index, group in enumerate(groups, 1):
                 try:
                     urls: list[str] = []
                     for page_index, page in enumerate(group, 1):
+                        self.progress(
+                            "upload",
+                            page_done,
+                            len(pages),
+                            f"正在上传图片 {page_done + 1}/{len(pages)}"
+                            f"（第 {index}/{len(groups)} 篇专栏）",
+                            chapter_key=chapter.key,
+                        )
                         self.log.info(
                             "上传专栏图片 %d/%d（第 %d/%d 篇）：%s",
                             page_index,
@@ -400,6 +409,14 @@ class BilibiliPublisher(BasePublisher):
                             page.path.name,
                         )
                         urls.append(self._upload_article_image(page))
+                        page_done += 1
+                        self.progress(
+                            "upload",
+                            page_done,
+                            len(pages),
+                            f"已上传图片 {page_done}/{len(pages)}",
+                            chapter_key=chapter.key,
+                        )
                         if self.common.interval_seconds:
                             time.sleep(float(self.common.interval_seconds))
 
@@ -414,6 +431,13 @@ class BilibiliPublisher(BasePublisher):
                     url = f"https://www.bilibili.com/read/cv{aid}"
                     published.append(url)
                     self.log.info("专栏发布成功：%s", url)
+                    self.progress(
+                        "article",
+                        index,
+                        len(groups),
+                        f"第 {index}/{len(groups)} 篇专栏已发布",
+                        chapter_key=chapter.key,
+                    )
                 except PublisherError as exc:
                     errors.append(f"第 {index} 篇专栏失败：{exc}")
                     self.log.error("第 %d 篇专栏失败：%s", index, exc)
@@ -550,12 +574,29 @@ class BilibiliPublisher(BasePublisher):
             groups = chunk_list(pages, self.max_pages_per_post)
             published: list[str] = []
             errors: list[str] = []
+            page_done = 0
             for index, group in enumerate(groups, 1):
                 try:
                     pics = []
                     for page in group:
+                        self.progress(
+                            "upload",
+                            page_done,
+                            len(pages),
+                            f"正在上传图片 {page_done + 1}/{len(pages)}"
+                            f"（第 {index}/{len(groups)} 条动态）",
+                            chapter_key=chapter.key,
+                        )
                         self.log.info("上传图片 %s（第 %d/%d 组）", page.path.name, index, len(groups))
                         pics.append(self._upload_dynamic_image(page, category))
+                        page_done += 1
+                        self.progress(
+                            "upload",
+                            page_done,
+                            len(pages),
+                            f"已上传图片 {page_done}/{len(pages)}",
+                            chapter_key=chapter.key,
+                        )
                     part_caption = caption
                     if len(groups) > 1:
                         part_caption = f"{caption}\n（第 {index}/{len(groups)} 部分）"
@@ -563,6 +604,13 @@ class BilibiliPublisher(BasePublisher):
                     url = f"https://t.bilibili.com/{dyn_id}"
                     published.append(url)
                     self.log.info("动态发布成功：%s", url)
+                    self.progress(
+                        "dynamic",
+                        index,
+                        len(groups),
+                        f"第 {index}/{len(groups)} 条动态已发布",
+                        chapter_key=chapter.key,
+                    )
                 except PublisherError as exc:
                     errors.append(f"第 {index} 条动态失败：{exc}")
                     self.log.error("第 %d 条动态失败：%s", index, exc)
