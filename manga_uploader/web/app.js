@@ -192,7 +192,13 @@ createApp({
     const staffCanvas = ref(null);
     const staffBusy = ref(false);
     const staffExportOpen = ref(false); // 确定键 ▾ 下拉（导出 PNG/JPG）
-    const staffBgIndex = ref(1); // 背景页 0-based：默认第 2 页（1），可选封面（0）
+    const staffBgIndex = ref(1); // 背景页 0-based：默认第 2 页（1），面板可改任意页
+    const staffBgPage = computed({
+      get: () => staffBgIndex.value + 1, // 界面用 1-based 页码
+      set: (v) => { staffBgIndex.value = Number.isFinite(v) ? Math.max(1, v) - 1 : 1; },
+    });
+    const staffFontStatus = ref(""); // 面板里显示实际用上的字体来源，方便排查
+    const chapterToolsOpen = ref(null); // 展开章节工具菜单的章节 key
     let staffLayout = null; // staff_layout.json 缓存
     let staffBaseImg = null; // 固定半透明底图
     const staffFonts = {}; // 已加载的 webfont
@@ -992,11 +998,17 @@ createApp({
 
     // 全局：点击 / 滚动 / 窗口缩放关闭右键菜单；右键非页面处也关闭
     document.addEventListener("click", closePageMenu);
-    document.addEventListener("click", () => { staffExportOpen.value = false; });
+    document.addEventListener("click", () => {
+      staffExportOpen.value = false;
+      chapterToolsOpen.value = null;
+    });
     document.addEventListener("contextmenu", (e) => {
       if (!e.target.closest(".pv-fig")) closePageMenu();
     }, true);
-    window.addEventListener("scroll", closePageMenu, true);
+    window.addEventListener("scroll", () => {
+      closePageMenu();
+      chapterToolsOpen.value = null;
+    }, true);
     window.addEventListener("resize", closePageMenu);
 
     // 命名工具：按当前页序重命名为 001 / 002…（只改文件名主体，扩展名保持原样）
@@ -1035,6 +1047,7 @@ createApp({
         try {
           if (document.fonts.check(`20px "${fam}"`)) {
             sec.__family = fam;
+            sec.__source = "system";
             return fam;
           }
         } catch (e) { /* check 异常就试下一个 */ }
@@ -1044,13 +1057,20 @@ createApp({
         await face.load();
         document.fonts.add(face);
         sec.__family = aliases[0];
+        sec.__source = "local";
         return sec.__family;
       } catch (e) { /* 本地文件缺失（如新 clone 没放字体）→ 占位兜底 */ }
       const face = new FontFace(sec.fallback_font, `url(${sec.fallback_file})`);
       await face.load();
       document.fonts.add(face);
       sec.__family = sec.fallback_font;
+      sec.__source = "fallback";
       return sec.__family;
+    }
+
+    function staffFontSourceTag(sec) {
+      return sec.__source === "system" ? "系统"
+        : sec.__source === "local" ? "字体文件" : "占位⚠";
     }
 
     async function loadStaffBase() {
@@ -1086,7 +1106,7 @@ createApp({
       return img;
     }
 
-    function drawStaff(canvas, layout, bgImg, baseImg, rowsFamily, decFamily) {
+    function drawStaff(canvas, layout, bgImg, baseImg, rowsFamily) {
       const ctx = canvas.getContext("2d");
       const W = bgImg.naturalWidth, H = bgImg.naturalHeight;
       staffReady = W > 0;
@@ -1111,27 +1131,13 @@ createApp({
       const rows = staffRows.value
         .map((r) => [(r[0] || "").trim(), (r[1] || "").trim()])
         .filter((r) => r[0] || r[1]);
-      // 行数增减时，整块（职位行+声明）在标定区块内垂直居中，删行不留底部空洞
-      const decCount = layout.declare.lines.length;
-      const blockH = (n) => (n - 1) * layout.rows.line_height + layout.declare.gap_after_rows
-        + (decCount - 1) * layout.declare.line_height;
-      const shift = layout.auto_center_block
-        ? (blockH((layout.default_rows || []).length || rows.length) - blockH(rows.length)) / 2
-        : 0;
+      // 声明已固化底图；职位行围绕设计块中心居中，增删行上下均匀伸缩
       ctx.fillStyle = layout.rows.color;
       ctx.font = `${layout.rows.size_px * scale}px "${rowsFamily}"`;
       rows.forEach((r, i) => {
-        const y = (layout.rows.first_center_y + shift + i * layout.rows.line_height) * scale;
+        const y = (layout.rows.block_center_y
+          + (i - (rows.length - 1) / 2) * layout.rows.line_height) * scale;
         drawText(r.join(layout.rows.join), layout.center_x * scale, y, layout.rows.stroke);
-      });
-      // 固定声明行：位置跟着行数走（加行自动下移）
-      const cfg = layout.declare;
-      ctx.fillStyle = cfg.color;
-      ctx.font = `${cfg.size_px * scale}px "${decFamily}"`;
-      const firstY = layout.rows.first_center_y + shift
-        + (rows.length - 1) * layout.rows.line_height + cfg.gap_after_rows;
-      cfg.lines.forEach((line, i) => {
-        drawText(line, layout.center_x * scale, (firstY + i * cfg.line_height) * scale, cfg.stroke);
       });
     }
 
@@ -1142,12 +1148,12 @@ createApp({
       if (!canvas || !ch) return;
       try {
         const layout = await loadStaffLayout();
-        const [rowsFamily, decFamily] = await Promise.all([
-          ensureStaffFont(layout.rows), ensureStaffFont(layout.declare),
-        ]);
+        const rowsFamily = await ensureStaffFont(layout.rows);
+        staffFontStatus.value = `字体：职位行 ${rowsFamily}（${staffFontSourceTag(layout.rows)}）`
+          + ` · 声明已固化在底图`;
         const base = await loadStaffBase();
         const bg = await loadStaffBg(ch);
-        drawStaff(canvas, layout, bg, base, rowsFamily, decFamily);
+        drawStaff(canvas, layout, bg, base, rowsFamily);
       } catch (e) {
         toastMsg("staff 预览失败：" + e.message);
       }
@@ -1223,6 +1229,20 @@ createApp({
       } finally {
         staffBusy.value = false;
       }
+    }
+
+    // 背景页码改动的钳制 + 重绘（界面 1-based，内部存 0-based）
+    function onStaffBgChange() {
+      const ch = staffPanel.ch;
+      const total = ch ? (ch.page_count || 1) : 1;
+      if (!Number.isFinite(staffBgIndex.value) || staffBgIndex.value < 0) staffBgIndex.value = 0;
+      if (staffBgIndex.value > total - 1) staffBgIndex.value = total - 1;
+      renderStaffPreview();
+    }
+
+    // 章节 ⚙ 工具菜单开关
+    function toggleChapterTools(key) {
+      chapterToolsOpen.value = chapterToolsOpen.value === key ? null : key;
     }
 
     // 导出预览成品为图片文件（不落页）：a[download] 存盘
@@ -1343,6 +1363,8 @@ createApp({
       menuReplace, menuDelete, menuMoveToFront, menuMoveToLast, menuMoveUp, menuMoveDown, menuMoveToN,
       startRenameNumeric,
       staffPanel, staffRows, staffCanvas, staffBusy, staffExportOpen,
+      staffBgPage, staffFontStatus, onStaffBgChange,
+      chapterToolsOpen, toggleChapterTools,
       openStaff, closeStaff, renderStaffPreview, saveStaffRows, renderStaffPage, exportStaffImage,
       resetPick, saveMeta,
       logLines, logBox, logOpen, logNew, clearLog, toast, modal, lanAddr,
