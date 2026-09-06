@@ -43,6 +43,34 @@ python -m pip install -r requirements.txt
 Windows 直接双击 `start.bat`（Web）或 `start-gui.bat`（tkinter GUI）；
 macOS / Linux 用 `./start.sh`。
 
+## 本地覆盖更新
+
+旧版本无需重新解压/拷贝整个程序：双击 `update.bat`（或命令行 `python update.py`）
+即可把当前目录原地更新到 GitHub 最新版。
+
+- **自动保留**：`config.yaml`、漫画导入缓存（`%TEMP%\mangaupload_imports`）、
+  `.venv`、`.tools`、`output/`、`web/assets/fonts/local-*.ttf` 等本机文件；
+- 只替换仓库内受版本管理的代码文件。首次更新（旧版还没有记录清单）只覆盖不删除，
+  之后再更新会按清单清理已从新版移除的旧文件，不会误删用户自己的文件；
+- 更新前自动备份被替换文件与 `config.yaml` 到 `output/update_backups/`
+  （保留最近 3 份），中途出错自动回滚；
+- 更新后自动用新版 `requirements.txt` 同步本机 `.venv`
+  （失败不阻断：下次启动 `start.bat` 检测到环境异常会自动重建）。
+
+更新前请先关闭正在运行的程序窗口；需要联网从 GitHub 下载归档（约几 MB）。
+
+```powershell
+# 双击 update.bat，或命令行：
+python update.py            # 一键覆盖更新
+python update.py --check    # 只检查远端是否有新版本
+
+# GitHub 连不上时，先开代理再试；仍不行可用镜像：
+python update.py --url https://ghproxy.com/https://github.com/hakrelin/manga_uploader/archive/refs/heads/main.zip
+```
+
+> 从 git 克隆（目录里有 `.git`）的机器默认走 `git pull --ff-only`，同样不碰
+> `config.yaml` 与本机文件；想强制整包覆盖用 `python update.py --force-zip`。
+
 ## 快速开始
 
 ### 浏览器前端（推荐）

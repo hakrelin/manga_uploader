@@ -25,5 +25,8 @@ _tmp_*.cs
 desktop.ini
 Thumbs.db
 
+# 本地更新器状态（记录已安装文件清单与版本，不入仓库）
+.updater-state.json
+
 # 商用授权字体不入公开仓库（本地放 web/assets/fonts/local-*.ttf）
 manga_uploader/web/assets/fonts/local-*.ttf
