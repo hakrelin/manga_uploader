@@ -2,9 +2,9 @@
 
 默认发布“专栏文章”（publish_mode=article）：
 1. 逐张上传正文图片（接口与字段各版本略有差异，程序按候选顺序尝试）：
-   - POST https://api.bilibili.com/x/article/creative/article/upimage
    - POST https://api.bilibili.com/x/article/creative/article/upcover
-   multipart 字段 file 或 binary + csrf，成功返回 {code:0, data:{url}}。
+   multipart 字段 binary（实测字段 file 返回 code=-400）+ csrf，
+   成功返回 {code:0, data:{url}}。
 2. 先保存草稿：POST /x/article/creative/draft/addupdate（不传 aid），
    拿回 data.aid；
 3. 再正式提交：POST /x/article/creative/article/submit（带 aid）。
@@ -38,7 +38,6 @@ DYNAMIC_UPLOAD_IMAGE_URL = "https://api.bilibili.com/x/dynamic/feed/draw/upload_
 CREATE_DYN_URL = "https://api.bilibili.com/x/dynamic/feed/create/dyn"
 
 # 专栏文章
-ARTICLE_UPIMAGE_URL = "https://api.bilibili.com/x/article/creative/article/upimage"
 ARTICLE_UPCOVER_URL = "https://api.bilibili.com/x/article/creative/article/upcover"
 ARTICLE_DRAFT_URL = "https://api.bilibili.com/x/article/creative/draft/addupdate"
 ARTICLE_SUBMIT_URL = "https://api.bilibili.com/x/article/creative/article/submit"
@@ -210,13 +209,12 @@ class BilibiliPublisher(BasePublisher):
 
     def _upload_article_image(self, page) -> str:
         mime = mimetypes.guess_type(page.path.name)[0] or "image/jpeg"
-        # 上传接口/字段随版本变化：优先 upcover（多个长期维护项目验证过），
-        # 被拒时自动换备用组合，第一个成功即停
+        # 实测（2026-09）：upcover 只接受字段 binary；file 会稳定返回
+        # code=-400（请求错误）。保留 file 作为未来接口变更时的备用，
+        # 但放在 binary 之后，避免每次上传先报一次错。
         candidates = (
-            (ARTICLE_UPCOVER_URL, "file"),
-            (ARTICLE_UPIMAGE_URL, "file"),
             (ARTICLE_UPCOVER_URL, "binary"),
-            (ARTICLE_UPIMAGE_URL, "binary"),
+            (ARTICLE_UPCOVER_URL, "file"),
         )
         # B站偶发的单图失败：整轮接口都失败后整体重试（次数可配，默认 3）
         attempts = max(1, int(self.cfg.get("upload_attempts", 3) or 3))
@@ -252,15 +250,28 @@ class BilibiliPublisher(BasePublisher):
                         raise PublisherError(
                             f"B站 图片上传失败（code={code}）：{last_error}（请检查 Cookie）"
                         )
-                    self.log.warning(
-                        "B站 图片 %s 上传候选被拒（%s，字段 %s，第 %d/%d 轮）：%s",
-                        page.path.name,
-                        endpoint,
-                        field,
-                        attempt,
-                        attempts,
-                        last_error,
-                    )
+                    if endpoint == candidates[-1][0] and field == candidates[-1][1]:
+                        # 该轮最后一个候选也被拒，才值得提示
+                        self.log.warning(
+                            "B站 图片 %s 第 %d/%d 轮候选全部被拒（%s，字段 %s）：%s",
+                            page.path.name,
+                            attempt,
+                            attempts,
+                            endpoint,
+                            field,
+                            last_error,
+                        )
+                    else:
+                        # 中间候选被拒是换组合的正常流程，调试日志即可
+                        self.log.debug(
+                            "B站 图片 %s 候选被拒（%s，字段 %s，第 %d/%d 轮）：%s",
+                            page.path.name,
+                            endpoint,
+                            field,
+                            attempt,
+                            attempts,
+                            last_error,
+                        )
                     continue
                 url = str(((payload.get("data") or {}).get("url") or "")).strip()
                 if not url:
@@ -270,6 +281,13 @@ class BilibiliPublisher(BasePublisher):
                     url = "https:" + url
                 elif url.startswith("http://"):
                     url = "https://" + url[len("http://"):]
+                self.log.debug(
+                    "B站 图片 %s 上传成功（%s，字段 %s）：%s",
+                    page.path.name,
+                    endpoint,
+                    field,
+                    url,
+                )
                 return url
             if attempt < attempts:
                 wait = min(1.0 * attempt, 5.0)
@@ -376,14 +394,34 @@ class BilibiliPublisher(BasePublisher):
         if payload.get("code") != 0:
             self.http._dump(resp, tag="bilibili-article-submit")
             self._raise_api_error("发布", payload)
-        # 提交成功也可能只回 code=0；aid 用回草稿 id
-        return aid
+        # 草稿返回的 aid 不一定是最终文章 id，提交响应里通常会带正式 id。
+        # 找不到正式 id 时退回草稿 aid（旧逻辑），并记录响应便于排查。
+        info = payload.get("data")
+        if not isinstance(info, dict):
+            info = {}
+        candidates = ("cvid", "cv_id", "article_id", "art_id", "id", "aid")
+        final_id = ""
+        for key in candidates:
+            value = info.get(key)
+            if value not in (None, "", 0, "0"):
+                final_id = str(value)
+                break
+        if not final_id:
+            self.log.warning(
+                "B站 提交接口响应未带正式文章 id，退回草稿 aid；data=%s",
+                str(info)[:300],
+            )
+            final_id = aid
+        else:
+            self.log.info("B站 发布成功：草稿 aid=%s → 正式 id=%s", aid, final_id)
+        return final_id
 
     def _publish_article(self, chapter: Chapter) -> PublishResult:
         pages = self.prepare_pages(
             chapter, allowed_exts=ARTICLE_ALLOWED_EXTS, max_bytes=ARTICLE_MAX_BYTES
         )
         try:
+            cover_url = self._cover_from_settings(chapter, pages)
             groups = chunk_list(pages, self.article_max_pages)
             published: list[str] = []
             errors: list[str] = []
@@ -421,16 +459,23 @@ class BilibiliPublisher(BasePublisher):
                             time.sleep(float(self.common.interval_seconds))
 
                     content = self._article_content(chapter, urls)
-                    data = self._article_post_data(chapter, content, cover_url=urls[0])
+                    data = self._article_post_data(
+                        chapter, content, cover_url=cover_url or urls[0]
+                    )
                     self.log.info(
                         "保存专栏草稿 %d/%d：%s", index, len(groups), data["title"]
                     )
                     aid = self._draft_article(data)
                     self.log.info("正式发布专栏 %d/%d（aid=%s）", index, len(groups), aid)
-                    self._submit_article(aid, data)
-                    url = f"https://www.bilibili.com/read/cv{aid}"
+                    final_id = self._submit_article(aid, data)
+                    url = f"https://www.bilibili.com/read/cv{final_id}"
                     published.append(url)
-                    self.log.info("专栏发布成功：%s", url)
+                    self.log.info(
+                        "专栏发布成功：草稿 aid=%s → 文章 cv%s，%s",
+                        aid,
+                        final_id,
+                        url,
+                    )
                     self.progress(
                         "article",
                         index,
@@ -464,6 +509,68 @@ class BilibiliPublisher(BasePublisher):
             )
         finally:
             self.cleanup_prepared(chapter)
+
+    def _cover_from_settings(self, chapter: Chapter, pages) -> str | None:
+        """按 manga.json 的 bilibili.cover 设置生成/上传封面。
+
+        默认返回 None（用正文第一张图当封面）；可手动选择第一页的截取范围，
+        或使用自定义上传的封面文件。
+        """
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+
+        from PIL import Image
+
+        meta = self._meta(chapter)
+        cover = meta.get("cover") if isinstance(meta.get("cover"), dict) else {}
+        mode = str(cover.get("mode") or "first")
+        src = None
+        crop = None
+        if mode == "custom":
+            custom = chapter.source_dir / "_cover_custom.bin"
+            if custom.is_file():
+                src = custom
+        else:
+            raw_crop = cover.get("crop")
+            if (
+                isinstance(raw_crop, (list, tuple))
+                and len(raw_crop) == 4
+                and pages
+            ):
+                x, y, w, h = [float(v) for v in raw_crop]
+                if not (x <= 0.001 and y <= 0.001 and w >= 0.999 and h >= 0.999):
+                    crop = (x, y, w, h)
+                    src = pages[0].path
+        if src is None:
+            return None
+        fd, tmp_path = tempfile.mkstemp(suffix=".jpg", prefix="bcover_")
+        import os
+
+        os.close(fd)
+        tmp = Path(tmp_path)
+        try:
+            with Image.open(src) as img:
+                image = img.convert("RGB")
+                if crop is not None:
+                    iw, ih = image.size
+                    x, y, w, h = crop
+                    box = (
+                        max(0, int(x * iw)),
+                        max(0, int(y * ih)),
+                        min(iw, int((x + w) * iw)),
+                        min(ih, int((y + h) * ih)),
+                    )
+                    if box[2] > box[0] and box[3] > box[1]:
+                        image = image.crop(box)
+                image.save(tmp, "JPEG", quality=92)
+            page = SimpleNamespace(path=tmp, name=tmp.name)
+            return self._upload_article_image(page)
+        finally:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     # ---------- 图文动态（旧，可选） ----------
 

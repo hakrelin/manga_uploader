@@ -19,5 +19,11 @@ _pylibs/
 _tmp_*.py
 _tmp_*.cs
 
+# 本机打包/运行产物（不入仓库）
+.tools/
+*.zip
+desktop.ini
+Thumbs.db
+
 # 商用授权字体不入公开仓库（本地放 web/assets/fonts/local-*.ttf）
 manga_uploader/web/assets/fonts/local-*.ttf

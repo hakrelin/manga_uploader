@@ -120,7 +120,7 @@ try {
                   <div class="pick-pane" @click="!busy && pickZip()">
                     <div class="pane-ico">📦</div>
                     <div class="pane-title">导入压缩包 / 图片</div>
-                    <div class="pane-sub">ZIP · CBZ · 图片，也可拖入本区</div>
+                    <div class="pane-sub">ZIP · CBZ · 7Z · RAR · 图片，文件夹也可拖入</div>
                   </div>
                 </div>
               </template>
@@ -128,7 +128,7 @@ try {
             </div>
             <div class="path-line">
               <input type="text" v-model="comicDir" class="input"
-                placeholder="输入漫画目录，或 .zip / .cbz 文件路径，回车载入" @keyup.enter="loadComic">
+                placeholder="输入漫画目录，或 .zip/.cbz/.7z/.rar 文件路径，回车载入" @keyup.enter="loadComic">
             </div>
           </template>
 
@@ -511,6 +511,8 @@ try {
 <div v-if="chapterToolsOpen" class="tool-fab-menu" @click.stop>
   <template v-for="ch in previewChapters" :key="ch.key">
     <button class="pv-menu-item" @click="chapterToolsOpen = null; openStaff(ch)">📄 制作 Staff 页 · {{ ch.title || ch.key }}</button>
+    <button class="pv-menu-item" @click="chapterToolsOpen = null; addTailPage(ch)">🖼 加尾页 · {{ ch.title || ch.key }}</button>
+    <button class="pv-menu-item" @click="chapterToolsOpen = null; openBcover(ch)">🎨 B站封面 · {{ ch.title || ch.key }}</button>
     <button class="pv-menu-item" @click="chapterToolsOpen = null; startRenameNumeric(ch)">🔢 001 重命名 · {{ ch.title || ch.key }}</button>
   </template>
   <div class="pv-menu-sep"></div>
@@ -548,7 +550,7 @@ try {
     <div class="modal-body help-body">
       <h3>总流程</h3>
       <ol>
-        <li>① 导入 / 选择一本漫画（文件夹、ZIP、CBZ 或图片）；</li>
+        <li>① 导入 / 选择一本漫画（文件夹、ZIP、CBZ、7Z、RAR 或图片）；</li>
         <li>① 填写中文标题、作者、简介等基本信息，并检查各平台发布内容；</li>
         <li>「平台账号」页启用平台并填入 Cookie（B 站可扫码登录）；</li>
         <li>② 点「全文预览」逐平台核对标题、正文与页序，可对页面做增删/排序；</li>
@@ -557,7 +559,7 @@ try {
 
       <h3>漫画导入与内容</h3>
       <ul>
-        <li>把 ZIP / CBZ / 图片拖入①区即可导入；也可点“选择文件夹 / 压缩包”，或在路径栏输入目录后回车。</li>
+        <li>把 ZIP / CBZ / 7Z / RAR / 图片 / 文件夹拖入①区即可导入；也可点“选择文件夹 / 压缩包”，或在路径栏输入目录后回车（7Z/RAR 需要本机安装 7-Zip）。</li>
         <li>单张超过 10MB 的图片发布时会自动压缩；预览里显示的是缩略图，不影响上传原图。</li>
         <li>基本信息里的中文标题是各平台标题的主要来源；输入日文标题后可自动回填罗马音（可在账号页配置 AI 接口）。</li>
         <li>“各平台发布内容”默认按漫画信息自动组合，留空即自动，手写后会以手写内容为准，保存后写回 manga.json。</li>
@@ -568,6 +570,8 @@ try {
         <li>右键页面可插入、替换、删除、移动；所有改动先落在预览里，点「应用页面改动」或一键发布时才真正写盘。</li>
         <li>「001 重命名」会把整章按当前页序改成 001 / 002 / …；staff 页会保留为「封面名+staff」（如 001staff.png），方便按文件名排序的平台。</li>
         <li>点右下角 ⚙ →「制作 Staff 页」：先选背景页（默认封面），职位名单可点「填入常用职位」再改，点「插入 / 替换」即生成到封面之后；重复生成会覆盖旧 staff 页。</li>
+        <li>点右下角 ⚙ →「加尾页」：把内置的梅子版尾页追加到章节末尾；章节已有尾页时不会重复添加。</li>
+        <li>点右下角 ⚙ →「B站封面」：默认用第一页整图；可手动框选截取范围（手机横版可选手动偏上/偏下），也可上传自定义封面图，随章节一起保存。</li>
         <li>不需要模板 staff 页时，右键删除后点「应用页面改动」即可真正移除；之后想用自己的 staff 图，正常插入/替换即可。</li>
       </ul>
 
@@ -658,6 +662,56 @@ try {
     </div>
   </div>
 </div>
+
+  <!-- B站封面设置 -->
+  <div v-if="bcover.open" class="modal-mask" @click.self="closeBcover">
+    <div class="modal bcover-modal">
+      <div class="modal-head">
+        <div class="modal-title">🎨 B站封面 · {{ bcover.ch ? (bcover.ch.title || bcover.ch.key) : "" }}</div>
+        <button class="btn btn-ghost btn-sm" @click="closeBcover">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="bcover-source">
+          <label class="check-row"><input type="radio" value="first" v-model="bcover.mode">
+            <span>用第一页做封面</span></label>
+          <label class="check-row"><input type="radio" value="custom" v-model="bcover.mode">
+            <span>使用自定义封面图</span></label>
+        </div>
+
+        <template v-if="bcover.mode === 'first'">
+          <div class="bcover-stage" v-if="bcover.ch && bcover.ch.pages && bcover.ch.pages.length">
+            <img :src="pageUrl(bcover.ch, bcover.ch.pages[0], 0)" alt="第一页"
+                 :style="{ transform: bcoverTranslateY() }" @load="onBcoverImgLoad">
+          </div>
+          <div class="bcover-presets">
+            <button class="btn btn-ghost btn-sm" @click="bcoverPreset(0)">顶部</button>
+            <button class="btn btn-ghost btn-sm" @click="bcoverPreset(50)">中央</button>
+            <button class="btn btn-ghost btn-sm" @click="bcoverPreset(100)">底部</button>
+          </div>
+          <div class="bcover-slider-row">
+            <span class="hint-text">上下拖动取位</span>
+            <input type="range" min="0" max="100" step="1" v-model.number="bcover.pos" class="bcover-slider">
+            <span class="hint-text">{{ bcover.pos === 0 ? '顶部' : (bcover.pos === 100 ? '底部' : '中央偏' + (bcover.pos > 50 ? '下' : '上')) }}</span>
+          </div>
+          <p class="hint-text">B站封面尺寸 600×336：先框住第一页，再上下拖动选择显示区域（默认中央）。</p>
+        </template>
+
+        <template v-else>
+          <img v-if="bcover.fileUrl" :src="bcover.fileUrl" class="bcover-custom-preview" alt="自定义封面">
+          <p v-else-if="bcover.custom" class="hint-text">已上传自定义封面（可再替换）。</p>
+          <p v-else class="hint-text">尚未上传自定义封面，请选择一张图片。</p>
+          <button class="btn" @click="bcoverPickFile">选择 / 替换封面图</button>
+        </template>
+      </div>
+      <div class="modal-foot">
+        <button class="btn btn-ghost" @click="closeBcover">取消</button>
+        <button class="btn btn-primary" :disabled="busy" @click="saveBcover">保存封面设置</button>
+      </div>
+    </div>
+  </div>
+
+  <input type="file" ref="bcoverFileEl" accept="image/*,.jpg,.jpeg,.png,.gif,.webp"
+         style="display:none" @change="onBcoverFile">
 
   <!-- 页面编辑共享的文件选择器（插入 / 替换用） -->
   <input type="file" ref="pageEditFile" accept="image/*,.jpg,.jpeg,.png,.gif,.webp"

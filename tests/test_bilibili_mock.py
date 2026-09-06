@@ -17,6 +17,7 @@ from manga_uploader.publishers.bilibili import BilibiliPublisher
 class _Handler(BaseHTTPRequestHandler):
     requests_log: list = []
     draft_counter = 100
+    article_counter = 850000
     article_image_calls = 0
     article_image_failures = 0
 
@@ -66,7 +67,7 @@ class _Handler(BaseHTTPRequestHandler):
                     "data": {"dyn_id": 123, "dyn_id_str": "987654321", "dyn_type": 2},
                 }
             )
-        elif self.path.startswith("/upimage") or self.path.startswith("/upcover"):
+        elif self.path.startswith("/upcover"):
             self.__class__.article_image_calls += 1
             if self.__class__.article_image_failures > 0:
                 self.__class__.article_image_failures -= 1
@@ -91,12 +92,14 @@ class _Handler(BaseHTTPRequestHandler):
                 }
             )
         elif self.path.startswith("/submit"):
+            self.__class__.article_counter += 1
             self._send_json(
                 {
                     "code": 0,
                     "message": "0",
                     "ttl": 1,
-                    "data": {"aid": self.__class__.draft_counter},
+                    # 真实提交响应带正式文章 id（cvid），与草稿 aid 不同
+                    "data": {"cvid": self.__class__.article_counter},
                 }
             )
         else:
@@ -134,7 +137,6 @@ class TestBilibiliPublisherMock(unittest.TestCase):
             "upload": bili_mod.DYNAMIC_UPLOAD_IMAGE_URL,
             "dyn": bili_mod.CREATE_DYN_URL,
             "nav": bili_mod.NAV_URL,
-            "upimage": bili_mod.ARTICLE_UPIMAGE_URL,
             "upcover": bili_mod.ARTICLE_UPCOVER_URL,
             "draft": bili_mod.ARTICLE_DRAFT_URL,
             "submit": bili_mod.ARTICLE_SUBMIT_URL,
@@ -142,7 +144,6 @@ class TestBilibiliPublisherMock(unittest.TestCase):
         bili_mod.DYNAMIC_UPLOAD_IMAGE_URL = base + "/upload-dyn"
         bili_mod.CREATE_DYN_URL = base + "/dyn"
         bili_mod.NAV_URL = base + "/nav"
-        bili_mod.ARTICLE_UPIMAGE_URL = base + "/upimage"
         bili_mod.ARTICLE_UPCOVER_URL = base + "/upcover"
         bili_mod.ARTICLE_DRAFT_URL = base + "/draft"
         bili_mod.ARTICLE_SUBMIT_URL = base + "/submit"
@@ -156,7 +157,6 @@ class TestBilibiliPublisherMock(unittest.TestCase):
                     "upload": "DYNAMIC_UPLOAD_IMAGE_URL",
                     "dyn": "CREATE_DYN_URL",
                     "nav": "NAV_URL",
-                    "upimage": "ARTICLE_UPIMAGE_URL",
                     "upcover": "ARTICLE_UPCOVER_URL",
                     "draft": "ARTICLE_DRAFT_URL",
                     "submit": "ARTICLE_SUBMIT_URL",
@@ -168,6 +168,7 @@ class TestBilibiliPublisherMock(unittest.TestCase):
     def setUp(self):
         _Handler.requests_log = []
         _Handler.draft_counter = 100
+        _Handler.article_counter = 850000
         _Handler.article_image_calls = 0
         _Handler.article_image_failures = 0
         self.tmp = tempfile.TemporaryDirectory()
@@ -215,12 +216,18 @@ class TestBilibiliPublisherMock(unittest.TestCase):
         ).publish(chapter)
         self.assertEqual(result.status, "ok", result.message)
         self.assertEqual(result.details["mode"], "article")
-        self.assertIn("cv101", result.url)
+        # 链接必须用提交接口返回的正式文章 id，而不是草稿 aid
+        self.assertIn("cv850001", result.url)
+        self.assertNotIn("cv101", result.url)
 
         uploads = self._last_posts("/upcover")
         drafts = self._last_posts("/draft")
         submits = self._last_posts("/submit")
         self.assertEqual(len(uploads), 10)
+        # 实测 upcover 只接受字段 binary；必须先走 binary，避免每次上传
+        # 都因 file 被拒而刷“请求错误”
+        self.assertIn(b'name="binary"', uploads[0]["body"])
+        self.assertNotIn(b'name="file"', uploads[0]["body"])
         self.assertEqual(len(drafts), 1)
         self.assertEqual(len(submits), 1)
         # 顺序：全部图片 → 草稿 → 提交
@@ -245,6 +252,8 @@ class TestBilibiliPublisherMock(unittest.TestCase):
         ).publish(chapter)
         self.assertEqual(result.status, "ok", result.message)
         self.assertEqual(len(result.details["urls"]), 2)
+        self.assertIn("cv850001", result.details["urls"][0])
+        self.assertIn("cv850002", result.details["urls"][1])
         self.assertEqual(len(self._last_posts("/draft")), 2)
         self.assertEqual(len(self._last_posts("/submit")), 2)
         drafts = self._last_posts("/draft")

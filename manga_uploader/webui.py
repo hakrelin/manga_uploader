@@ -288,6 +288,71 @@ def extract_zip(archive: Path, dest: Path) -> Path:
     return dest
 
 
+ARCHIVE_EXTS = {".zip", ".cbz", ".7z", ".rar"}
+
+
+def _archive_tool(suffix: str) -> str | None:
+    """找能解 7z/rar 的命令行工具：优先用项目内置 7za.exe，其次系统 7-Zip/unrar。"""
+    import shutil
+
+    # 完整版 7z.exe + 7z.dll 支持 RAR；7za.exe 是精简版，不支持 RAR
+    for name in ("7z.exe", "7za.exe"):
+        bundled = Path(__file__).resolve().parent / "data" / "7z" / name
+        if bundled.is_file():
+            return str(bundled)
+    names = ["7z", "7za", "7zr"]
+    if suffix == ".rar":
+        names += ["unrar", "rar"]
+    for name in names:
+        found = shutil.which(name)
+        if found:
+            return found
+    if os.name == "nt":
+        candidates = [
+            Path(r"C:\Program Files\7-Zip\7z.exe"),
+            Path(r"C:\Program Files (x86)\7-Zip\7z.exe"),
+        ]
+        if suffix == ".rar":
+            candidates += [
+                Path(r"C:\Program Files\WinRAR\UnRAR.exe"),
+                Path(r"C:\Program Files\WinRAR\Rar.exe"),
+                Path(r"C:\Program Files (x86)\WinRAR\UnRAR.exe"),
+                Path(r"C:\Program Files (x86)\WinRAR\Rar.exe"),
+            ]
+        for candidate in candidates:
+            if candidate.is_file():
+                return str(candidate)
+    return None
+
+
+def extract_archive(archive: Path, dest: Path) -> Path:
+    """按扩展名解压 ZIP/CBZ（内置）或 7z/RAR（需要 7-Zip/unrar）。"""
+    suffix = archive.suffix.lower()
+    if suffix in (".zip", ".cbz"):
+        return extract_zip(archive, dest)
+    if suffix not in ARCHIVE_EXTS:
+        raise ValueError(f"不支持的压缩包格式：{suffix}")
+    tool = _archive_tool(suffix)
+    if not tool:
+        raise ValueError(
+            f"解压 {suffix} 失败：未找到可用的解压工具（项目内置 7za.exe 缺失，"
+            "且系统未安装 7-Zip/unrar）"
+        )
+    import subprocess
+
+    dest.mkdir(parents=True, exist_ok=True)
+    proc = subprocess.run(
+        [tool, "x", "-y", f"-o{dest}", str(archive)],
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    if proc.returncode != 0:
+        tail = (proc.stderr or proc.stdout or "").strip()[-400:]
+        raise ValueError(f"{tool} 解压失败：{tail or '未知错误'}")
+    return dest
+
+
 def stage_images(images: list[Path], title_hint: str = "") -> Path:
     """把图片复制到导入缓存目录并按文件名重排号。"""
     base = import_staging_base()
@@ -597,6 +662,130 @@ def upsert_staff_page(comic_dir: str | Path, chapter_key: str, data: bytes) -> i
 
     write_page_order(comic_dir, chapter_key, current)
     return len(current)
+
+
+# 内置尾页素材（汉化组尾页/梅子版尾页）
+TAIL_ASSET = Path(__file__).resolve().parent / "data" / "tail_page.jpg"
+
+
+def add_tail_page(comic_dir: str | Path, chapter_key: str) -> tuple[int, str, bool]:
+    """把内置尾页追加到章节末尾；章节已有尾页时跳过（不重复叠加）。
+
+    返回 (页数, 尾页文件名, 是否新加)。识别规则：文件名主体以“尾页”结尾。
+    """
+    if not TAIL_ASSET.is_file():
+        raise ValueError("缺少内置尾页素材（manga_uploader/data/tail_page.jpg）")
+    chapters = load_chapters(comic_dir, strict=False)
+    chapter = next((c for c in chapters if c.key == str(chapter_key or "root")), None)
+    if chapter is None:
+        raise ValueError(f"找不到章节：{chapter_key}")
+    folder = chapter.source_dir
+    current = [p.name for p in chapter.pages]
+    target = "尾页" + TAIL_ASSET.suffix.lower()
+    existing = next(
+        (n for n in current if n == target or Path(n).stem.endswith("尾页")),
+        None,
+    )
+    if existing:
+        return len(current), existing, False
+    (folder / target).write_bytes(TAIL_ASSET.read_bytes())
+    current.append(target)
+    write_page_order(comic_dir, str(chapter_key or "root"), current)
+    return len(current), target, True
+
+
+# B站封面设置（manga.json platforms.bilibili.cover）与自定义封面文件
+BCOVER_FILE = "_cover_custom.bin"
+
+
+def read_bcover(comic_dir: str | Path, chapter_key: str) -> dict:
+    """读 B站封面设置：默认第一页整图，无自定义文件。"""
+    root = Path(comic_dir)
+    meta_file = find_meta_file(root)
+    data = read_meta(meta_file) if meta_file else {}
+    platform = {}
+    if isinstance(data, dict):
+        entry = next(
+            (
+                e
+                for e in (data.get("chapters") or [])
+                if isinstance(e, dict)
+                and str(e.get("folder") or e.get("key") or e.get("name"))
+                == str(chapter_key or "root")
+            ),
+            None,
+        )
+        raw = entry if entry is not None else data
+        platforms = raw.get("platforms") if isinstance(raw, dict) else {}
+        if isinstance(platforms, dict) and isinstance(platforms.get("bilibili"), dict):
+            platform = platforms["bilibili"]
+    cover = platform.get("cover") if isinstance(platform, dict) else {}
+    if not isinstance(cover, dict):
+        cover = {}
+    mode = str(cover.get("mode") or "first")
+    crop = cover.get("crop")
+    if not (
+        isinstance(crop, (list, tuple))
+        and len(crop) == 4
+        and all(isinstance(v, (int, float)) for v in crop)
+    ):
+        crop = [0.0, 0.0, 1.0, 1.0]
+    folder = next(
+        (c.source_dir for c in load_chapters(root, strict=False) if c.key == str(chapter_key or "root")),
+        root,
+    )
+    return {
+        "mode": mode if mode in ("first", "custom") else "first",
+        "crop": [float(v) for v in crop],
+        "custom": (folder / BCOVER_FILE).is_file(),
+    }
+
+
+def write_bcover(
+    comic_dir: str | Path,
+    chapter_key: str,
+    payload: dict,
+    cover_data: bytes | None = None,
+) -> None:
+    """保存 B站封面设置；有 cover_data 时一并写入章节目录的自定义封面文件。"""
+    root = Path(comic_dir)
+    meta_file = find_meta_file(root)
+    data = read_meta(meta_file) if meta_file else {}
+    if not isinstance(data, dict):
+        data = {}
+    entry = _chapter_entry(data, str(chapter_key or "root"))
+    platforms = entry.get("platforms")
+    if not isinstance(platforms, dict):
+        platforms = {}
+        entry["platforms"] = platforms
+    bili = platforms.get("bilibili")
+    if not isinstance(bili, dict):
+        bili = {}
+        platforms["bilibili"] = bili
+    cover = bili.get("cover")
+    if not isinstance(cover, dict):
+        cover = {}
+    mode = str(payload.get("mode") or "first")
+    cover["mode"] = mode if mode in ("first", "custom") else "first"
+    crop = payload.get("crop")
+    if (
+        isinstance(crop, (list, tuple))
+        and len(crop) == 4
+        and all(isinstance(v, (int, float)) for v in crop)
+    ):
+        cover["crop"] = [min(1.0, max(0.0, float(v))) for v in crop]
+    elif mode == "custom":
+        cover.setdefault("crop", [0.0, 0.0, 1.0, 1.0])
+    bili["cover"] = cover
+    _dump_meta(meta_file or (root / "manga.json"), data)
+    if cover_data is not None:
+        chapters = load_chapters(root, strict=False)
+        chapter = next(
+            (c for c in chapters if c.key == str(chapter_key or "root")),
+            None,
+        )
+        folder = chapter.source_dir if chapter else root
+        (folder / BCOVER_FILE).write_bytes(cover_data)
 
 
 # ------------------------------------------------------------ 配置组装/保存

@@ -122,6 +122,8 @@ const STAGE_LABELS = {
   post: "发布帖子",
 };
 
+const ARCHIVE_RE = /\.(zip|cbz|7z|rar)$/i;
+
 function parseCookies(text) {
   text = (text || "").trim();
   if (!text) return {};
@@ -232,6 +234,18 @@ createApp({
       set: (v) => { staffBgIndex.value = Number.isFinite(v) ? Math.max(1, v) - 1 : 1; },
     });
     const chapterToolsOpen = ref(null); // 展开章节工具菜单的章节 key
+    // B站封面面板：默认第一页整图，可手动调截取范围或上传自定义封面
+    const bcover = reactive({
+      open: false,
+      ch: null,
+      mode: "first",
+      pos: 50,       // 0=顶部 50=中央 100=底部（B站 600×336 裁剪窗内）
+      imgRatio: 0,   // 第一页宽高比（图片加载后填充）
+      custom: false,
+      file: null,
+      fileUrl: "",
+    });
+    const bcoverFileEl = ref(null);
     let staffLayout = null; // staff_layout.json 缓存
     let staffBaseImg = null; // 固定半透明底图
     const staffFonts = {}; // 已加载的 webfont
@@ -683,7 +697,7 @@ createApp({
       if (!raw) { toastMsg("请先填写漫画目录路径"); return; }
       busy.value = true;
       try {
-        if (/\.(zip|cbz)$/i.test(raw)) {
+        if (ARCHIVE_RE.test(raw)) {
           // 路径是压缩包 → 先自动导入（解压到导入缓存）再按目录加载
           const imp = await api("/api/import-path", {
             method: "POST", json: true, body: JSON.stringify({ path: raw }),
@@ -811,12 +825,21 @@ createApp({
       }
     }
 
-    function onDrop(e) {
+    async function onDrop(e) {
       dragOver.value = false;
       if (busy.value) { toastMsg("正在导入中，请稍候…"); return; }
-      const files = Array.from((e && e.dataTransfer && e.dataTransfer.files) || []);
+      const dt = e && e.dataTransfer;
+      const items = Array.from((dt && dt.items) || []);
+      const entries = items
+        .map((it) => it.webkitGetAsEntry && it.webkitGetAsEntry())
+        .filter(Boolean);
+      if (entries.some((en) => en.isDirectory)) {
+        await uploadDroppedFolders(entries);
+        return;
+      }
+      const files = Array.from((dt && dt.files) || []);
       if (!files.length) return;
-      const zips = files.filter((f) => /\.(zip|cbz)$/i.test(f.name));
+      const zips = files.filter((f) => ARCHIVE_RE.test(f.name));
       const imgs = files.filter((f) => /\.(jpg|jpeg|png|gif|webp)$/i.test(f.name));
       if (zips.length) {
         importUpload([zips[0]], null);
@@ -826,7 +849,55 @@ createApp({
           pending: imgs, title: "", author: "", desc: "",
         };
       } else {
-        toastMsg("只支持 ZIP / CBZ 压缩包或 jpg/png/gif/webp 图片");
+        toastMsg("只支持 ZIP / CBZ / 7Z / RAR 压缩包、文件夹或 jpg/png/gif/webp 图片");
+      }
+    }
+
+    // 递归读取拖入的文件夹（Chrome/Edge 的 DataTransferItem.webkitGetAsEntry）
+    function walkDroppedEntry(entry, prefix) {
+      const files = [];
+      async function walk(en, base) {
+        if (en.isFile) {
+          const file = await new Promise((res, rej) => en.file(res, rej));
+          file._relPath = base ? base + "/" + file.name : file.name;
+          files.push(file);
+        } else if (en.isDirectory) {
+          const reader = en.createReader();
+          const nextBase = base ? base + "/" + en.name : en.name;
+          for (;;) {
+            const batch = await new Promise((res, rej) => reader.readEntries(res, rej));
+            for (const child of batch) await walk(child, nextBase);
+            if (!batch.length) break;
+          }
+        }
+      }
+      return walk(entry, "").then(() => files);
+    }
+
+    async function uploadDroppedFolders(entries) {
+      busy.value = true;
+      try {
+        const files = [];
+        for (const en of entries) {
+          files.push(...(await walkDroppedEntry(en, "")));
+        }
+        if (!files.length) {
+          toastMsg("文件夹里没有可导入的文件");
+          return;
+        }
+        const fd = new FormData();
+        fd.append("folder_upload", "1");
+        fd.append("folder_name", entries[0].name || "漫画文件夹");
+        files.forEach((f) =>
+          fd.append("file", f, f._relPath.replace(/\\/g, "/")));
+        const r = await api("/api/import", { method: "POST", body: fd });
+        comicDir.value = r.dir;
+        await loadComic();
+        toastMsg("已导入文件夹：请检查章节列表");
+      } catch (e) {
+        toastMsg("导入失败：" + e.message);
+      } finally {
+        busy.value = false;
       }
     }
 
@@ -1228,6 +1299,105 @@ createApp({
       toastMsg("已按页序重命名为 001…（发布时落盘）");
     }
 
+    // ---------------- B站封面（截取第一页 / 自定义上传） ----------------
+
+    async function openBcover(ch) {
+      bcover.ch = ch || null;
+      bcover.open = true;
+      bcover.mode = "first";
+      bcover.pos = 50;
+      bcover.imgRatio = 0;
+      bcover.custom = false;
+      bcover.file = null;
+      if (bcover.fileUrl) URL.revokeObjectURL(bcover.fileUrl);
+      bcover.fileUrl = "";
+      if (!comicDir.value.trim() || !ch) return;
+      try {
+        const r = await api(
+          "/api/bcover?dir=" + encodeURIComponent(comicDir.value.trim())
+          + "&chapter=" + encodeURIComponent(ch.key)
+        );
+        bcover.mode = r.mode === "custom" ? "custom" : "first";
+        const c = r.crop || [0, 0, 1, 1];
+        // 旧版任意框设置：按整页默认读取，保留 mode/自定义状态
+        bcover.pos = 50;
+        bcover.custom = !!r.custom;
+      } catch (e) {
+        toastMsg("读取 B站封面设置失败：" + e.message);
+      }
+    }
+
+    function closeBcover() {
+      bcover.open = false;
+      bcover.ch = null;
+    }
+
+    function bcoverPickFile() {
+      if (bcoverFileEl.value) bcoverFileEl.value.click();
+    }
+
+    function onBcoverFile(e) {
+      const file = e.target.files && e.target.files[0];
+      if (!file) return;
+      if (bcover.fileUrl) URL.revokeObjectURL(bcover.fileUrl);
+      bcover.fileUrl = URL.createObjectURL(file);
+      bcover.file = file;
+      bcover.mode = "custom";
+    }
+
+    function bcoverPreset(pos) {
+      bcover.pos = Math.max(0, Math.min(100, Number(pos) || 50));
+      bcover.mode = "first";
+    }
+
+    function onBcoverImgLoad(ev) {
+      const img = ev && ev.target;
+      if (img && img.naturalWidth > 0) {
+        bcover.imgRatio = img.naturalWidth / img.naturalHeight;
+      }
+    }
+
+    function bcoverTranslateY() {
+      const ratio = bcover.imgRatio > 0 ? bcover.imgRatio : 0.7;
+      if (ratio <= 1 / 0.56) {
+        // 裁剪窗高 = 图宽 × 0.56；图片高 = 图宽 ÷ ratio
+        const visibleFrac = 0.56 * ratio;
+        const maxMove = 1 - visibleFrac; // 图片比裁剪窗高时可上移的比例
+        return "translateY(" + (-maxMove * (bcover.pos / 100) * 100).toFixed(2) + "%)";
+      }
+      return "translateY(0)";
+    }
+
+    async function saveBcover() {
+      const ch = bcover.ch;
+      if (!ch || !comicDir.value.trim()) return;
+      busy.value = true;
+      try {
+        // B站封面尺寸 600×336：第一页按裁剪窗上下取位换算成归一化裁切范围
+        const ratio = bcover.imgRatio > 0 ? bcover.imgRatio : 0.7;
+        let crop = [0, 0, 1, 1];
+        if (bcover.mode === "first" && ratio <= 1 / 0.56) {
+          const hFrac = 0.56 * ratio;
+          const yFrac = (1 - hFrac) * (bcover.pos / 100);
+          crop = [0, yFrac, 1, hFrac];
+        }
+        const fd = new FormData();
+        fd.append("dir", comicDir.value.trim());
+        fd.append("chapter", ch.key);
+        fd.append("cover", JSON.stringify({ mode: bcover.mode, crop }));
+        if (bcover.file) fd.append("file", bcover.file, "cover.jpg");
+        await api("/api/bcover", { method: "POST", body: fd });
+        toastMsg("B站封面设置已保存");
+        bcover.open = false;
+        bcover.ch = null;
+        await loadComic();
+      } catch (e) {
+        toastMsg("保存 B站封面失败：" + e.message);
+      } finally {
+        busy.value = false;
+      }
+    }
+
     // ---------------- staff 页（前端 canvas 渲染：预览==成品同源） ----------------
 
     async function loadStaffLayout() {
@@ -1390,6 +1560,29 @@ createApp({
         await renderStaffPreview();
       } catch (e) {
         toastMsg("staff 面板打开失败：" + e.message);
+      }
+    }
+
+    // 加尾页：把内置尾页素材追加到章节末尾（与 staff 页一样落盘到章节目录）
+    async function addTailPage(ch) {
+      if (!comicDir.value.trim()) { toastMsg("请先加载漫画目录"); return; }
+      if (!ch) return;
+      busy.value = true;
+      try {
+        const r = await api("/api/tail", {
+          method: "POST", json: true,
+          body: JSON.stringify({ dir: comicDir.value.trim(), chapter: ch.key }),
+        });
+        toastMsg(
+          r.added
+            ? `已添加尾页（${r.name}，共 ${r.pages} 页）`
+            : `章节已有尾页（${r.name}），未重复添加`
+        );
+        await loadComic();
+      } catch (e) {
+        toastMsg("加尾页失败：" + e.message);
+      } finally {
+        busy.value = false;
       }
     }
 
@@ -1605,6 +1798,9 @@ createApp({
       staffBgPage, staffBgStep, onStaffBgChange, staffFontStatus,
       chapterToolsOpen, toggleChapterTools, applyPageEdits,
       openStaff, closeStaff, renderStaffPreview, saveStaffRows, renderStaffPage, exportStaffImage,
+      addTailPage,
+      bcover, bcoverFileEl, openBcover, closeBcover, bcoverPickFile,
+      onBcoverFile, bcoverPreset, onBcoverImgLoad, bcoverTranslateY, saveBcover,
       fillStaffTemplate,
       resetPick, saveMeta,
       logLines, logBox, logOpen, logNew, clearLog, toast, modal, helpOpen, lanAddr,

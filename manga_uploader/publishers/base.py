@@ -109,8 +109,20 @@ class BasePublisher(ABC):
         spec = self._spec_key(allowed_exts, max_bytes)
         out_dir = self.output_dir / "prepared" / "_shared" / spec / chapter.key
         prepared = []
+        total = len(chapter.pages)
+        import time as _time
+
         for index, page in enumerate(chapter.pages, 1):
             try:
+                self.progress(
+                    "prepare",
+                    index - 1,
+                    total,
+                    f"正在准备图片 {index}/{total}：{page.name}",
+                    chapter_key=chapter.key,
+                )
+                self.log.info("准备图片 %d/%d：%s…", index, total, page.name)
+                started = _time.time()
                 item = prepare_page_cached(
                     page,
                     out_dir,
@@ -120,11 +132,18 @@ class BasePublisher(ABC):
                     quality=self.common.quality,
                     max_bytes=max_bytes,
                 )
+                self.log.info(
+                    "准备完成 %d/%d：%s（%.1fs）",
+                    index,
+                    total,
+                    page.name,
+                    _time.time() - started,
+                )
                 self.progress(
                     "prepare",
                     index,
-                    len(chapter.pages),
-                    f"准备图片 {index}/{len(chapter.pages)}：{page.name}",
+                    total,
+                    f"已准备图片 {index}/{total}：{page.name}",
                     chapter_key=chapter.key,
                 )
             except (ValueError, RuntimeError) as exc:

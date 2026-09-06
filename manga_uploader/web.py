@@ -41,9 +41,12 @@ from .models import Chapter
 from .runner import PLATFORM_CLASSES, Runner
 from .util import IMAGE_EXTS, get_logger, human_size, setup_logging
 from .webui import (
+    ARCHIVE_EXTS,
     PLATFORM_CARDS,
+    add_tail_page,
     build_app,
-    extract_zip,
+    read_bcover,
+    extract_archive,
     format_full_preview,
     import_staging_base,
     looks_like_full_comic,
@@ -54,6 +57,7 @@ from .webui import (
     upsert_staff_page,
     write_page_order,
     write_quick_meta,
+    write_bcover,
     write_staff_rows,
     bilibili_qr_new,
     bilibili_qr_poll,
@@ -577,6 +581,8 @@ class WebHandler(BaseHTTPRequestHandler):
             self._api_page(parse_qs(parsed.query))
         elif path == "/api/staff":
             self._api_staff_get(parse_qs(parsed.query))
+        elif path == "/api/bcover":
+            self._api_bcover()
         else:
             self._json(404, {"error": f"未知接口：{path}"})
 
@@ -731,7 +737,7 @@ class WebHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _pick_dir(self, kind: str = "dir") -> None:
-        """kind=dir → 弹目录框；kind=file → 弹文件框（ZIP/CBZ/图片）并直接导入。"""
+        """kind=dir → 弹目录框；kind=file → 弹文件框（压缩包/图片）并直接导入。"""
         try:
             import tkinter as tk
             from tkinter import filedialog
@@ -741,10 +747,10 @@ class WebHandler(BaseHTTPRequestHandler):
             root.attributes("-topmost", True)
             if kind == "file":
                 path = filedialog.askopenfilename(
-                    title="选择漫画压缩包或图片（ZIP / CBZ / JPG / PNG / GIF / WEBP）",
+                    title="选择漫画压缩包/图片/文件夹内容（ZIP / CBZ / 7Z / RAR / 图片）",
                     filetypes=[
-                        ("压缩包 / 图片", "*.zip *.cbz *.jpg *.jpeg *.png *.gif *.webp"),
-                        ("压缩包", "*.zip *.cbz"),
+                        ("压缩包 / 图片", "*.zip *.cbz *.7z *.rar *.jpg *.jpeg *.png *.gif *.webp"),
+                        ("压缩包", "*.zip *.cbz *.7z *.rar"),
                         ("图片", "*.jpg *.jpeg *.png *.gif *.webp"),
                         ("所有文件", "*.*"),
                     ],
@@ -764,12 +770,12 @@ class WebHandler(BaseHTTPRequestHandler):
         if kind == "file":
             suffix = Path(path).suffix.lower()
             try:
-                if suffix in (".zip", ".cbz"):
+                if suffix in ARCHIVE_EXTS:
                     comic = _import_archive_path(path)
                 elif suffix in (".jpg", ".jpeg", ".png", ".gif", ".webp"):
                     comic = _import_single_image(path)
                 else:
-                    self._json(200, {"ok": False, "error": "请选择 ZIP / CBZ 压缩包或图片"})
+                    self._json(200, {"ok": False, "error": "请选择 ZIP / CBZ / 7Z / RAR 压缩包或图片"})
                     return
             except Exception as exc:
                 self._json(200, {"ok": False, "error": f"导入失败：{exc}"})
@@ -814,6 +820,10 @@ class WebHandler(BaseHTTPRequestHandler):
             self._api_staff_save()
         elif path == "/api/staff/render":
             self._api_staff_render()
+        elif path == "/api/tail":
+            self._api_tail_add()
+        elif path == "/api/bcover":
+            self._api_bcover()
         elif path == "/api/apply":
             self._api_apply_edits()
         else:
@@ -1127,14 +1137,14 @@ class WebHandler(BaseHTTPRequestHandler):
         self._json(200, {"ok": True})
 
     def _api_import_path(self) -> None:
-        """按本地 .zip/.cbz 路径直接导入（供路径输入框用）。"""
+        """按本地压缩包路径直接导入（供路径输入框用）。"""
         data = self._read_json()
         raw_path = str(data.get("path") or "").strip()
         if not raw_path:
             self._json(400, {"error": "缺少路径"})
             return
-        if Path(raw_path).suffix.lower() not in (".zip", ".cbz"):
-            self._json(400, {"error": "路径不是 ZIP / CBZ 压缩包"})
+        if Path(raw_path).suffix.lower() not in ARCHIVE_EXTS:
+            self._json(400, {"error": "路径不是 ZIP / CBZ / 7Z / RAR 压缩包"})
             return
         if not Path(raw_path).is_file():
             self._json(404, {"error": f"文件不存在：{raw_path}"})
@@ -1198,6 +1208,92 @@ class WebHandler(BaseHTTPRequestHandler):
         if set(names) != valid or len(names) != len(valid):
             raise ValueError("pages 必须恰好是当前章节的全部页面文件")
         write_page_order(comic_dir, chapter_key, names)
+
+    # ---------- 尾页（内置素材直接追加到章节末尾） ----------
+
+    def _api_tail_add(self) -> None:
+        data = self._read_json()
+        comic_dir = str(data.get("dir") or "").strip()
+        chapter_key = str(data.get("chapter") or "").strip() or "root"
+        if not comic_dir:
+            self._json(400, {"error": "缺少漫画目录"})
+            return
+        try:
+            count, name, added = add_tail_page(comic_dir, chapter_key)
+        except Exception as exc:
+            self._json(500, {"error": f"加尾页失败：{exc}"})
+            return
+        self.server.state.ring.append(
+            "INFO",
+            f"{'已添加尾页' if added else '章节已有尾页（跳过）'}："
+            f"{Path(comic_dir).name}（{chapter_key}，{name}，共 {count} 页）",
+        )
+        self._json(200, {"ok": True, "added": added, "name": name, "pages": count})
+
+    def _api_bcover(self) -> None:
+        """GET 读 B站封面设置；POST 保存设置并可上传自定义封面文件。"""
+        if self.command == "GET":
+            parsed = urlparse(self.path)
+            query = parse_qs(parsed.query)
+            comic_dir = (query.get("dir") or [""])[0].strip()
+            chapter_key = (query.get("chapter") or [""])[0].strip() or "root"
+            if not comic_dir:
+                self._json(400, {"error": "缺少漫画目录"})
+                return
+            try:
+                info = read_bcover(comic_dir, chapter_key)
+            except Exception as exc:
+                self._json(500, {"error": f"读取 B站封面设置失败：{exc}"})
+                return
+            self._json(200, {"ok": True, **info})
+            return
+        # POST：multipart，字段 dir/chapter/cover(JSON)，可选 file=自定义封面图
+        content_type = self.headers.get("Content-Type", "")
+        boundary_match = re.search(r"boundary=(?:\"([^\"]+)\"|([^;]+))", content_type)
+        if not boundary_match:
+            self._json(400, {"error": "缺少 multipart boundary"})
+            return
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = 0
+        if length <= 0 or length > 64 * 1024 * 1024:
+            self._json(400, {"error": "请求体大小异常"})
+            return
+        body = self.rfile.read(length)
+        try:
+            fields, files = _split_multipart(
+                body, boundary_match.group(1) or boundary_match.group(2)
+            )
+        except ValueError as exc:
+            self._json(400, {"error": f"解析上传失败：{exc}"})
+            return
+        comic_dir = str(fields.get("dir") or "").strip()
+        chapter_key = str(fields.get("chapter") or "").strip() or "root"
+        try:
+            payload = json.loads(fields.get("cover") or "{}")
+        except (TypeError, ValueError):
+            payload = {}
+        if not comic_dir:
+            self._json(400, {"error": "缺少漫画目录"})
+            return
+        if not isinstance(payload, dict):
+            self._json(400, {"error": "cover 必须是 JSON 对象"})
+            return
+        cover_data = None
+        if files:
+            cover_data = files[0][1]
+        try:
+            write_bcover(comic_dir, chapter_key, payload, cover_data=cover_data)
+        except Exception as exc:
+            self._json(500, {"error": f"保存 B站封面失败：{exc}"})
+            return
+        self.server.state.ring.append(
+            "INFO",
+            f"已保存 B站封面设置：{Path(comic_dir).name}（{chapter_key}，"
+            f"mode={payload.get('mode', 'first')}）",
+        )
+        self._json(200, {"ok": True})
 
     # ---------- Staff 页（后端零渲染：只管名单存取 + 成品 PNG 落页） ----------
 
@@ -1511,14 +1607,14 @@ def _format_plan_text(plan) -> str:
 
 
 def _import_archive_path(archive_path: str) -> Path:
-    """本地 ZIP/CBZ 直接解压进导入缓存：完整漫画原样用，否则按单本暂存补 manga.json。"""
+    """本地压缩包直接解压进导入缓存：完整漫画原样用，否则按单本暂存补 manga.json。"""
     from .util import is_image
 
     base = import_staging_base()
     archive = Path(archive_path)
     work = base / f"import_{int(time.time_ns() % 10**9)}"
     work.mkdir(parents=True, exist_ok=False)
-    extracted = extract_zip(archive, work / "unpacked")
+    extracted = extract_archive(archive, work / "unpacked")
     extracted = unwrap_single_dir(extracted)
     if looks_like_full_comic(extracted):
         return extracted
@@ -1642,7 +1738,7 @@ def _split_multipart(
 
 
 def _import_files(fields: dict[str, str], files: list[tuple[str, bytes]]) -> Path:
-    """按上传来源落地到导入缓存：ZIP/CBZ 解压；多图暂存 + 补 manga.json。"""
+    """按上传来源落地到导入缓存：压缩包解压 / 文件夹上传 / 多图暂存。"""
     from .util import is_image
 
     base = import_staging_base()
@@ -1653,10 +1749,45 @@ def _import_files(fields: dict[str, str], files: list[tuple[str, bytes]]) -> Pat
     }
     stamp = time.strftime("%Y%m%d-%H%M%S")
 
+    # 1) 拖入文件夹上传：文件按相对路径摆放，保留 manga.json/章节结构
+    if str(fields.get("folder_upload") or "").strip() == "1":
+        work = base / f"import_{int(time.time_ns() % 10**9)}"
+        work.mkdir(parents=True, exist_ok=False)
+        for name, data in files:
+            rel = Path(str(name).replace("\\", "/"))
+            # 只留相对路径，防路径穿越/盘符
+            parts = [p for p in rel.parts if p not in ("", ".", "..")]
+            if not parts:
+                continue
+            target = work.joinpath(*parts)
+            if work.resolve() not in target.resolve().parents and target.resolve() != work.resolve():
+                raise ValueError(f"文件夹上传路径越界：{name}")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+        extracted = unwrap_single_dir(work)
+        if looks_like_full_comic(extracted):
+            return extracted
+        images = sorted(
+            (
+                p
+                for p in extracted.rglob("*")
+                if p.is_file() and is_image(p)
+            ),
+            key=lambda p: p.stem.lower(),
+        )
+        if not images:
+            raise ValueError("文件夹里没有找到漫画图片（jpg/png/gif/webp）")
+        staged = stage_images(
+            images, title_hint=meta.get("title") or extracted.name or "comic"
+        )
+        write_quick_meta(staged, meta)
+        return staged
+
+    # 2) 压缩包上传（ZIP / CBZ / 7Z / RAR）
     archives = [
         (name, data)
         for name, data in files
-        if Path(name).suffix.lower() in (".zip", ".cbz")
+        if Path(name).suffix.lower() in ARCHIVE_EXTS
     ]
     if archives:
         # 只处理第一个压缩包，避免歧义
@@ -1665,7 +1796,7 @@ def _import_files(fields: dict[str, str], files: list[tuple[str, bytes]]) -> Pat
         work.mkdir(parents=True, exist_ok=False)
         archive_path = work / name
         archive_path.write_bytes(data)
-        extracted = extract_zip(archive_path, work / "unpacked")
+        extracted = extract_archive(archive_path, work / "unpacked")
         extracted = unwrap_single_dir(extracted)
         if looks_like_full_comic(extracted):
             return extracted
@@ -1679,13 +1810,14 @@ def _import_files(fields: dict[str, str], files: list[tuple[str, bytes]]) -> Pat
         write_quick_meta(staged, meta)
         return staged
 
+    # 3) 多张图片直接上传
     images = [
         (name, data)
         for name, data in files
         if Path(name).suffix.lower() in (".jpg", ".jpeg", ".png", ".gif", ".webp")
     ]
     if not images:
-        raise ValueError("没有找到图片或 ZIP/CBZ 压缩包")
+        raise ValueError("没有找到图片或 ZIP/CBZ/7Z/RAR 压缩包")
     images.sort(key=lambda pair: pair[0].lower())
     work = base / f"import_{int(time.time_ns() % 10**9)}"
     work.mkdir(parents=True, exist_ok=False)
