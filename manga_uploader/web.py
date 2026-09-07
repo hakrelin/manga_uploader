@@ -45,14 +45,21 @@ from .webui import (
     PLATFORM_CARDS,
     add_tail_page,
     build_app,
+    config_profiles_path,
     read_bcover,
+    delete_profile_config,
     extract_archive,
     format_full_preview,
     import_staging_base,
     looks_like_full_comic,
+    load_config_profiles,
+    normalize_profile_name,
     read_staff_rows,
+    rename_profile_config,
     save_config,
+    save_profile_config,
     stage_images,
+    switch_profile_config,
     unwrap_single_dir,
     upsert_staff_page,
     write_page_order,
@@ -559,6 +566,8 @@ class WebHandler(BaseHTTPRequestHandler):
                     "note": note,
                 },
             )
+        elif path == "/api/config-profiles":
+            self._api_config_profiles_get()
         elif path == "/api/events":
             self._handle_events(parse_qs(parsed.query))
         elif path == "/api/proxy/detect":
@@ -790,6 +799,8 @@ class WebHandler(BaseHTTPRequestHandler):
         path = parsed.path
         if path == "/api/config":
             self._api_config()
+        elif path == "/api/config-profiles":
+            self._api_config_profiles()
         elif path == "/api/check":
             self._api_check()
         elif path == "/api/plan":
@@ -862,6 +873,79 @@ class WebHandler(BaseHTTPRequestHandler):
             return
         self.server.state.ring.append("INFO", f"已保存配置：{path}")
         self._json(200, {"ok": True, "path": str(path)})
+
+    def _api_config_profiles_get(self) -> None:
+        """列出配置预设（只含名称/时间，不含 Cookie 等敏感内容）。"""
+        profiles_path = config_profiles_path(self._config_path())
+        try:
+            data = load_config_profiles(profiles_path)
+        except Exception as exc:
+            self._json(500, {"error": f"读取配置预设失败：{exc}"})
+            return
+        rows = []
+        for name, entry in data["profiles"].items():
+            if not isinstance(entry, dict):
+                continue
+            rows.append(
+                {
+                    "name": name,
+                    "updated_at": str(entry.get("updated_at") or ""),
+                }
+            )
+        self._json(200, {"active": data["active"], "profiles": rows})
+
+    def _api_config_profiles(self) -> None:
+        """配置预设：save / switch / rename / delete。"""
+        data = self._read_json()
+        action = str(data.get("action") or "")
+        profiles_path = config_profiles_path(self._config_path())
+        try:
+            if action == "save":
+                created, _ = save_profile_config(
+                    profiles_path, data.get("name"), data.get("config")
+                )
+                name = normalize_profile_name(data.get("name"))
+                self.server.state.ring.append(
+                    "INFO", f"已保存配置预设：{name}" + ("（新建）" if created else "（覆盖）")
+                )
+                self._json(200, {"ok": True, "created": created})
+                return
+            if action == "switch":
+                name = normalize_profile_name(data.get("name"))
+                payload = switch_profile_config(
+                    profiles_path, self._config_path(), name
+                )
+                self.server.state.ring.append("INFO", f"已切换到配置预设：{name}")
+                self._json(
+                    200, {"ok": True, "active": name, "config": payload}
+                )
+                return
+            if action == "rename":
+                result = rename_profile_config(
+                    profiles_path, data.get("old"), data.get("new")
+                )
+                old = normalize_profile_name(data.get("old"))
+                new = normalize_profile_name(data.get("new"))
+                self.server.state.ring.append(
+                    "INFO", f"配置预设已重命名：{old} → {new}"
+                )
+                self._json(200, {"ok": True, "active": result["active"]})
+                return
+            if action == "delete":
+                name = normalize_profile_name(data.get("name"))
+                deleted = delete_profile_config(profiles_path, name)
+                if not deleted:
+                    self._json(400, {"error": f"找不到配置：{name}"})
+                    return
+                self.server.state.ring.append("INFO", f"已删除配置预设：{name}")
+                self._json(200, {"ok": True, "deleted": name})
+                return
+            self._json(400, {"error": f"未知操作：{action}"})
+        except ConfigError as exc:
+            self._json(400, {"error": str(exc)})
+        except Exception as exc:
+            self.server.state.ring.append("ERROR", f"配置预设操作失败：{exc}")
+            self._json(500, {"error": f"操作失败：{exc}"})
 
     def _app_from(self, payload: dict[str, Any]) -> AppConfig:
         try:

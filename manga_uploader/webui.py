@@ -13,6 +13,7 @@ import shutil
 import tempfile
 import time
 import zipfile
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
@@ -916,6 +917,138 @@ def save_config(config_path: str | Path, payload: dict[str, Any]) -> Path:
             "或检查该文件是否被其他程序占用"
         ) from exc
     return path
+
+
+# ------------------------------------------------------------ 配置切换表（多配置）
+
+def config_profiles_path(config_path: str | Path) -> Path:
+    """配置预设文件与 config.yaml 同目录（config.profiles.yaml）。"""
+    return Path(config_path).with_name("config.profiles.yaml")
+
+
+def _read_yaml_doc(path: Path) -> dict[str, Any]:
+    import yaml
+
+    if not path.is_file():
+        return {}
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_yaml_doc(path: Path, data: dict[str, Any]) -> None:
+    import yaml
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.mu-tmp-{os.getpid()}-{time.time_ns()}")
+    tmp.write_text(
+        yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8"
+    )
+    os.replace(tmp, path)
+
+
+def load_config_profiles(profiles_path: str | Path) -> dict[str, Any]:
+    """读取预设文件，统一返回 {"active": str, "profiles": {名称: 条目}}。"""
+    data = _read_yaml_doc(Path(profiles_path))
+    profiles = data.get("profiles")
+    if not isinstance(profiles, dict):
+        profiles = {}
+    active = data.get("active")
+    if not isinstance(active, str) or active not in profiles:
+        active = ""
+    return {"active": active, "profiles": profiles}
+
+
+def normalize_profile_name(name: Any) -> str:
+    text = str(name or "").strip()
+    if not text:
+        raise ConfigError("配置名称不能为空")
+    if len(text) > 50:
+        raise ConfigError("配置名称最长 50 字")
+    if any(ord(c) < 32 for c in text):
+        raise ConfigError("配置名称包含非法字符")
+    return text
+
+
+def save_profile_config(
+    profiles_path: str | Path, name: Any, config_payload: Any
+) -> tuple[bool, dict[str, Any]]:
+    """保存/覆盖一个配置预设；返回 (是否新建, 最新数据)。"""
+    name = normalize_profile_name(name)
+    if not isinstance(config_payload, dict):
+        raise ConfigError("配置内容为空，无法保存")
+    if not isinstance(config_payload.get("platforms"), dict) or not config_payload.get(
+        "platforms"
+    ):
+        raise ConfigError("配置内容为空：请先在页面填写平台账号/设置后再保存")
+    path = Path(profiles_path)
+    data = _read_yaml_doc(path)
+    profiles = data.get("profiles")
+    if not isinstance(profiles, dict):
+        profiles = {}
+    created = name not in profiles
+    profiles[name] = {
+        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "config": config_payload,
+    }
+    active = data.get("active") if isinstance(data.get("active"), str) else ""
+    if active not in profiles:
+        active = ""
+    result = {"active": active, "profiles": profiles}
+    _write_yaml_doc(path, result)
+    return created, result
+
+
+def rename_profile_config(
+    profiles_path: str | Path, old_name: Any, new_name: Any
+) -> dict[str, Any]:
+    old = normalize_profile_name(old_name)
+    new = normalize_profile_name(new_name)
+    if old == new:
+        raise ConfigError("新名称与旧名称相同")
+    data = load_config_profiles(profiles_path)
+    if old not in data["profiles"]:
+        raise ConfigError(f"找不到配置：{old}")
+    if new in data["profiles"]:
+        raise ConfigError(f"已存在同名配置：{new}")
+    entry = data["profiles"].pop(old)
+    data["profiles"][new] = entry
+    if data["active"] == old:
+        data["active"] = new
+    _write_yaml_doc(Path(profiles_path), data)
+    return data
+
+
+def delete_profile_config(profiles_path: str | Path, name: Any) -> bool:
+    name = normalize_profile_name(name)
+    data = load_config_profiles(profiles_path)
+    if name not in data["profiles"]:
+        return False
+    data["profiles"].pop(name)
+    if data["active"] == name:
+        data["active"] = ""
+    _write_yaml_doc(Path(profiles_path), data)
+    return True
+
+
+def switch_profile_config(
+    profiles_path: str | Path, config_path: str | Path, name: Any
+) -> dict[str, Any]:
+    """把指定预设写入 config.yaml 并标记为当前使用；返回该预设的 common+platforms。"""
+    name = normalize_profile_name(name)
+    data = load_config_profiles(profiles_path)
+    if name not in data["profiles"]:
+        raise ConfigError(f"找不到配置：{name}")
+    entry = data["profiles"][name]
+    payload = entry.get("config")
+    if not isinstance(payload, dict):
+        raise ConfigError(f"配置「{name}」内容损坏，请删除后重新保存")
+    save_config(config_path, payload)
+    data["active"] = name
+    _write_yaml_doc(Path(profiles_path), data)
+    return payload
 
 
 # ------------------------------------------------------------ B站扫码（分步）

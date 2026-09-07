@@ -185,6 +185,11 @@ createApp({
     const busy = ref(false);
     const cards = ref([]);
     const config = reactive({ common: {}, platforms: {} });
+    // 配置切换表（config.profiles.yaml 里的多套预设）
+    const profiles = ref([]);
+    const activeProfile = ref("");
+    const quickProfile = ref("");
+    const newProfileName = ref("");
     const statuses = reactive({});
     const expanded = reactive({});
     // 发布进度条（后端 publish 日志里的 progress 事件驱动）
@@ -507,16 +512,125 @@ createApp({
         version.value = st.version || "";
         note.value = st.note || "";
         cards.value = st.cards || [];
-        Object.keys(config.common).forEach((k) => delete config.common[k]);
-        Object.keys(config.platforms).forEach((k) => delete config.platforms[k]);
-        Object.assign(config.common, st.config.common);
-        for (const [k, v] of Object.entries(st.config.platforms || {})) {
-          config.platforms[k] = v;
-        }
+        applyConfigPayload(st.config);
         running.value = !!st.running;
         if (running.value) pubProgress.active = true; // 页面打开时已有任务在跑：先显示不确定进度
       } catch (e) {
         toastMsg("加载配置失败：" + e.message);
+      }
+    }
+
+    function applyConfigPayload(cfg) {
+      const c = cfg || {};
+      Object.keys(config.common).forEach((k) => delete config.common[k]);
+      Object.keys(config.platforms).forEach((k) => delete config.platforms[k]);
+      Object.assign(config.common, c.common || {});
+      for (const [k, v] of Object.entries(c.platforms || {})) {
+        config.platforms[k] = v;
+      }
+    }
+
+    // ---------------- 配置切换表 ----------------
+
+    async function loadProfiles() {
+      try {
+        const r = await api("/api/config-profiles");
+        profiles.value = r.profiles || [];
+        activeProfile.value = r.active || "";
+        const activeExists = profiles.value.some((p) => p.name === activeProfile.value);
+        if (!activeExists) activeProfile.value = "";
+        quickProfile.value = activeProfile.value;
+      } catch (e) {
+        // 旧版后端没有该接口时静默，功能入口不可用
+      }
+    }
+
+    async function saveProfileAs(rawName) {
+      const target = String(rawName == null ? newProfileName.value : rawName).trim();
+      if (!target) {
+        toastMsg("请先填写配置名称");
+        return;
+      }
+      if (profiles.value.some((p) => p.name === target)
+          && !window.confirm(`配置「${target}」已存在，用当前页面内容覆盖它？`)) {
+        return;
+      }
+      busy.value = true;
+      try {
+        await api("/api/config-profiles", {
+          method: "POST", json: true,
+          body: JSON.stringify({ action: "save", name: target, config: payload() }),
+        });
+        newProfileName.value = "";
+        toastMsg(`已保存配置预设：${target}`);
+        await loadProfiles();
+      } catch (e) {
+        toastMsg("保存预设失败：" + e.message);
+      } finally {
+        busy.value = false;
+      }
+    }
+
+    async function switchProfile(name) {
+      const target = String(name || "").trim();
+      if (!target) return;
+      busy.value = true;
+      try {
+        const r = await api("/api/config-profiles", {
+          method: "POST", json: true,
+          body: JSON.stringify({ action: "switch", name: target }),
+        });
+        applyConfigPayload(r.config || {});
+        activeProfile.value = r.active || target;
+        quickProfile.value = activeProfile.value;
+        toastMsg(`已切换到配置：${target}`);
+      } catch (e) {
+        toastMsg("切换配置失败：" + e.message);
+      } finally {
+        busy.value = false;
+      }
+    }
+
+    async function renameProfile(oldName) {
+      const next = window.prompt(`把配置「${oldName}」重命名为：`, oldName);
+      if (next == null) return;
+      const target = String(next).trim();
+      if (!target || target === oldName) return;
+      if (profiles.value.some((p) => p.name === target)) {
+        toastMsg(`已存在同名配置：${target}`);
+        return;
+      }
+      busy.value = true;
+      try {
+        await api("/api/config-profiles", {
+          method: "POST", json: true,
+          body: JSON.stringify({ action: "rename", old: oldName, new: target }),
+        });
+        toastMsg(`已重命名：${oldName} → ${target}`);
+        await loadProfiles();
+      } catch (e) {
+        toastMsg("重命名失败：" + e.message);
+      } finally {
+        busy.value = false;
+      }
+    }
+
+    async function deleteProfile(name) {
+      if (!window.confirm(`确认删除配置预设「${name}」？\n当前正在使用的 config.yaml 不受影响。`)) {
+        return;
+      }
+      busy.value = true;
+      try {
+        await api("/api/config-profiles", {
+          method: "POST", json: true,
+          body: JSON.stringify({ action: "delete", name }),
+        });
+        toastMsg(`已删除配置：${name}`);
+        await loadProfiles();
+      } catch (e) {
+        toastMsg("删除失败：" + e.message);
+      } finally {
+        busy.value = false;
       }
     }
 
@@ -1774,6 +1888,7 @@ createApp({
       loadState().then(() => {
         if (new URLSearchParams(location.search).has("autopreview")) autoPreview();
       });
+      loadProfiles();
       loadAi();
       connectLog();
       // 漫画信息变化 → 自动组合各平台发布内容并回填罗马音（本地引擎）。
@@ -1789,6 +1904,8 @@ createApp({
 
     return {
       nav, navItems, version, note, running, busy, cards, config, statuses, expanded,
+      profiles, activeProfile, quickProfile, newProfileName,
+      loadProfiles, saveProfileAs, switchProfile, renameProfile, deleteProfile,
       comicDir, summary, metaForm, dragOver, previewText, previewChapters, previewMode,
       pageEditFile, startInsert, startReplace, startDeletePage, onPageEditPicked,
       pageMenu, openPageMenu, closePageMenu,

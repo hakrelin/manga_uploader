@@ -50,6 +50,7 @@ PROTECTED_DIRS = {
 PROTECTED_FILES = {
     "config.yaml",
     "config.local.yaml",
+    "config.profiles.yaml",
     "config.yml",
     STATE_NAME,
     "desktop.ini",

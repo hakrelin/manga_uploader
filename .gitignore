@@ -4,6 +4,7 @@ __pycache__/
 # 敏感配置不要提交
 config.yaml
 config.local.yaml
+config.profiles.yaml
 
 # 运行产物
 output/

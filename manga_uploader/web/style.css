@@ -1519,3 +1519,58 @@ html, body {
   .fm-row { grid-template-columns: 1fr 1fr; }
   .fm-row .btn { grid-column: 1 / -1; }
 }
+
+/* ============ 配置切换表 ============ */
+
+.prof-quick-card {
+  margin-bottom: 12px;
+}
+.prof-table {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 12px;
+}
+.prof-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(150px, 0.8fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.prof-head {
+  padding: 2px 10px;
+  border: none;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-3);
+}
+.prof-name {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.prof-time {
+  color: var(--text-3);
+  font-size: 12.5px;
+}
+.prof-active {
+  margin-left: 6px;
+  padding: 1px 7px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 99px;
+  color: var(--accent);
+  background: var(--accent-weak);
+  vertical-align: 1px;
+}
+.prof-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.danger-text {
+  color: var(--danger);
+}

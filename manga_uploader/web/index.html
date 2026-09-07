@@ -321,6 +321,27 @@ try {
         <button class="btn" :disabled="busy" @click="saveConfig">保存配置</button>
       </header>
 
+      <div class="card prof-quick-card">
+        <div class="card-head">
+          <h2>配置快速切换</h2>
+          <button class="btn btn-ghost btn-sm" @click="nav = 'settings'">打开配置切换表</button>
+        </div>
+        <div class="card-body">
+          <div class="input-row">
+            <select v-model="quickProfile" class="input">
+              <option value="" disabled>选择要切换的配置预设…</option>
+              <option v-for="p in profiles" :key="p.name" :value="p.name">
+                {{ p.name }}{{ p.name === activeProfile ? "（当前）" : "" }}
+              </option>
+            </select>
+            <button class="btn btn-primary" :disabled="busy || !quickProfile"
+                    @click="switchProfile(quickProfile)">切换</button>
+          </div>
+          <p class="hint-text">预设存在 config.profiles.yaml；切换会把该预设的平台账号/通用设置写入
+            config.yaml（AI 接口设置保留），页面里未保存的改动会丢失。</p>
+        </div>
+      </div>
+
       <div v-for="card in cards" :key="card.key" class="card acc-card" :class="{ expanded: expanded[card.key] }">
         <div class="acc-head" @click="toggleExpand(card.key)">
           <span class="plat-dot" :class="'dot-' + card.key"></span>
@@ -437,6 +458,43 @@ try {
         </div>
         <button class="btn" :disabled="busy" @click="saveConfig">保存配置</button>
       </header>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>配置切换表</h2>
+          <span class="hint-text">可保存多套常用配置（平台账号 + 通用设置），随时切换、可重命名</span>
+        </div>
+        <div class="card-body">
+          <div class="input-row">
+            <input type="text" v-model.trim="newProfileName" class="input"
+                   placeholder="新配置名称，如：我的汉化组 / 代发测试号"
+                   @keyup.enter="saveProfileAs(newProfileName)">
+            <button class="btn btn-primary" :disabled="busy || !newProfileName"
+                    @click="saveProfileAs(newProfileName)">保存当前为新配置</button>
+          </div>
+          <div v-if="profiles.length" class="prof-table">
+            <div class="prof-row prof-head">
+              <span>配置名称</span><span>更新时间</span><span class="prof-actions">操作</span>
+            </div>
+            <div v-for="p in profiles" :key="p.name" class="prof-row">
+              <span class="prof-name">{{ p.name }}
+                <span v-if="p.name === activeProfile" class="prof-active">当前</span>
+              </span>
+              <span class="prof-time">{{ p.updated_at || "—" }}</span>
+              <span class="prof-actions">
+                <button class="btn btn-ghost btn-sm" :disabled="busy || p.name === activeProfile"
+                        @click="switchProfile(p.name)">切换</button>
+                <button class="btn btn-ghost btn-sm" :disabled="busy"
+                        @click="renameProfile(p.name)">重命名</button>
+                <button class="btn btn-ghost btn-sm danger-text" :disabled="busy"
+                        @click="deleteProfile(p.name)">删除</button>
+              </span>
+            </div>
+          </div>
+          <p v-else class="hint-text">还没有保存的配置预设。先填写名称点
+            「保存当前为新配置」，把当前页面里的平台账号/通用设置存成一套预设。</p>
+        </div>
+      </div>
 
       <div class="card">
         <div class="card-head"><h2>图片压缩</h2></div>
