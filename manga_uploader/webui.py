@@ -92,14 +92,21 @@ PLATFORM_CARDS: list[dict[str, Any]] = [
     },
     {
         "key": "tieba",
-        "label": "百度贴吧（图帖）",
+        "label": "百度贴吧（图帖，可多吧）",
         "login_url": "https://tieba.baidu.com",
         "cookie_fields": [{"name": "BDUSS", "required": True}],
-        "hint": "登录百度后复制 Cookie 里的 BDUSS。发帖权限受账号与吧等级限制。",
-        "extras": [("forum", "目标吧名（可留空，在 manga.json 里配置）")],
+        "hint": "登录百度后复制 Cookie 里的 BDUSS。发帖权限受账号与吧等级限制。"
+        "吧名可填多个（逗号分隔），发布时会依次串行发到每个吧，避免同时多发被限流。",
+        "extras": [
+            (
+                "forum",
+                "如 东方吧,漫画吧（多个吧用逗号分隔，依次串行发布；可留空在 manga.json 里配置）",
+            )
+        ],
         "controls": {
             "max_pages_per_post": {"kind": "number", "label": "每楼最多图片数（默认 9）"},
             "upload_sleep": {"kind": "number", "label": "每张图上传间隔（秒）"},
+            "forum_interval": {"kind": "number", "label": "每吧间隔（秒，防限流）"},
         },
     },
     {

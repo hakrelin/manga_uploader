@@ -42,6 +42,8 @@ THREAD_ADD_URL = "https://tieba.baidu.com/c/c/thread/add_pc"
 POST_ADD_URL = "https://tieba.baidu.com/c/c/post/add_pc"
 FORUM_URL = "https://tieba.baidu.com/f"
 NEW_MOINDEX_URL = "https://tieba.baidu.com/mo/q/newmoindex"
+# 个人中心接口：返回当前登录账号昵称（/dc/common/tbs 只有 is_login，没有昵称）
+SYS_USER_URL = "https://tieba.baidu.com/i/sys/user_json"
 
 # 网页端 PC 请求签名密钥（逆向自 tieba pc 前端 base.js）
 TIEBA_PC_SIGN_SECRET = "36770b1f34c9bbf2e7d1a99d2b82fa9e"
@@ -153,32 +155,103 @@ class TiebaPublisher(BasePublisher):
         rest = pages[1:]
         return cover, chunk_list(rest, self.max_pages_per_post)
 
-    def _forum(self, chapter: Chapter) -> str:
+    def _forum_text(self, chapter: Chapter) -> str:
+        """原始吧名配置（可为单个吧，也可多个，用逗号/分号/换行分隔）。"""
         meta = self._meta(chapter)
-        forum = str(meta.get("forum") or chapter.raw.get("forum") or self.cfg.get("forum") or "").strip()
-        if not forum:
-            raise PublisherError("贴吧发帖需要吧名：在 manga.json 的 platforms.tieba.forum 或 config.yaml 的 tieba.settings.forum 填写")
-        return forum
+        value = meta.get("forum")
+        if not value:
+            value = chapter.raw.get("forum")
+        if not value:
+            value = self.cfg.get("forum")
+        if isinstance(value, (list, tuple)):
+            return ",".join(str(item) for item in value)
+        return str(value or "").strip()
+
+    def _forums(self, chapter: Chapter) -> list[str]:
+        """解析目标吧列表：逗号/分号/换行分隔，去重、去空，保留配置顺序。"""
+        text = self._forum_text(chapter)
+        forums: list[str] = []
+        for raw in re.split(r"[,，;；\r\n|]+", text):
+            name = raw.strip()
+            if not name:
+                continue
+            if name not in forums:
+                forums.append(name)
+        if not forums:
+            raise PublisherError(
+                "贴吧发帖需要吧名：在 manga.json 的 platforms.tieba.forum 或 "
+                "config.yaml 的 tieba.settings.forum 填写。"
+                "想同时发到多个吧时用逗号分隔，例如：东方吧,漫画吧"
+            )
+        return forums
+
+    @staticmethod
+    def _login_label(data: object) -> str:
+        """从 /i/sys/user_json 响应里提取“当前登录昵称”文案。"""
+        if not isinstance(data, dict):
+            return "已登录"
+        creator = data.get("creator")
+        creator = creator if isinstance(creator, dict) else {}
+        raw_name = str(data.get("raw_name") or "").strip()
+        nick = str(creator.get("show_nickname") or "").strip()
+        if not nick:
+            nick = str(creator.get("name_show") or "").strip()
+        if not nick:
+            nick = str(creator.get("name") or "").strip()
+        if not nick:
+            nick = raw_name
+        if raw_name and raw_name != nick:
+            return f"{nick}（{raw_name}）"
+        return nick or "已登录"
+
+    @staticmethod
+    def _json_of(resp) -> object:
+        """解析贴吧 JSON 响应。
+
+        贴吧接口的 Content-Type 常声明 charset=GBK，但正文实际是 UTF-8；
+        requests 会按 GBK 解码导致中文变乱码（如 紙月9 → 绱欐湀9）。
+        这里先按字节强解 UTF-8，失败（个别接口真是 GBK）再退回 requests。
+        """
+        try:
+            return json.loads(resp.content.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            return resp.json()
+
+    def _json_request(self, url: str, **kwargs) -> object:
+        resp = self.http.get(url, **kwargs)
+        try:
+            return self._json_of(resp)
+        except ValueError as exc:
+            self.http._dump(resp, tag="tieba-json")
+            raise PublisherError(
+                f"贴吧接口返回的不是 JSON：{url}\n{resp.text[:200]}"
+            ) from exc
 
     def check(self) -> CheckResult:
         missing = self.missing_cookies()
         if missing:
             return CheckResult(self.key, False, f"缺少 Cookie：{', '.join(missing)}")
         try:
-            data = self.http.get_json(TBS_URL)
+            data = self._json_request(TBS_URL)
         except Exception as exc:
             return CheckResult(self.key, False, f"网络请求失败：{exc}")
-        if data.get("is_login") in (1, "1", True):
-            user = data.get("user_name") or data.get("user") or ""
-            return CheckResult(self.key, True, f"已登录：{user}（tbs 正常）")
-        return CheckResult(self.key, False, f"未登录（{data.get('error') or 'Cookie 无效'}）")
+        if data.get("is_login") not in (1, "1", True):
+            return CheckResult(self.key, False, f"未登录（{data.get('error') or 'Cookie 无效'}）")
+        # tbs 接口不含昵称，另读个人中心接口拿账号昵称
+        try:
+            info = self._json_request(SYS_USER_URL)
+            return CheckResult(self.key, True, f"已登录：{self._login_label(info)}")
+        except Exception as exc:  # 昵称读取失败不影响登录检查结果
+            return CheckResult(self.key, True, f"已登录（tbs 正常，昵称读取失败：{exc}）")
 
     def plan(self, chapter: Chapter) -> list[str]:
         pages = len(chapter.pages)
         posts = 1 + max(0, -(-max(pages - 1, 0) // self.max_pages_per_post))
+        forums = self._forums(chapter)
         return [
             f"发帖标题：{composer.platform_title(chapter, self.key)}",
-            f"目标贴吧：{self._forum(chapter)}",
+            f"目标贴吧：{'、'.join(forums)}"
+            + (f"（共 {len(forums)} 个吧，将依次串行发布）" if len(forums) > 1 else ""),
             f"上传 {pages} 张图片：第 1 楼放封面，其余每楼最多 {self.max_pages_per_post} 张，预计 1 帖 {posts} 楼",
             f"正文：{composer.platform_body(chapter, self.key)[:120]}",
         ]
@@ -189,10 +262,12 @@ class TiebaPublisher(BasePublisher):
 
         pages = len(chapter.pages)
         posts = 1 + max(0, -(-max(pages - 1, 0) // self.max_pages_per_post))
+        forums = self._forums(chapter)
         lines = [
             "发布平台：百度贴吧",
             f"标题：{composer.platform_title(chapter, self.key)}",
-            f"目标贴吧：{self._forum(chapter)}",
+            f"目标贴吧：{'、'.join(forums)}"
+            + (f"（{len(forums)} 个吧，依次串行发布，每吧独立发 1 帖）" if len(forums) > 1 else ""),
             f"第 1 楼：简介 + 封面（1 张）",
             f"后续楼层：其余 {max(pages - 1, 0)} 张，每楼最多 {self.max_pages_per_post} 张，共 {posts} 楼",
         ]
@@ -205,7 +280,7 @@ class TiebaPublisher(BasePublisher):
         return lines
 
     def _tbs(self) -> str:
-        data = self.http.get_json(TBS_URL)
+        data = self._json_request(TBS_URL)
         tbs = str(data.get("tbs") or "")
         if not tbs:
             raise PublisherError(f"获取 tbs 失败：{data}")
@@ -220,7 +295,7 @@ class TiebaPublisher(BasePublisher):
         # 避免吧页 HTML 被百度登录墙反复重定向
         wanted = re.sub(r"\s+", "", forum).rstrip("吧").lower()
         try:
-            data = self.http.get_json(NEW_MOINDEX_URL)
+            data = self._json_request(NEW_MOINDEX_URL)
             items = ((data.get("data") or {}).get("like_forum")) or []
             for item in items:
                 if not isinstance(item, dict):
@@ -291,7 +366,7 @@ class TiebaPublisher(BasePublisher):
                 },
             )
         try:
-            payload = resp.json()
+            payload = self._json_of(resp)
         except ValueError as exc:
             self.http._dump(resp, tag="tieba-upload")
             raise PublisherError(f"贴吧传图接口未返回 JSON：{resp.text[:200]}") from exc
@@ -333,14 +408,16 @@ class TiebaPublisher(BasePublisher):
     def _parse_add_response(self, resp, tag: str, kind: str) -> dict:
         """解析 /c/c/.../add_pc 响应；成功返回 data 字段，失败抛明确错误。"""
         try:
-            payload = resp.json()
+            payload = self._json_of(resp)
         except ValueError as exc:
             self.http._dump(resp, tag=tag)
             raise PublisherError(f"贴吧{kind}失败，响应不是 JSON：{resp.text[:200]}") from exc
         data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+        nested_error = data.get("error_code") if isinstance(data, dict) else None
+        # 错误响应经常是 data={} 而 error_code 在顶层，两层都看
         error_code = (
-            data.get("error_code")
-            if isinstance(data, dict)
+            nested_error
+            if nested_error not in (None, "", 0, "0")
             else payload.get("error_code")
         )
         if error_code not in (None, "", 0, "0"):
@@ -436,88 +513,159 @@ class TiebaPublisher(BasePublisher):
         result = self._parse_add_response(resp, "tieba-post", "追加楼层")
         return result["pid"]
 
+    def _publish_one_forum(
+        self,
+        chapter: Chapter,
+        pages: list,
+        forum: str,
+        *,
+        base_done: int,
+        total_uploads: int,
+    ) -> tuple[list[str], int, list[str], bool]:
+        """把整本（封面 + 分楼）发布到单个吧。
+
+        返回 (帖子 url 列表, 总楼层数, 错误列表, 是否触发验证码)。
+        """
+        tbs = self._tbs()
+        fid = self._fid(forum, tbs)
+        self.log.info("吧名=%s fid=%s tbs=%s", forum, fid, tbs[:6] + "…")
+
+        published: list[str] = []
+        errors: list[str] = []
+        cover_group, rest_groups = self._floor_plan(pages)
+        groups = [cover_group] + rest_groups
+        thread_tid: str | None = None
+        page_done = base_done
+        upload_sleep = float(self.cfg.get("upload_sleep", 1.0) or 0)
+        captcha = False
+        for index, group in enumerate(groups, 1):
+            try:
+                images: list[dict] = []
+                for page in group:
+                    local_done = page_done - base_done
+                    self.progress(
+                        "upload",
+                        page_done,
+                        total_uploads,
+                        f"{forum} 正在上传图片 {local_done + 1}/{len(pages)}："
+                        f"{page.path.name}（{index}/{len(groups)} 楼）",
+                        chapter_key=chapter.key,
+                    )
+                    self.log.info(
+                        "上传图片 %s（%s，第 %d/%d 组）", page.path.name, forum, index, len(groups)
+                    )
+                    images.append(self._upload_image(page, tbs, forum))
+                    page_done += 1
+                    self.progress(
+                        "upload",
+                        page_done,
+                        total_uploads,
+                        f"{forum} 已上传图片 {local_done + 1}/{len(pages)}",
+                        chapter_key=chapter.key,
+                    )
+                    time.sleep(upload_sleep)
+
+                # 正文只放主题帖一楼，后续楼层只放图片，避免每楼重复
+                description = composer.platform_body(chapter, self.key) if thread_tid is None else ""
+                content = self._build_text(description, images)
+
+                title = composer.platform_title(chapter, self.key)
+                if thread_tid is None:
+                    thread_tid = self._post_thread(forum, fid, tbs, title[:80], content)
+                    url = f"https://tieba.baidu.com/p/{thread_tid}"
+                    published.append(url)
+                    self.log.info("主题帖发布成功（%s）：%s", forum, url)
+                else:
+                    self._reply_post(forum, fid, tbs, thread_tid, content)
+                    self.log.info("已追加楼层 %d 到 %s（%s）", index, thread_tid, forum)
+            except CaptchaRequiredError as exc:
+                errors.append(f"第 {index} 楼：{exc}")
+                self.log.error("%s 第 %d 组需要验证码：%s", forum, index, exc)
+                captcha = True
+                break  # 验证码需人工处理，停止该吧后续组避免反复触发
+            except PublisherError as exc:
+                errors.append(f"第 {index} 楼：{exc}")
+                self.log.error("%s 第 %d 组发帖失败：%s", forum, index, exc)
+                if thread_tid is None:
+                    # 主题帖本身没发出去时，后续组没有可回复的帖子，直接放弃该吧
+                    break
+        return published, len(groups), errors, captcha
+
     def publish(self, chapter: Chapter) -> PublishResult:
         self.require_cookies()
         if not chapter.pages:
             return PublishResult.skipped(self.key, chapter, "没有图片")
-        forum = self._forum(chapter)
         allowed = {".jpg", ".jpeg", ".png", ".gif"}
         pages = self.prepare_pages(chapter, allowed_exts=allowed)
         try:
-            tbs = self._tbs()
-            fid = self._fid(forum, tbs)
-            self.log.info("吧名=%s fid=%s tbs=%s", forum, fid, tbs[:6] + "…")
-
+            forums = self._forums(chapter)
             published: list[str] = []
             errors: list[str] = []
-            cover_group, rest_groups = self._floor_plan(pages)
-            groups = [cover_group] + rest_groups
-            thread_tid: str | None = None
-            page_done = 0
-            for index, group in enumerate(groups, 1):
+            total_floors = 0
+            total_uploads = len(pages) * len(forums)
+            for forum_index, forum in enumerate(forums, 1):
+                if forum_index > 1:
+                    wait = float(self.cfg.get("forum_interval", 3.0) or 0)
+                    if wait > 0:
+                        self.log.info(
+                            "等待 %.1f 秒后再发到下一个吧 %s（防限流）…", wait, forum
+                        )
+                        time.sleep(wait)
                 try:
-                    images: list[dict] = []
-                    for page in group:
-                        self.progress(
-                            "upload",
-                            page_done,
-                            len(pages),
-                            f"正在上传图片 {page_done + 1}/{len(pages)}：{page.path.name}"
-                            f"（第 {index}/{len(groups)} 楼）",
-                            chapter_key=chapter.key,
-                        )
-                        self.log.info("上传图片 %s（第 %d/%d 组）", page.path.name, index, len(groups))
-                        images.append(self._upload_image(page, tbs, forum))
-                        page_done += 1
-                        self.progress(
-                            "upload",
-                            page_done,
-                            len(pages),
-                            f"已上传图片 {page_done}/{len(pages)}",
-                            chapter_key=chapter.key,
-                        )
-                        time.sleep(float(self.cfg.get("upload_sleep", 1.0) or 0))
-
-                    # 正文只放主题帖一楼，后续楼层只放图片，避免每楼重复
-                    description = composer.platform_body(chapter, self.key) if thread_tid is None else ""
-                    content = self._build_text(description, images)
-
-                    title = composer.platform_title(chapter, self.key)
-                    if thread_tid is None:
-                        thread_tid = self._post_thread(forum, fid, tbs, title[:80], content)
-                        url = f"https://tieba.baidu.com/p/{thread_tid}"
-                        published.append(url)
-                        self.log.info("主题帖发布成功：%s", url)
-                    else:
-                        self._reply_post(forum, fid, tbs, thread_tid, content)
-                        self.log.info("已追加楼层 %d 到 %s", index, thread_tid)
+                    urls, group_count, inner_errors, captcha = self._publish_one_forum(
+                        chapter,
+                        pages,
+                        forum,
+                        base_done=(forum_index - 1) * len(pages),
+                        total_uploads=total_uploads,
+                    )
+                    published.extend(urls)
+                    total_floors += group_count
+                    if inner_errors:
+                        errors.append(f"{forum}：{'；'.join(inner_errors[:2])}")
+                    if captcha:
+                        break  # 验证码需人工处理，不再尝试后续吧
+                except CaptchaRequiredError as exc:
+                    errors.append(f"{forum}：{exc}")
+                    break  # 验证码需人工处理，不再尝试后续吧
                 except PublisherError as exc:
-                    errors.append(str(exc))
-                    self.log.error("第 %d 组发帖失败：%s", index, exc)
-                    if isinstance(exc, CaptchaRequiredError):
-                        break  # 验证码需人工处理，停止后续组避免反复触发
+                    errors.append(f"{forum}：{exc}")
+                    self.log.error("发布到 %s 失败：%s", forum, exc)
+                except Exception as exc:  # 网络等意外错误按单吧失败处理，不阻断后续吧
+                    errors.append(f"{forum}：{exc}")
+                    self.log.exception("发布到 %s 时出现未预期错误", forum)
 
-            if errors and not published:
+            if not published:
                 return PublishResult.failed(
-                    self.key, chapter, "；".join(errors[:3]), details={"count": len(errors)}
+                    self.key,
+                    chapter,
+                    "；".join(errors[:3]),
+                    details={"count": len(errors), "forums": forums},
                 )
             if errors:
                 return PublishResult.partial(
                     self.key,
                     chapter,
                     url=published[0],
-                    message=f"部分帖子失败：{errors[0]}",
+                    message=f"部分吧发布失败：{errors[0]}",
                     urls=published,
                     failed=len(errors),
                     pages=len(pages),
+                    forums=forums,
                 )
+            message = (
+                f"已发 1 帖共 {total_floors} 楼"
+                if len(forums) == 1
+                else f"已依次发布到 {len(forums)} 个吧（共 {total_floors} 楼）"
+            )
             return PublishResult.ok(
                 self.key,
                 chapter,
                 url=published[0],
-                message=f"已发 1 帖共 {len(groups)} 楼",
+                message=message,
                 urls=published,
                 pages=len(pages),
+                forums=forums,
             )
         finally:
             self.cleanup_prepared(chapter)

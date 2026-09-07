@@ -75,10 +75,11 @@ DEFAULT_SETTINGS: dict[str, dict[str, Any]] = {
         "proxy_url": "",
     },
     "tieba": {
-        "forum": "",
+        "forum": "",          # 目标吧名；多个吧用逗号分隔（如 东方吧,漫画吧），发布时依次串行
         "fid": 0,
         "max_pages_per_post": 9,   # 每楼最多 9 张（网页端硬上限）；第 1 楼固定只放封面
         "upload_sleep": 1.0,
+        "forum_interval": 3.0,     # 两个吧之间等待秒数，降低被限流概率
         "title_suffix": "",
         "use_system_proxy": False,
         "proxy_url": "",

@@ -821,7 +821,7 @@ class UploaderApp:
             control_items.append((extra_key, ctrl))
 
         label_map = {
-            "forum": "目标吧名",
+            "forum": "目标吧名（多个用逗号分隔，依次发布）",
             "category_label": "默认分类",
             "cate": "作品类型",
             "language_label": "画廊语言",
@@ -834,6 +834,7 @@ class UploaderApp:
             "max_article_pages": "单篇专栏最多图",
             "max_pages_per_post": "每帖/每楼最多图",
             "upload_sleep": "图片间隔(秒)",
+            "forum_interval": "每吧间隔(秒)",
             "upload_mode": "上传方式",
             "publish_after_upload": "上传后自动发布",
             "extra_tags": "附加标签(逗号分隔)",

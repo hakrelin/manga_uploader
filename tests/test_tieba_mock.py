@@ -19,6 +19,9 @@ from manga_uploader.publishers.tieba import TiebaPublisher
 class _Handler(BaseHTTPRequestHandler):
     log: list = []
     forum_redirect = False
+    fail_thread = False
+    captcha_thread = False
+    thread_seq = 0
 
     def log_message(self, *args):
         pass
@@ -31,10 +34,33 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _reply_gbk_declared_utf8_json(self, payload: dict):
+        # 复刻贴吧真实行为：Content-Type 声明 charset=GBK，正文实际是 UTF-8
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=GBK")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):
         path = urlparse(self.path).path
         if path.endswith("/tbs"):
             self._reply_json({"is_login": 1, "tbs": "tok123"})
+        elif path.endswith("/sys/user_json"):
+            self._reply_gbk_declared_utf8_json(
+                {
+                    "tbs": "tok123",
+                    "raw_name": "测试账号",
+                    "id": 5504679593,
+                    "creator": {
+                        "name": "测试账号",
+                        "name_show": "贴吧用户_abc",
+                        "show_nickname": "测试昵称",
+                        "id": 5504679593,
+                    },
+                }
+            )
         elif path.endswith("/newmoindex"):
             self._reply_json(
                 {
@@ -86,11 +112,34 @@ class _Handler(BaseHTTPRequestHandler):
                 }
             )
         elif "thread/add" in self.path:
+            self.__class__.thread_seq += 1
+            if self.__class__.fail_thread and self.__class__.thread_seq >= 2:
+                self._reply_json(
+                    {
+                        "no": 2000,
+                        "error_code": "230871",
+                        "error_msg": "发贴太频繁，请等待一段时间再试",
+                        "data": {},
+                    }
+                )
+                return
+            if self.__class__.captcha_thread and self.__class__.thread_seq >= 2:
+                self._reply_json(
+                    {
+                        "no": 2000,
+                        "error_code": "230871",
+                        "error_msg": "发贴太频繁",
+                        "info": {"need_vcode": 1},
+                        "data": {},
+                    }
+                )
+                return
+            tid = str(122 + self.__class__.thread_seq)  # 123, 124, …
             self._reply_json(
                 {
                     "opgroup": "0",
                     "pid": "999",
-                    "tid": "123",
+                    "tid": tid,
                     "msg": "发送成功",
                     "error_code": "0",
                 }
@@ -141,6 +190,7 @@ class TestTiebaPublisherMock(unittest.TestCase):
             "post": tieba_mod.POST_ADD_URL,
             "forum": tieba_mod.FORUM_URL,
             "newmoindex": tieba_mod.NEW_MOINDEX_URL,
+            "sys_user": tieba_mod.SYS_USER_URL,
         }
         tieba_mod.TBS_URL = base + "/tbs"
         tieba_mod.UPLOAD_URL = base + "/uploadPicture_pc"
@@ -148,6 +198,7 @@ class TestTiebaPublisherMock(unittest.TestCase):
         tieba_mod.POST_ADD_URL = base + "/post/add"
         tieba_mod.FORUM_URL = base + "/f"
         tieba_mod.NEW_MOINDEX_URL = base + "/newmoindex"
+        tieba_mod.SYS_USER_URL = base + "/sys/user_json"
 
     @classmethod
     def tearDownClass(cls):
@@ -157,11 +208,15 @@ class TestTiebaPublisherMock(unittest.TestCase):
         tieba_mod.POST_ADD_URL = cls._orig["post"]
         tieba_mod.FORUM_URL = cls._orig["forum"]
         tieba_mod.NEW_MOINDEX_URL = cls._orig["newmoindex"]
+        tieba_mod.SYS_USER_URL = cls._orig["sys_user"]
         cls.server.shutdown()
 
     def setUp(self):
         _Handler.log = []
         _Handler.forum_redirect = False
+        _Handler.fail_thread = False
+        _Handler.captcha_thread = False
+        _Handler.thread_seq = 0
         self.tmp = tempfile.TemporaryDirectory()
 
     def tearDown(self):
@@ -313,6 +368,85 @@ class TestTiebaPublisherMock(unittest.TestCase):
         publisher = TiebaPublisher(cfg, CommonConfig(output_dir=str(Path(self.tmp.name) / "out")))
         with self.assertRaisesRegex(Exception, "fid"):
             publisher._fid("不存在的吧", "tok123")
+
+    def test_check_login_shows_nickname(self):
+        cfg = PlatformConfig(
+            name="tieba",
+            cookies={"BDUSS": "x"},
+            settings={"upload_sleep": 0},
+        )
+        publisher = TiebaPublisher(cfg, CommonConfig(output_dir=str(Path(self.tmp.name) / "out")))
+        result = publisher.check()
+        self.assertTrue(result.ok, result.message)
+        self.assertIn("已登录", result.message)
+        self.assertIn("测试昵称", result.message)
+        self.assertIn("测试账号", result.message)
+
+    def test_multi_forum_publishes_sequentially(self):
+        cfg = PlatformConfig(
+            name="tieba",
+            cookies={"BDUSS": "x"},
+            settings={"forum": "漫画吧,东方吧", "upload_sleep": 0, "forum_interval": 0},
+        )
+        publisher = TiebaPublisher(cfg, CommonConfig(output_dir=str(Path(self.tmp.name) / "out")))
+        result = publisher.publish(_make_chapter(Path(self.tmp.name)))
+        self.assertEqual(result.status, "ok", result.message)
+        urls = result.details["urls"]
+        self.assertEqual(len(urls), 2)
+        self.assertEqual(urls[0], "https://tieba.baidu.com/p/123")
+        self.assertEqual(urls[1], "https://tieba.baidu.com/p/124")
+        self.assertIn("依次", result.message)
+
+        uploads = [r for r in _Handler.log if "uploadPicture_pc" in r["path"]]
+        threads = [r for r in _Handler.log if "thread/add" in r["path"]]
+        replies = [r for r in _Handler.log if "post/add" in r["path"]]
+        # 每个吧都独立重新传图 + 发主题帖（10 页 = 封面楼 + 1 个回复楼）
+        self.assertEqual(len(uploads), 20)
+        self.assertEqual(len(threads), 2)
+        self.assertEqual(len(replies), 2)
+        self.assertEqual(
+            parse_qs(threads[0]["body"].decode("utf-8"))["kw"][0], "漫画吧"
+        )
+        self.assertEqual(
+            parse_qs(threads[1]["body"].decode("utf-8"))["kw"][0], "东方吧"
+        )
+        self.assertIn("needImage", parse_qs(threads[1]["body"].decode("utf-8"))["ext"][0])
+
+    def test_multi_forum_failure_keeps_first_result_partial(self):
+        _Handler.fail_thread = True
+        cfg = PlatformConfig(
+            name="tieba",
+            cookies={"BDUSS": "x"},
+            settings={"forum": "漫画吧,东方吧", "upload_sleep": 0, "forum_interval": 0},
+        )
+        publisher = TiebaPublisher(cfg, CommonConfig(output_dir=str(Path(self.tmp.name) / "out")))
+        result = publisher.publish(_make_chapter(Path(self.tmp.name)))
+        self.assertEqual(result.status, "partial", result.message)
+        self.assertEqual(result.details["urls"], ["https://tieba.baidu.com/p/123"])
+        self.assertIn("东方吧", result.message)
+        threads = [r for r in _Handler.log if "thread/add" in r["path"]]
+        replies = [r for r in _Handler.log if "post/add" in r["path"]]
+        uploads = [r for r in _Handler.log if "uploadPicture_pc" in r["path"]]
+        # 第二个吧发主题帖失败后不再继续该吧：只上传了它的封面就停止，
+        # 第一个吧的主题帖 + 回复楼完整保留
+        self.assertEqual(len(threads), 2)  # 第二次请求本身失败
+        self.assertEqual(len(replies), 1)
+        self.assertEqual(len(uploads), 11)
+
+    def test_captcha_stops_later_forums(self):
+        _Handler.captcha_thread = True
+        cfg = PlatformConfig(
+            name="tieba",
+            cookies={"BDUSS": "x"},
+            settings={"forum": "漫画吧,东方吧,东方吧2", "upload_sleep": 0, "forum_interval": 0},
+        )
+        publisher = TiebaPublisher(cfg, CommonConfig(output_dir=str(Path(self.tmp.name) / "out")))
+        result = publisher.publish(_make_chapter(Path(self.tmp.name)))
+        self.assertEqual(result.status, "partial", result.message)
+        self.assertIn("验证码", result.message)
+        # 第二个吧触发验证码后立即停止，不再尝试第三个吧
+        threads = [r for r in _Handler.log if "thread/add" in r["path"]]
+        self.assertEqual(len(threads), 2)
 
 
 if __name__ == "__main__":

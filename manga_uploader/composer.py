@@ -807,7 +807,7 @@ PLATFORM_SCHEMA: dict[str, list[dict[str, str]]] = {
         {"key": "description", "label": "正文（作者/社团/简介）", "kind": "textarea"},
     ],
     "tieba": [
-        {"key": "forum", "label": "目标吧名", "kind": "text"},
+        {"key": "forum", "label": "目标吧名（多个用逗号分隔，依次串行发布）", "kind": "text"},
         {"key": "title", "label": "标题（【汉化组】中文标题）", "kind": "text"},
         {"key": "description", "label": "正文（作者/社团/简介）", "kind": "textarea"},
     ],

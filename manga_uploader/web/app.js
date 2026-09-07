@@ -60,7 +60,7 @@ const PLATFORM_CONTENT_SCHEMA = {
     { key: "description", label: "正文（默认 作者/社团/简介）", kind: "textarea" },
   ],
   tieba: [
-    { key: "forum", label: "目标吧名", kind: "text" },
+    { key: "forum", label: "目标吧名（多个用逗号分隔，依次串行发布）", kind: "text" },
     { key: "title", label: "标题", kind: "text" },
     { key: "description", label: "正文", kind: "textarea" },
   ],
@@ -85,7 +85,7 @@ const PLATFORM_CONTENT_SCHEMA = {
 };
 
 const EXTRA_LABELS = {
-  forum: "目标吧名",
+  forum: "目标吧名（多个用逗号分隔，依次发布）",
   category_label: "默认分类",
   cate: "作品类型",
   language_label: "画廊语言",
