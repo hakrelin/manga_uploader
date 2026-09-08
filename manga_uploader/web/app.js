@@ -342,10 +342,7 @@ createApp({
       sched.busy = true;
       sched.error = "";
       try {
-        await api("/api/meta", {
-          method: "POST", json: true,
-          body: JSON.stringify({ dir: comicDir.value.trim(), book: metaBook() }),
-        });
+        await saveContentMeta();
         const chapters = sched.allCh ? null : schedChapterNames();
         const r = await api("/api/remote-schedule", {
           method: "POST", json: true,
@@ -994,6 +991,19 @@ createApp({
       return book;
     }
 
+    // 漫画信息 + 各平台发布内容一次写盘（一键发布/云端定时都用它，
+    // 避免朋友在“各平台发布内容”里填的标题/简介没写进 manga.json）
+    async function saveContentMeta() {
+      await api("/api/meta", {
+        method: "POST", json: true,
+        body: JSON.stringify({
+          dir: comicDir.value.trim(),
+          book: metaBook(),
+          platforms: JSON.parse(JSON.stringify(platformContent)),
+        }),
+      });
+    }
+
     async function fillRomajiNames() {
       busy.value = true;
       try {
@@ -1277,13 +1287,7 @@ createApp({
       if (!names.length) { toastMsg("没有已连接的平台，请先到「平台账号」配置 Cookie"); return; }
       // 先把当前编辑内容落盘，保证发布的标题/正文与预览一致
       try {
-        await api("/api/meta", {
-          method: "POST", json: true,
-          body: JSON.stringify({
-            dir: comicDir.value.trim(),
-            book: metaBook(),
-          }),
-        });
+        await saveContentMeta();
       } catch (e) {
         toastMsg("保存内容失败：" + e.message);
         return;

@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urlparse
 
-from .comic import load_chapters
+from .comic import find_meta_file, load_chapters, read_meta
 from .util import IMAGE_EXTS, ensure_utf8
 
 
@@ -99,6 +99,101 @@ def load_config_payload(config_path: Optional[str] = None) -> dict[str, Any]:
 
     payload, note = _load_payload(config_path)
     return payload
+
+
+def _first_nonempty(*values: Any) -> str:
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def validate_schedule_content(
+    comic_dir: str,
+    platforms: list[str],
+    only_chapters: Optional[list[str]] = None,
+) -> list[str]:
+    """发布前内容校验：标题/简介（或作者/社团）必须真实填写，防止把空内容发出去。
+
+    返回问题描述列表；空列表表示通过。
+    """
+    root = Path(comic_dir).expanduser().resolve()
+    try:
+        chapters = load_chapters(root, only_chapters=only_chapters, strict=False)
+    except Exception:
+        return []
+    if not chapters:
+        return []
+    root_meta = read_meta(find_meta_file(root)) if find_meta_file(root) else {}
+    listed_by_key = {}
+    for item in root_meta.get("chapters") or []:
+        if isinstance(item, dict):
+            key = str(item.get("folder") or item.get("key") or item.get("name") or "")
+            listed_by_key[key] = item
+
+    def level_meta(platform: str, *level_dicts: dict) -> dict[str, str]:
+        out: dict[str, str] = {}
+        for level in level_dicts:
+            pm = level.get("platforms") if isinstance(level.get("platforms"), dict) else {}
+            item = pm.get(platform) if isinstance(pm, dict) else None
+            if isinstance(item, dict):
+                for key, value in item.items():
+                    if not out.get(key) and str(value or "").strip():
+                        out[key] = str(value).strip()
+        return out
+
+    problems: list[str] = []
+    for chapter in chapters:
+        folder_meta = (
+            read_meta(find_meta_file(chapter.source_dir))
+            if find_meta_file(chapter.source_dir)
+            else {}
+        )
+        listed = listed_by_key.get(chapter.key) or {}
+        # 平台覆盖（platforms.<平台>.title/description）优先，再按 章节目录→chapters条目→根 取非空
+        for platform in platforms:
+            if platform not in ("bilibili", "tieba", "xiaoheihe", "ehentai", "zaimanhua"):
+                continue
+            pm = level_meta(platform, folder_meta, listed, root_meta)
+            title = _first_nonempty(
+                pm.get("title"),
+                folder_meta.get("title"),
+                listed.get("title"),
+                root_meta.get("title"),
+                folder_meta.get("title_jp"),
+                listed.get("title_jp"),
+                root_meta.get("title_jp"),
+                pm.get("work_name") if platform == "zaimanhua" else None,
+            )
+            description = _first_nonempty(
+                pm.get("description"),
+                pm.get("caption"),
+                folder_meta.get("description"),
+                listed.get("description"),
+                root_meta.get("description"),
+            )
+            author = _first_nonempty(
+                folder_meta.get("author"), listed.get("author"), root_meta.get("author")
+            )
+            circle = _first_nonempty(
+                folder_meta.get("circle"),
+                listed.get("circle"),
+                root_meta.get("circle"),
+                folder_meta.get("社团"),
+                listed.get("社团"),
+                root_meta.get("社团"),
+            )
+            label = {"bilibili": "B站", "tieba": "贴吧", "xiaoheihe": "小黑盒",
+                     "ehentai": "e-hentai", "zaimanhua": "再漫画"}.get(platform, platform)
+            chapter_name = chapter.title or chapter.key
+            if not title:
+                problems.append(f"{label}·{chapter_name}：缺少标题，请先在「漫画信息」填写中文标题")
+            elif platform in ("bilibili", "tieba", "xiaoheihe") and not (description or author or circle):
+                problems.append(
+                    f"{label}·{chapter_name}：缺少简介（或作者/社团），请填写后再发布"
+                )
+    return problems
 
 
 def package_comic(

@@ -32,11 +32,22 @@ from urllib.parse import parse_qs, urlparse
 
 from . import util
 from .comic import load_chapters
+from .remote_client import validate_schedule_content
 from .webui import build_app
 
 
 MAX_BODY = 4 * 1024 * 1024 * 1024  # 单包最大 4GB
 WORKER_INTERVAL = 5.0
+CLEANUP_DELAY = 600.0  # 任务结束后先保留 10 分钟（可看日志/结果），再清大文件
+
+
+def keep_seconds() -> float:
+    """完成/取消任务彻底删除（含日志记录）前的保留时长，默认 24 小时。"""
+    try:
+        hours = float(os.environ.get("MANGASCHED_KEEP_HOURS", "24"))
+    except (TypeError, ValueError):
+        hours = 24.0
+    return max(0.0, hours * 3600.0)
 
 
 def now_epoch() -> float:
@@ -223,6 +234,13 @@ class JobStore:
         except Exception as exc:
             self._mutate(job_id, status="error", error=f"漫画包校验失败：{exc}")
             raise ValueError(f"漫画包校验失败：{exc}") from exc
+        problems = validate_schedule_content(
+            str(comic_root), job["platforms"], job["chapters"]
+        )
+        if problems:
+            message = "内容校验失败：" + "；".join(problems)
+            self._mutate(job_id, status="error", error=message)
+            raise ValueError(message)
         meta = [
             {"key": ch.key, "title": ch.title, "pages": len(ch.pages)}
             for ch in chapters
@@ -285,6 +303,20 @@ class JobStore:
             return ""
         return text[-limit:]
 
+    def payload_clean(self, job_id: str) -> None:
+        """任务结束后清理占空间/敏感内容，只保留 log.txt 与 report.json。"""
+        job_dir = self.job_dir(job_id)
+        targets = ["incoming.zip", "config.json", "output", "_extract", "comic"]
+        for name in targets:
+            target = job_dir / name
+            if target.is_dir():
+                shutil.rmtree(target, ignore_errors=True)
+            elif target.exists():
+                try:
+                    target.unlink()
+                except OSError:
+                    pass
+
 
 def unwrap_single_dir(root: Path) -> Path:
     """若 root 里只有一个子目录且 root 本身无图片，返回该子目录。"""
@@ -345,6 +377,12 @@ def execute_job(store: JobStore, job_id: str) -> None:
             ",".join(job["platforms"]),
             ",".join(job["chapters"]) if job["chapters"] else "全部",
         )
+        # 到点前再校验一次：没有标题/简介的任务直接失败，绝不发空内容
+        problems = validate_schedule_content(
+            job["comic_dir"], job["platforms"], job["chapters"]
+        )
+        if problems:
+            raise ValueError("发布前内容校验失败：" + "；".join(problems))
         results = runner.run_publish(
             job["comic_dir"],
             names=job["platforms"],
@@ -423,16 +461,39 @@ class SchedulerState:
             self.stop.wait(WORKER_INTERVAL)
 
     def _tick(self) -> None:
+        now = now_epoch()
         for job in self.store.list():
             if job["status"] != "pending":
+                self._maybe_cleanup(job, now)
                 continue
-            if now_epoch() >= float(job["publish_at"]):
+            if now >= float(job["publish_at"]):
                 self.store._mutate(
                     job["id"],
                     status="running",
                     started_at=fmt_time(now_epoch()),
                 )
                 execute_job(self.store, job["id"])
+
+    def _maybe_cleanup(self, job: dict[str, Any], now: float) -> None:
+        """完成/取消的任务：先清大文件（zip/解包/Cookie 配置），到期再删整条记录。"""
+        status = job["status"]
+        if status not in ("done", "failed", "error", "canceled"):
+            return
+        full_at = job.get("cleanup_full_at")
+        if full_at is None:
+            self.store._mutate(
+                job["id"],
+                cleanup_at=now + CLEANUP_DELAY,
+                cleanup_full_at=now + keep_seconds(),
+            )
+            return
+        if now >= float(full_at):
+            self.store.delete(job["id"])
+            return
+        cleanup_at = float(job.get("cleanup_at") or full_at)
+        if now >= cleanup_at and not job.get("payload_cleaned"):
+            self.store.payload_clean(job["id"])
+            self.store._mutate(job["id"], payload_cleaned=True)
 
 
 def auth_ok(handler: BaseHTTPRequestHandler, state: SchedulerState) -> bool:

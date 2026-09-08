@@ -69,7 +69,7 @@ from .webui import (
     bilibili_qr_new,
     bilibili_qr_poll,
 )
-from .remote_client import _json_request, schedule_job
+from .remote_client import _json_request, schedule_job, validate_schedule_content
 
 LOGGER_NAME = "manga_uploader"
 DEFAULT_PORT = 8970
@@ -872,6 +872,9 @@ class WebHandler(BaseHTTPRequestHandler):
             publish_at = data.get("publish_at") or ""
             if not publish_at:
                 raise ValueError("请选择发布时间")
+            problems = validate_schedule_content(comic_dir, platforms, chapters)
+            if problems:
+                raise ValueError("内容不完整，无法创建定时任务：" + "；".join(problems))
             job = schedule_job(
                 server=server,
                 token=token,
