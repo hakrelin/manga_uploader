@@ -265,6 +265,135 @@ createApp({
 
     const modal = ref(null);
     const helpOpen = ref(false);
+
+    // ---------------- 云端定时发布 ----------------
+    let cloudSaved = {};
+    try { cloudSaved = JSON.parse(localStorage.getItem("mu-cloud-sched") || "{}"); } catch (e) {}
+    const schedOpen = ref(false);
+    const sched = reactive({
+      server: cloudSaved.server || "https://8.147.64.46:8972",
+      token: cloudSaved.token || "",
+      at: "",
+      platforms: {},     // 平台 key -> true
+      allCh: true,       // true=全部章节
+      chapters: {},      // 章节 key -> true
+      jobs: [],
+      error: "",
+      busy: false,
+    });
+    function schedPersist() {
+      try {
+        localStorage.setItem("mu-cloud-sched", JSON.stringify({
+          server: sched.server, token: sched.token,
+        }));
+      } catch (e) {}
+    }
+    function schedPlatformNames() {
+      return Object.keys(sched.platforms).filter((k) => sched.platforms[k]);
+    }
+    function schedChapterNames() {
+      return Object.keys(sched.chapters).filter((k) => sched.chapters[k]);
+    }
+    function openSched() {
+      schedPersist();
+      schedOpen.value = true;
+      const picks = {};
+      cards.value.forEach((c) => { if (connected(c)) picks[c.key] = true; });
+      sched.platforms = picks;
+      sched.allCh = true;
+      sched.chapters = {};
+      sched.error = "";
+      refreshSchedJobs();
+    }
+    async function refreshSchedJobs() {
+      if (!sched.server || !sched.token) return;
+      sched.error = "";
+      try {
+        const r = await api("/api/remote-jobs", {
+          method: "POST", json: true,
+          body: JSON.stringify({ server: sched.server, token: sched.token }),
+        });
+        sched.jobs = r.jobs || [];
+        if (!r.ok) sched.error = r.error || "";
+      } catch (e) {
+        sched.error = "获取任务列表失败：" + e.message;
+      }
+    }
+    async function testSchedConn() {
+      schedPersist();
+      sched.error = "";
+      try {
+        const r = await api("/api/remote-jobs", {
+          method: "POST", json: true,
+          body: JSON.stringify({ server: sched.server, token: sched.token }),
+        });
+        if (!r.ok) throw new Error(r.error || "连接失败");
+        toastMsg("云端连接成功，当前任务 " + (r.jobs || []).length + " 个");
+        sched.jobs = r.jobs || [];
+      } catch (e) {
+        toastMsg("云端连接失败：" + e.message);
+      }
+    }
+    async function createSchedJob() {
+      if (!comicDir.value.trim()) { toastMsg("请先加载漫画目录"); return; }
+      const names = schedPlatformNames();
+      if (!names.length) { toastMsg("请至少选择一个平台"); return; }
+      if (!sched.at) { toastMsg("请选择发布时间"); return; }
+      sched.busy = true;
+      sched.error = "";
+      try {
+        await api("/api/meta", {
+          method: "POST", json: true,
+          body: JSON.stringify({ dir: comicDir.value.trim(), book: metaBook() }),
+        });
+        const chapters = sched.allCh ? null : schedChapterNames();
+        const r = await api("/api/remote-schedule", {
+          method: "POST", json: true,
+          body: JSON.stringify({
+            server: sched.server,
+            token: sched.token,
+            dir: comicDir.value.trim(),
+            config: payload(),
+            platforms: names,
+            chapters,
+            publish_at: sched.at,
+            title: (summary.value && summary.value.meta && summary.value.meta.title) || metaForm.title || "",
+          }),
+        });
+        toastMsg("云端定时任务已创建：" + (r.job && r.job.id ? r.job.id : "") + "（" + ((r.job || {}).publish_at_text || "") + "）");
+        await refreshSchedJobs();
+      } catch (e) {
+        sched.error = e.message;
+        toastMsg("云端定时提交失败：" + e.message);
+      } finally {
+        sched.busy = false;
+      }
+    }
+    async function schedJobAction(job, action) {
+      sched.error = "";
+      try {
+        const r = await api("/api/remote-job", {
+          method: "POST", json: true,
+          body: JSON.stringify({ server: sched.server, token: sched.token, id: job.id, action }),
+        });
+        if (!r.ok) throw new Error(r.error || "操作失败");
+        toastMsg("任务" + (action === "cancel" ? "已取消" : action === "retry" ? "已重试" : "已删除"));
+        await refreshSchedJobs();
+      } catch (e) {
+        sched.error = e.message;
+        toastMsg("操作失败：" + e.message);
+      }
+    }
+    function schedStatusBadge(job) {
+      const map = { pending: "待发布", running: "发布中", done: "已完成", failed: "失败", error: "错误", canceled: "已取消", staging: "待上传", uploaded: "已上传" };
+      return map[job.status] || job.status;
+    }
+    function schedResultText(job) {
+      if (!job.result) return "";
+      const c = job.result.counts || {};
+      return `成功${c.ok || 0} 部分${c.partial || 0} 失败${c.failed || 0} 跳过${c.skipped || 0}`;
+    }
+    function schedPlatformLabel(key) { return PLAT_LABELS[key] || key; }
     let composeTimer = null;
     let composing = false;
 
@@ -1934,6 +2063,9 @@ createApp({
       fieldMapOpen, onSourceChange, pickDir, pickZip, loadComic, onDrop,
       fillRomajiNames, fillRomajiTitle, prefillTouhouSeries,
       previewPlan, previewFull, publish, modalOk,
+      schedOpen, sched, openSched, refreshSchedJobs, testSchedConn, createSchedJob,
+      schedJobAction, schedStatusBadge, schedResultText,
+      schedPlatformNames, schedChapterNames, schedPlatformLabel,
     };
   },
 }).mount("#app");

@@ -56,9 +56,14 @@ try {
           <h1>发布漫画</h1>
           <p class="page-sub">选择漫画 → 确认平台 → 发布到多平台</p>
         </div>
-        <button class="btn btn-primary btn-lg" :disabled="busy || running" @click="publish">
-          {{ running ? '发布中…' : '一键发布' }}
-        </button>
+        <div class="head-actions">
+          <button class="btn btn-lg" :disabled="busy || running || !summary" @click="openSched">
+            ⏱ 云端定时
+          </button>
+          <button class="btn btn-primary btn-lg" :disabled="busy || running" @click="publish">
+            {{ running ? '发布中…' : '一键发布' }}
+          </button>
+        </div>
       </header>
 
       <div v-if="note" class="banner">{{ note }}</div>
@@ -561,6 +566,106 @@ try {
       </div>
     </section>
   </main>
+</div>
+
+<!-- ============ 云端定时发布 ============ -->
+<div v-if="schedOpen" class="modal-mask" @click.self="schedOpen = false">
+  <div class="modal sched-modal">
+    <div class="modal-head">
+      <div class="modal-title">⏱ 云端定时发布</div>
+      <button class="btn btn-ghost btn-sm" @click="schedOpen = false">✕</button>
+    </div>
+    <div class="modal-body">
+      <p class="hint-text">提交后由云端服务器在设定时间自动发布，本机可以关机。会随任务打包当前漫画与配置
+        （含各平台 Cookie）上传，请确认服务器可信；服务器地址与 Token 只保存在本浏览器。</p>
+      <div class="grid3">
+        <div class="field field-wide">
+          <label class="field-label">云端服务器地址</label>
+          <input type="text" v-model.trim="sched.server" class="input"
+                 placeholder="https://8.147.64.46:8972">
+        </div>
+        <div class="field field-wide">
+          <label class="field-label">API Token <span class="field-hint">服务器 data/token.txt</span></label>
+          <div class="input-row">
+            <input type="password" v-model="sched.token" class="input" placeholder="Bearer token">
+            <button class="btn btn-ghost" :disabled="sched.busy" @click="testSchedConn">测试连接</button>
+            <button class="btn btn-ghost" :disabled="sched.busy" @click="refreshSchedJobs">刷新</button>
+          </div>
+        </div>
+        <div class="field">
+          <label class="field-label">发布时间（本地时间）</label>
+          <input type="datetime-local" v-model="sched.at" class="input">
+        </div>
+      </div>
+
+      <div class="sched-opts">
+        <div>
+          <span class="field-label">发布平台：</span>
+          <span v-for="c in cards" :key="c.key" class="check-inline">
+            <label class="check-row">
+              <input type="checkbox" v-model="sched.platforms[c.key]">
+              <span>{{ c.label }}</span>
+            </label>
+          </span>
+        </div>
+        <div>
+          <span class="field-label">章节：</span>
+          <label class="check-row">
+            <input type="checkbox" v-model="sched.allCh">
+            <span>全部章节（{{ previewChapters.length || summary.chapters || '' }}）</span>
+          </label>
+          <template v-if="!sched.allCh">
+            <span v-for="ch in previewChapters" :key="ch.key" class="check-inline">
+              <label class="check-row">
+                <input type="checkbox" v-model="sched.chapters[ch.key]">
+                <span>{{ ch.title || ch.key }}</span>
+              </label>
+            </span>
+          </template>
+        </div>
+      </div>
+
+      <div class="input-row" style="margin: 12px 0">
+        <button class="btn btn-primary" :disabled="sched.busy || !comicDir" @click="createSchedJob">
+          {{ sched.busy ? '正在打包上传…' : '创建定时任务' }}
+        </button>
+        <span class="hint-text">当前目录：{{ comicDir || '（未加载漫画）' }}</span>
+      </div>
+      <p v-if="sched.error" class="danger-text">{{ sched.error }}</p>
+
+      <div v-if="sched.jobs.length" class="prof-table sched-table">
+        <div class="prof-row prof-head">
+          <span>任务 ID / 时间</span><span>状态</span><span>平台 · 章节</span>
+          <span>结果</span><span>操作</span>
+        </div>
+        <div v-for="job in sched.jobs" :key="job.id" class="prof-row">
+          <span class="prof-time">
+            <code class="sched-id">{{ job.id }}</code><br>
+            {{ job.publish_at_text }}<em v-if="job.dry_run" class="sched-dry">dry-run</em>
+          </span>
+          <span><span class="badge">{{ schedStatusBadge(job) }}</span></span>
+          <span class="sched-plat">
+            {{ (job.platforms || []).map(schedPlatformLabel).join('、') }}
+            · {{ (job.chapters || []).join('、') || '全部' }}
+          </span>
+          <span>
+            {{ schedResultText(job) }}
+            <span v-if="job.error" :title="job.error" class="hint-text">⚠</span>
+          </span>
+          <span class="prof-actions">
+            <button v-if="job.status === 'pending' || job.status === 'staging' || job.status === 'uploaded'"
+                    class="btn btn-ghost btn-sm" @click="schedJobAction(job, 'cancel')">取消</button>
+            <button v-if="job.status === 'failed' || job.status === 'error'"
+                    class="btn btn-ghost btn-sm" @click="schedJobAction(job, 'retry')">重试</button>
+            <button v-if="job.status !== 'running'"
+                    class="btn btn-ghost btn-sm danger-text" @click="schedJobAction(job, 'delete')">删除</button>
+          </span>
+        </div>
+      </div>
+      <p v-else-if="sched.server" class="hint-text" style="margin-top:8px">
+        （暂无任务，先创建；创建后请保留此弹窗或点「刷新」查看状态）</p>
+    </div>
+  </div>
 </div>
 
 <!-- ============ 浮动按钮：章节工具 ⚙ + 看日志 📋 ============ -->

@@ -69,6 +69,7 @@ from .webui import (
     bilibili_qr_new,
     bilibili_qr_poll,
 )
+from .remote_client import _json_request, schedule_job
 
 LOGGER_NAME = "manga_uploader"
 DEFAULT_PORT = 8970
@@ -837,8 +838,90 @@ class WebHandler(BaseHTTPRequestHandler):
             self._api_bcover()
         elif path == "/api/apply":
             self._api_apply_edits()
+        elif path == "/api/remote-schedule":
+            self._api_remote_schedule()
+        elif path == "/api/remote-jobs":
+            self._api_remote_jobs()
+        elif path == "/api/remote-job":
+            self._api_remote_job()
         else:
             self._json(404, {"error": f"未知接口：{path}"})
+
+    # ---------- 云端定时发布（代理到 remote_scheduler） ----------
+
+    def _cloud_opts(self, data: dict[str, Any]) -> tuple[str, str]:
+        server = str(data.get("server") or "").strip()
+        token = str(data.get("token") or "").strip()
+        if not server:
+            raise ValueError("缺少云端服务器地址 server")
+        if not token:
+            raise ValueError("缺少云端 token")
+        return server, token
+
+    def _api_remote_schedule(self) -> None:
+        data = self._read_json()
+        try:
+            server, token = self._cloud_opts(data)
+            comic_dir = str(data.get("dir") or "").strip()
+            if not comic_dir:
+                raise ValueError("缺少漫画目录 dir")
+            platforms = [str(p).strip() for p in (data.get("platforms") or []) if str(p).strip()]
+            if not platforms:
+                raise ValueError("请至少选择一个平台")
+            chapters = [str(c).strip() for c in (data.get("chapters") or []) if str(c).strip()] or None
+            publish_at = data.get("publish_at") or ""
+            if not publish_at:
+                raise ValueError("请选择发布时间")
+            job = schedule_job(
+                server=server,
+                token=token,
+                comic_dir=comic_dir,
+                config_payload=data.get("config") or {},
+                platforms=platforms,
+                publish_at=publish_at,
+                chapters=chapters,
+                title=str(data.get("title") or "").strip(),
+                dry_run=bool(data.get("dry_run")),
+            )
+        except Exception as exc:
+            self.server.state.ring.append("ERROR", f"云端定时提交失败：{exc}")
+            self._json(400, {"error": f"提交失败：{exc}"})
+            return
+        self.server.state.ring.append("INFO", f"云端定时任务已创建：{job['id']}（{job.get('publish_at_text')}）")
+        self._json(200, {"ok": True, "job": job})
+
+    def _api_remote_jobs(self) -> None:
+        data = self._read_json()
+        try:
+            server, token = self._cloud_opts(data)
+            result = _json_request(server, token, "GET", "/api/jobs", timeout=30)
+        except Exception as exc:
+            self._json(200, {"ok": False, "error": str(exc), "jobs": []})
+            return
+        self._json(200, {"ok": True, "jobs": result.get("jobs") or []})
+
+    def _api_remote_job(self) -> None:
+        data = self._read_json()
+        try:
+            server, token = self._cloud_opts(data)
+            job_id = str(data.get("id") or "").strip()
+            action = str(data.get("action") or "detail").strip()
+            if not job_id:
+                raise ValueError("缺少任务 id")
+            if action == "cancel":
+                result = _json_request(server, token, "POST", f"/api/jobs/{job_id}/cancel", timeout=60)
+            elif action == "retry":
+                result = _json_request(server, token, "POST", f"/api/jobs/{job_id}/retry", timeout=60)
+            elif action == "delete":
+                _json_request(server, token, "DELETE", f"/api/jobs/{job_id}", timeout=60)
+                self._json(200, {"ok": True})
+                return
+            else:
+                result = _json_request(server, token, "GET", f"/api/jobs/{job_id}", timeout=60)
+        except Exception as exc:
+            self._json(200, {"ok": False, "error": str(exc)})
+            return
+        self._json(200, {"ok": True, "job": result.get("job")})
 
     def _config_path(self) -> Path:
         explicit = self.server.state.config_path

@@ -1574,3 +1574,51 @@ html, body {
 .danger-text {
   color: var(--danger);
 }
+
+/* ============ 云端定时发布 ============ */
+.sched-modal {
+  width: min(1120px, 96vw);
+  max-width: 1120px;
+}
+.sched-modal .modal-body {
+  overflow-y: auto;
+  max-height: 78vh;
+}
+.sched-opts {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+.check-inline {
+  display: inline-flex;
+  align-items: center;
+  margin: 2px 12px 2px 0;
+}
+.check-inline .check-row {
+  margin: 0;
+}
+.sched-table .prof-row {
+  grid-template-columns: minmax(190px, 1.4fr) 92px minmax(160px, 1.2fr) minmax(150px, 1fr) auto;
+  align-items: start;
+}
+.sched-table .prof-head {
+  align-items: center;
+}
+.sched-id {
+  font-size: 11px;
+  color: var(--text-3);
+  overflow-wrap: anywhere;
+}
+.sched-dry {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 99px;
+  font-style: normal;
+  font-size: 11px;
+  color: var(--accent);
+  background: var(--accent-weak);
+}
+.sched-plat {
+  overflow-wrap: anywhere;
+}
