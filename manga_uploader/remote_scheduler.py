@@ -325,6 +325,17 @@ def execute_job(store: JobStore, job_id: str) -> None:
         for name in job["platforms"]:
             if name in app.platforms:
                 app.platforms[name].enabled = True
+        # 云端 E 站任务强制走本机代理（mihomo 127.0.0.1:7890），
+        # 避免把本机用户配置里的代理地址误用到云服务器上
+        proxy_url = os.environ.get("MANGASCHED_EHENTAI_PROXY", "").strip()
+        if (
+            "ehentai" in job["platforms"]
+            and proxy_url
+            and "ehentai" in app.platforms
+        ):
+            ehentai = app.platforms["ehentai"]
+            ehentai.settings["proxy_url"] = proxy_url
+            ehentai.settings["use_system_proxy"] = False
         # dry_run 走纯计划路径，不发网络请求
         app.common.dry_run = bool(common.get("dry_run") or job.get("dry_run"))
         runner = _make_runner(app)
