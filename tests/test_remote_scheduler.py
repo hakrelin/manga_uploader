@@ -34,6 +34,14 @@ class PublishAtGuardTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.store.create(self._payload("2020-01-01T10:00"))
 
+    def test_rejected_job_leaves_nothing_on_disk(self):
+        """校验失败的任务不该在服务器上留下配置副本 / 空目录。"""
+        with self.assertRaises(ValueError):
+            self.store.create(self._payload(time.time() - 7200))
+        with self.assertRaises(ValueError):
+            self.store.create({"config": {}, "platforms": [], "publish_at": time.time() + 60})
+        self.assertEqual(list((Path(self.tmp.name) / "jobs").iterdir()), [])
+
     def test_accept_future_and_tiny_grace(self):
         job = self.store.create(self._payload(time.time() + 600))
         self.assertEqual(job["status"], "staging")

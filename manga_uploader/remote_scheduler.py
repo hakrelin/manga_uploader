@@ -137,11 +137,8 @@ class JobStore:
     def create(self, payload: dict[str, Any]) -> dict[str, Any]:
         job_id = time.strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(3)
         job_dir = self.jobs_dir / job_id
-        job_dir.mkdir(parents=True, exist_ok=True)
-        (job_dir / "config.json").write_text(
-            json.dumps(payload.get("config") or {}, ensure_ascii=False, indent=1),
-            encoding="utf-8",
-        )
+        # 先把参数校验干净再落盘：校验失败的请求不该在服务器上留下
+        # 带 Cookie 的配置副本或空任务目录。
         platforms = [str(p).strip().lower() for p in (payload.get("platforms") or []) if str(p).strip()]
         if not platforms:
             raise ValueError("缺少目标平台 platforms")
@@ -156,9 +153,14 @@ class JobStore:
         now = now_epoch()
         if publish_at < now - IMMEDIATE_GRACE:
             raise ValueError(
-                f"发布时间 {fmt_time(publish_at)} 已经过去（服务器当前时间 "
-                f"{fmt_time(now)}），请改成一个将来的时间再提交"
+                f"发布时间 {fmt_time_tz(publish_at)} 已经过去（服务器当前时间 "
+                f"{fmt_time_tz(now)}），请改成一个将来的时间再提交"
             )
+        job_dir.mkdir(parents=True, exist_ok=True)
+        (job_dir / "config.json").write_text(
+            json.dumps(payload.get("config") or {}, ensure_ascii=False, indent=1),
+            encoding="utf-8",
+        )
         job = {
             "id": job_id,
             "created_at": fmt_time(now_epoch()),
