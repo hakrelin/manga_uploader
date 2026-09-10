@@ -1,3 +1,4 @@
+import shutil
 import tempfile
 import unittest
 import unittest.mock
@@ -17,8 +18,14 @@ from manga_uploader.util import prepare_page
 
 class TestComicScan(unittest.TestCase):
     def setUp(self):
-        self.demo = Path("examples/my_comic")
         self.tmp = tempfile.TemporaryDirectory()
+        # 在临时副本上跑：examples/my_comic 是给人试用的样例，用户在里面点过
+        # “保存”之后会生成章节级 manga.json（ch01/manga.json），那是用户数据，
+        # 不该让测试变红。这里只保留随仓库发布的那份样例（根目录 manga.json）。
+        self.demo = Path(self.tmp.name) / "my_comic"
+        shutil.copytree("examples/my_comic", self.demo)
+        for extra in self.demo.glob("*/manga.json"):
+            extra.unlink()
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -69,6 +76,17 @@ class TestComicScan(unittest.TestCase):
 
 
 class TestConfig(unittest.TestCase):
+    def setUp(self):
+        # 同 TestComicScan：用临时副本，避免用户按了“保存”的样例影响断言
+        self.tmp = tempfile.TemporaryDirectory()
+        self.demo = Path(self.tmp.name) / "my_comic"
+        shutil.copytree("examples/my_comic", self.demo)
+        for extra in self.demo.glob("*/manga.json"):
+            extra.unlink()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
     def test_load_example(self):
         cfg = load_config("config.example.yaml")
         self.assertIn("bilibili", cfg.platforms)
@@ -107,7 +125,7 @@ class TestConfig(unittest.TestCase):
             "series_en": "Touhou Project",
             "language": "Chinese",
         }
-        out = _book_to_compose("examples/my_comic", book)
+        out = _book_to_compose(str(self.demo), book)
         eh = out["platforms_content"]["ehentai"]
         self.assertIn("(東方Project)", eh["gname_jp"])
         self.assertIn("(Touhou Project)", eh["gname_en"])
@@ -126,7 +144,7 @@ class TestConfig(unittest.TestCase):
             "description": "简介",
             "tags": "东方,汉化",
         }
-        out = _book_to_compose("examples/my_comic", book)
+        out = _book_to_compose(str(self.demo), book)
         # 语言留空默认 Chinese；罗马音由本地引擎自动生成
         self.assertEqual(out["language"], "Chinese")
         self.assertEqual(out["romaji"]["author_en"], "Kayou Kira")
