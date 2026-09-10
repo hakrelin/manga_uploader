@@ -112,6 +112,25 @@ class Runner:
                 results.append(CheckResult(name, False, f"检查过程出错：{exc}"))
         return results
 
+    def accounts(self, names: Optional[list[str]] = None) -> dict[str, str]:
+        """探测各平台当前登录账号（best-effort，失败跳过）。
+
+        发布前 / 创建定时任务时把它写进日志与任务记录，事后能确认
+        “这一帖到底是哪个账号发的”。
+        """
+        resolved: dict[str, str] = {}
+        for name, enabled in self.resolve_platforms(names):
+            if not enabled:
+                continue
+            try:
+                text = self.make_publisher(name).identity()
+            except Exception as exc:
+                self.log.warning("探测 %s 登录账号失败：%s", name, exc)
+                continue
+            if text:
+                resolved[name] = text
+        return resolved
+
     # ---------- 发布 ----------
 
     def load_chapters(self, comic_dir: str, only_chapters: Optional[list[str]] = None) -> list[Chapter]:
@@ -235,7 +254,16 @@ class Runner:
         publisher = self.make_publisher(name)
         try:
             started = time.time()
+            account = ""
+            try:
+                account = publisher.identity()
+            except Exception:
+                account = ""
+            if account:
+                self.log.info("[%s] %s 使用账号：%s", chapter.key, name, account)
             result = publisher.publish(chapter)
+            if account and isinstance(result.details, dict):
+                result.details.setdefault("account", account)
             if result.status == "ok":
                 self.log.info("[%s] %s 发布成功：%s（%.1fs）", chapter.key, name, result.url, time.time() - started)
             elif result.status == "partial":

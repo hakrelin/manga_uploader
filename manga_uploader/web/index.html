@@ -580,7 +580,9 @@ try {
       <p class="hint-text">提交后由云端服务器在设定时间自动发布，本机可以关机。会随任务打包当前漫画与配置
         （含各平台 Cookie）上传，请确认服务器可信；服务器地址与 Token 只保存在本浏览器。<br>
         ⚠ 这里只负责“排队等时间”：创建成功后到点前<b>不要</b>再点右上角的「一键发布」，
-        那是立即发布，会当场把内容发出去。</p>
+        那是立即发布，会当场把内容发出去。<br>
+        ⚠ 任务打包的是<b>创建这一刻</b>的账号（Cookie）快照：之后再改账号不影响已排队的任务，
+        任务列表里会显示这次用的是哪个账号，发出前请核对。</p>
       <div class="grid3">
         <div class="field field-wide">
           <label class="field-label">云端服务器地址</label>
@@ -650,6 +652,9 @@ try {
           <span class="sched-plat">
             {{ (job.platforms || []).map(schedPlatformLabel).join('、') }}
             · {{ (job.chapters || []).join('、') || '全部' }}
+            <template v-if="schedAccountsText(job)">
+              <br><span class="hint-text">使用账号：{{ schedAccountsText(job) }}</span>
+            </template>
           </span>
           <span>
             {{ schedResultText(job) }}

@@ -248,6 +248,26 @@ class TiebaPublisher(BasePublisher):
         except Exception as exc:  # 昵称读取失败不影响登录检查结果
             return CheckResult(self.key, True, f"已登录（tbs 正常，昵称读取失败：{exc}）")
 
+    def identity(self) -> str:
+        """当前 BDUSS 对应的贴吧账号（昵称 + uid），失败返回空串。"""
+        if self.missing_cookies():
+            return ""
+        try:
+            tbs = self._json_request(TBS_URL)
+        except Exception:
+            return ""
+        if tbs.get("is_login") not in (1, "1", True):
+            return ""
+        try:
+            info = self._json_request(SYS_USER_URL)
+        except Exception:
+            return "已登录（昵称未知）"
+        label = self._login_label(info)
+        creator = info.get("creator") if isinstance(info, dict) else {}
+        creator = creator if isinstance(creator, dict) else {}
+        uid = creator.get("id") or (info.get("user_id") if isinstance(info, dict) else "")
+        return f"{label}（uid {uid}）" if uid else label
+
     def plan(self, chapter: Chapter) -> list[str]:
         pages = len(chapter.pages)
         posts = 1 + max(0, -(-max(pages - 1, 0) // self.max_pages_per_post))

@@ -62,6 +62,13 @@ class PublishAtGuardTest(unittest.TestCase):
         job = self.store.create(self._payload(time.time() + 3600))
         self.assertIn("UTC", job["publish_at_text"])
 
+    def test_create_keeps_account_snapshot(self):
+        """任务里要留下“创建时用的账号”，方便用户核对（空值不记）。"""
+        payload = self._payload(time.time() + 600)
+        payload["accounts"] = {"tieba": "hakre（uid 5504679593）", "bilibili": "", "bogus": "  "}
+        job = self.store.create(payload)
+        self.assertEqual(job["accounts"], {"tieba": "hakre（uid 5504679593）"})
+
     def test_immediate_job_is_labelled(self):
         """马上要发的任务在列表里要标明“立即发布”，别让人以为是定时。"""
         job = self.store.create(self._payload(time.time() + 5))

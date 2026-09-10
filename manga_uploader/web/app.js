@@ -366,7 +366,10 @@ createApp({
             title: (summary.value && summary.value.meta && summary.value.meta.title) || metaForm.title || "",
           }),
         });
-        toastMsg("云端定时任务已创建：" + (r.job && r.job.id ? r.job.id : "") + "（" + ((r.job || {}).publish_at_text || "") + "）");
+        const accText = schedAccountsText(r.job);
+        toastMsg("云端定时任务已创建：" + (r.job && r.job.id ? r.job.id : "")
+          + "（" + ((r.job || {}).publish_at_text || "") + "）"
+          + (accText ? "，使用账号：" + accText : ""));
         await refreshSchedJobs();
       } catch (e) {
         sched.error = e.message;
@@ -393,6 +396,13 @@ createApp({
     function schedStatusBadge(job) {
       const map = { pending: "待发布", running: "发布中", done: "已完成", failed: "失败", error: "错误", canceled: "已取消", staging: "待上传", uploaded: "已上传" };
       return map[job.status] || job.status;
+    }
+    function schedAccountsText(job) {
+      const acc = (job && job.accounts) || {};
+      return Object.keys(acc)
+        .filter((k) => acc[k])
+        .map((k) => schedPlatformLabel(k) + "=" + acc[k])
+        .join("；");
     }
     function schedResultText(job) {
       if (!job.result) return "";
@@ -1314,8 +1324,22 @@ createApp({
         toastMsg("保存内容失败：" + e.message);
         return;
       }
+      // 发布前把“这次会用哪个账号”摆出来，避免又出现“填的是 A、发出去是 B”
+      let accountText = "";
+      try {
+        const acc = await api("/api/accounts", {
+          method: "POST", json: true,
+          body: JSON.stringify({
+            config: payload(),
+            platforms: cards.value.filter(connected).map((c) => c.key),
+          }),
+        });
+        accountText = Object.keys(acc.accounts || {})
+          .map((k) => schedPlatformLabel(k) + "=" + acc.accounts[k]).join("；");
+      } catch (e) { accountText = ""; }
       if (!window.confirm(
         "确认【立即发布】到：" + names.join("、") + "？\n\n" +
+        (accountText ? "使用账号：" + accountText + "\n\n" : "") +
         "「一键发布」是马上发出去，不做定时；要定时请用右上角「⏱ 云端定时」。\n发布后不可撤销。"
       )) return;
       busy.value = true;
@@ -2093,7 +2117,7 @@ createApp({
       fillRomajiNames, fillRomajiTitle, prefillTouhouSeries,
       previewPlan, previewFull, publish, modalOk,
       schedOpen, sched, openSched, refreshSchedJobs, testSchedConn, createSchedJob,
-      schedJobAction, schedStatusBadge, schedResultText,
+      schedJobAction, schedStatusBadge, schedAccountsText, schedResultText,
       schedPlatformNames, schedChapterNames, schedPlatformLabel,
     };
   },

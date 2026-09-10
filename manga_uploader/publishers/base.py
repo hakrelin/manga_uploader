@@ -217,6 +217,15 @@ class BasePublisher(ABC):
 
     # ---------- 子类实现 ----------
 
+    def identity(self) -> str:
+        """返回“当前登录账号”的可读文案（供日志与任务记录用）。
+
+        用来回答“这次到底是用哪个账号发的”——贴吧/B站 都出过
+        “以为填的是 A，结果用 B 发出去了”的误会。默认不支持，返回空串；
+        B站、百度贴吧实现了它。
+        """
+        return ""
+
     @abstractmethod
     def check(self) -> CheckResult: ...
 

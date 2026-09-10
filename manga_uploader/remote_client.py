@@ -249,6 +249,7 @@ def schedule_job(
     title: str = "",
     dry_run: bool = False,
     keep_zip: Optional[Path] = None,
+    accounts: Optional[dict[str, str]] = None,
 ) -> dict[str, Any]:
     """创建任务 → 打包上传 → 提交。返回服务器任务对象。"""
     data = _json_request(
@@ -263,6 +264,8 @@ def schedule_job(
             "publish_at": publish_at,
             "title": title,
             "dry_run": bool(dry_run),
+            # 创建任务那一刻的账号快照（贴吧/B站），用于界面核对
+            "accounts": dict(accounts or {}),
         },
     )
     job = data["job"]

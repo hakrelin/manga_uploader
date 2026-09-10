@@ -510,5 +510,18 @@ class TestTiebaPublisherMock(unittest.TestCase):
         self.assertIn("限流", text)
 
 
+    def test_identity_reports_logged_in_account(self):
+        """发布日志/任务记录要能写清“这次用的是哪个贴吧账号”。"""
+        cfg = PlatformConfig(
+            name="tieba", cookies={"BDUSS": "x"}, settings={"forum": "漫画吧"}
+        )
+        publisher = TiebaPublisher(
+            cfg, CommonConfig(output_dir=str(Path(self.tmp.name) / "out"))
+        )
+        text = publisher.identity()
+        self.assertIn("测试昵称", text)
+        self.assertIn("5504679593", text)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -327,5 +327,48 @@ class TestHelpers(unittest.TestCase):
             self.assertEqual(out.path.suffix, ".jpg")
 
 
+class TestRunnerAccounts(unittest.TestCase):
+    """Runner.accounts 要能回答“这次会用哪个账号发”。"""
+
+    def test_accounts_skips_disabled_and_empty(self):
+        from manga_uploader.runner import Runner
+        from manga_uploader.webui import build_app
+
+        app = build_app(
+            {
+                "platforms": {
+                    "tieba": {"enabled": True, "cookies": {"BDUSS": "x"}, "settings": {}},
+                    "bilibili": {"enabled": True, "cookies": {"SESSDATA": "y"}, "settings": {}},
+                    "ehentai": {"enabled": False, "cookies": {}, "settings": {}},
+                }
+            }
+        )
+        runner = Runner(app)
+
+        class _Stub:
+            def __init__(self, text):
+                self.text = text
+
+            def identity(self):
+                return self.text
+
+        stubs = {"tieba": "hakre（uid 1）", "bilibili": "", "ehentai": "不该出现"}
+        runner.make_publisher = lambda name: _Stub(stubs[name])  # type: ignore[assignment]
+        self.assertEqual(runner.accounts(["tieba", "bilibili", "ehentai"]), {"tieba": "hakre（uid 1）"})
+
+    def test_accounts_survives_probe_error(self):
+        from manga_uploader.runner import Runner
+        from manga_uploader.webui import build_app
+
+        app = build_app({"platforms": {"tieba": {"enabled": True, "cookies": {"BDUSS": "x"}}}})
+        runner = Runner(app)
+
+        def _boom(name):
+            raise RuntimeError("网络炸了")
+
+        runner.make_publisher = _boom  # type: ignore[assignment]
+        self.assertEqual(runner.accounts(["tieba"]), {})
+
+
 if __name__ == "__main__":
     unittest.main()

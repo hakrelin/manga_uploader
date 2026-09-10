@@ -828,6 +828,8 @@ class WebHandler(BaseHTTPRequestHandler):
             self._api_config_profiles()
         elif path == "/api/check":
             self._api_check()
+        elif path == "/api/accounts":
+            self._api_accounts()
         elif path == "/api/plan":
             self._api_plan()
         elif path == "/api/preview":
@@ -897,6 +899,17 @@ class WebHandler(BaseHTTPRequestHandler):
             problems = validate_schedule_content(comic_dir, platforms, chapters)
             if problems:
                 raise ValueError("内容不完整，无法创建定时任务：" + "；".join(problems))
+            # 记下“这个任务会用哪个账号”：打包的是此刻页面里的 Cookie，
+            # 之后再改账号也不会影响已排队的任务，所以要留个快照给用户核对。
+            account_snapshot: dict[str, str] = {}
+            try:
+                probe_app = build_app(data.get("config") or {})
+                for name in platforms:  # 与云端执行时一致：任务点名的平台强制启用
+                    if name in probe_app.platforms:
+                        probe_app.platforms[name].enabled = True
+                account_snapshot = Runner(probe_app).accounts(platforms)
+            except Exception as exc:
+                self.server.state.ring.append("WARN", f"云端定时任务账号探测失败：{exc}")
             job = schedule_job(
                 server=server,
                 token=token,
@@ -907,12 +920,21 @@ class WebHandler(BaseHTTPRequestHandler):
                 chapters=chapters,
                 title=str(data.get("title") or "").strip(),
                 dry_run=bool(data.get("dry_run")),
+                accounts=account_snapshot,
             )
         except Exception as exc:
             self.server.state.ring.append("ERROR", f"云端定时提交失败：{exc}")
             self._json(400, {"error": f"提交失败：{exc}"})
             return
-        self.server.state.ring.append("INFO", f"云端定时任务已创建：{job['id']}（{job.get('publish_at_text')}）")
+        acc_text = "；".join(
+            f"{PLATFORM_CLASSES[k].display_name if k in PLATFORM_CLASSES else k}={v}"
+            for k, v in (job.get("accounts") or {}).items()
+        )
+        self.server.state.ring.append(
+            "INFO",
+            f"云端定时任务已创建：{job['id']}（{job.get('publish_at_text')}）"
+            + (f"，使用账号：{acc_text}" if acc_text else ""),
+        )
         self._json(200, {"ok": True, "job": job})
 
     def _api_remote_jobs(self) -> None:
@@ -1060,6 +1082,23 @@ class WebHandler(BaseHTTPRequestHandler):
             return build_app(payload.get("config") or {})
         except Exception as exc:
             raise ConfigError(f"配置解析失败：{exc}") from exc
+
+    def _api_accounts(self) -> None:
+        """探测当前配置下各平台会用哪个账号（发布/定时前给用户核对）。"""
+        data = self._read_json()
+        try:
+            app = self._app_from(data)
+        except ConfigError as exc:
+            self._json(400, {"error": str(exc)})
+            return
+        names = [str(n) for n in (data.get("platforms") or [])] or None
+        runner = Runner(app)
+        try:
+            accounts = runner.accounts(names)
+        except Exception as exc:
+            self._json(200, {"ok": False, "error": f"账号探测失败：{exc}", "accounts": {}})
+            return
+        self._json(200, {"ok": True, "accounts": accounts})
 
     def _api_check(self) -> None:
         data = self._read_json()

@@ -175,6 +175,17 @@ class JobStore:
             "chapters": chapters,
             "title": str(payload.get("title") or "").strip(),
             "note": str(payload.get("note") or "").strip(),
+            # 创建任务时的账号快照（来自本机探测）：让用户能核对“这个任务用谁发”
+            "accounts": {
+                str(k): str(v)
+                for k, v in (payload.get("accounts") or {}).items()
+                if str(v).strip()
+            },
+            "accounts_snapshot": {
+                str(k): str(v)
+                for k, v in (payload.get("accounts") or {}).items()
+                if str(v).strip()
+            },
             "dry_run": bool(payload.get("dry_run")),
             "comic_dir": "",
             "chapters_meta": [],
@@ -283,6 +294,30 @@ class JobStore:
             chapters_meta=meta,
             error="",
         )
+        # 入队后立刻用服务器侧核对一次“到点会用哪个账号”，写进任务记录：
+        # 任务列表里就能提前看到（尤其是贴吧），发现不对可以取消，避免发错号。
+        try:
+            payload = json.loads((job_dir / "config.json").read_text(encoding="utf-8"))
+            probe_app = build_app(payload)
+            for name in job["platforms"]:  # 与执行时一致：任务里点名的平台强制启用
+                if name in probe_app.platforms:
+                    probe_app.platforms[name].enabled = True
+            probe = _make_runner(probe_app).accounts(job["platforms"])
+            if probe:
+                job = self._mutate(job_id, accounts=probe)
+                snapshot = job.get("accounts_snapshot") or {}
+                if snapshot:
+                    diff = [
+                        f"{k}: 创建时「{snapshot.get(k)}」/ 提交时「{probe[k]}」"
+                        for k in probe
+                        if snapshot.get(k) and snapshot.get(k) != probe[k]
+                    ]
+                    if diff:
+                        logging.getLogger(util.LOGGER_NAME).warning(
+                            "⚠ 账号与创建任务时不一致：" + "；".join(diff)
+                        )
+        except Exception as exc:
+            logging.getLogger(util.LOGGER_NAME).warning("入队后账号探测失败：%s", exc)
         return job
 
     def cancel(self, job_id: str) -> dict[str, Any]:
@@ -412,6 +447,26 @@ def execute_job(store: JobStore, job_id: str) -> None:
             ",".join(job["platforms"]),
             ",".join(job["chapters"]) if job["chapters"] else "全部",
         )
+        # 记录“这次实际用哪个账号发”（贴吧/B站 能探测出来）：出问题时能对上人
+        try:
+            actual_accounts = runner.accounts(job["platforms"])
+        except Exception as exc:  # 探测失败不影响发布
+            actual_accounts = {}
+            logging.getLogger(util.LOGGER_NAME).warning("账号探测失败：%s", exc)
+        if actual_accounts:
+            text = "；".join(f"{k}={v}" for k, v in actual_accounts.items())
+            logging.getLogger(util.LOGGER_NAME).info("本次发布使用的账号：%s", text)
+            store._mutate(job_id, accounts=actual_accounts)
+            snapshot = job.get("accounts_snapshot") or {}
+            mismatch = [
+                f"{k}: 计划用「{snapshot.get(k, '未记录')}」，实际用「{actual_accounts[k]}」"
+                for k in actual_accounts
+                if snapshot.get(k) and snapshot.get(k) != actual_accounts[k]
+            ]
+            if mismatch:
+                logging.getLogger(util.LOGGER_NAME).warning(
+                    "⚠ 账号与创建任务时不一致：" + "；".join(mismatch)
+                )
         # 到点前再校验一次：没有标题/简介的任务直接失败，绝不发空内容
         problems = validate_schedule_content(
             job["comic_dir"], job["platforms"], job["chapters"]

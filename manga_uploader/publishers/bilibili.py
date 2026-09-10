@@ -120,6 +120,23 @@ class BilibiliPublisher(BasePublisher):
         message = data.get("message") or "未登录"
         return CheckResult(self.key, False, f"登录失败：{message}")
 
+    def identity(self) -> str:
+        """当前 Cookie 对应的 B 站账号（昵称 + UID），失败返回空串。"""
+        if self.missing_cookies():
+            return ""
+        try:
+            data = self.http.get_json(NAV_URL)
+        except Exception:
+            return ""
+        info = data.get("data") or {}
+        if data.get("code") != 0 or not info.get("isLogin"):
+            return ""
+        name = str(info.get("uname") or "").strip()
+        mid = info.get("mid") or ""
+        if mid:
+            return f"{name}（UID {mid}）"
+        return name
+
     def plan(self, chapter: Chapter) -> list[str]:
         if self._mode(chapter) == "article":
             return self._plan_article(chapter)
