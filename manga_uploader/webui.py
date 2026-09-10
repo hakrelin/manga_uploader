@@ -6,6 +6,7 @@ gui.py 保持完整不动(保留作 tkinter 备用界面)。
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import re
@@ -1040,6 +1041,70 @@ def delete_profile_config(profiles_path: str | Path, name: Any) -> bool:
     return True
 
 
+def _platform_block(item: dict[str, Any]) -> dict[str, Any]:
+    """把 config.yaml 里的平台块规范成 {enabled, cookies, settings}。"""
+    settings = item.get("settings")
+    return {
+        "enabled": bool(item.get("enabled", True)),
+        "cookies": {str(k): str(v) for k, v in (item.get("cookies") or {}).items()},
+        "settings": settings if isinstance(settings, dict) else {},
+    }
+
+
+def merge_payload_keep_cookies(
+    config_path: str | Path, payload: dict[str, Any]
+) -> dict[str, Any]:
+    """切换预设时，把 config.yaml 里已有而预设没写的平台 / Cookie 补回来。
+
+    预设只是一份“当时的快照”：早期保存的预设可能压根没有别的平台（或该平台的
+    Cookie 还是空的）。直接整块覆盖 config.yaml 会把那些平台的登录态清空——
+    用户反馈的“切一次配置就掉 Cookie”就是这么来的。
+
+    合并规则：
+    - 预设里没有的平台：完整保留 config.yaml 里的那份；
+    - 预设里有该平台、但某个 Cookie 键缺失或为空：用 config.yaml 的值补上；
+    - 预设里非空的 Cookie：以预设为准（切预设仍然能换账号）。
+    """
+    if not isinstance(payload, dict):
+        return payload
+    path = Path(config_path)
+    if not path.is_file():
+        return payload
+    try:
+        import yaml
+
+        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return payload
+    if not isinstance(raw, dict):
+        return payload
+    existing = raw.get("platforms")
+    if not isinstance(existing, dict):
+        return payload
+
+    merged = copy.deepcopy(payload)
+    platforms = merged.get("platforms")
+    if not isinstance(platforms, dict):
+        return merged
+
+    for key, item in existing.items():
+        if not isinstance(item, dict):
+            continue
+        current = _platform_block(item)
+        incoming = platforms.get(key)
+        if not isinstance(incoming, dict):
+            platforms[str(key)] = current
+            continue
+        cookies = incoming.get("cookies")
+        if not isinstance(cookies, dict):
+            cookies = {}
+        for ckey, cvalue in current["cookies"].items():
+            if not str(cookies.get(ckey) or "").strip():
+                cookies[ckey] = cvalue
+        incoming["cookies"] = cookies
+    return merged
+
+
 def switch_profile_config(
     profiles_path: str | Path, config_path: str | Path, name: Any
 ) -> dict[str, Any]:
@@ -1052,6 +1117,7 @@ def switch_profile_config(
     payload = entry.get("config")
     if not isinstance(payload, dict):
         raise ConfigError(f"配置「{name}」内容损坏，请删除后重新保存")
+    payload = merge_payload_keep_cookies(config_path, payload)
     save_config(config_path, payload)
     data["active"] = name
     _write_yaml_doc(Path(profiles_path), data)

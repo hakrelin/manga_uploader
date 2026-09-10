@@ -22,6 +22,7 @@ class _Handler(BaseHTTPRequestHandler):
     fail_thread = False
     captcha_thread = False
     thread_seq = 0
+    upload_failures = 0  # 还剩几次传图要按 2230204「上传失败」拒绝
 
     def log_message(self, *args):
         pass
@@ -95,6 +96,20 @@ class _Handler(BaseHTTPRequestHandler):
         body = self.rfile.read(length)
         self.__class__.log.append({"path": self.path, "body": body})
         if "uploadPicture_pc" in self.path:
+            if self.__class__.upload_failures > 0:
+                self.__class__.upload_failures -= 1
+                self._reply_json(
+                    {
+                        "error_code": "2230204",
+                        "error_msg": "上传失败",
+                        "info": [],
+                        "server_time": "34640",
+                        "time": 1788914472,
+                        "ctime": 0,
+                        "logid": 2472830930,
+                    }
+                )
+                return
             self._reply_json(
                 {
                     "resourceId": "709d1d31dc47636e4f5ccbfd07601c19",
@@ -217,6 +232,7 @@ class TestTiebaPublisherMock(unittest.TestCase):
         _Handler.fail_thread = False
         _Handler.captcha_thread = False
         _Handler.thread_seq = 0
+        _Handler.upload_failures = 0
         self.tmp = tempfile.TemporaryDirectory()
 
     def tearDown(self):
@@ -447,6 +463,51 @@ class TestTiebaPublisherMock(unittest.TestCase):
         # 第二个吧触发验证码后立即停止，不再尝试第三个吧
         threads = [r for r in _Handler.log if "thread/add" in r["path"]]
         self.assertEqual(len(threads), 2)
+
+
+    def test_upload_retries_after_rate_limit(self):
+        """贴吧限流（2230204 上传失败）：自动重试后仍然成功发帖。"""
+        _Handler.upload_failures = 2
+        cfg = PlatformConfig(
+            name="tieba",
+            cookies={"BDUSS": "x"},
+            settings={
+                "forum": "漫画吧",
+                "max_pages_per_post": 50,
+                "upload_sleep": 0,
+                "upload_attempts": 3,
+                "upload_retry_wait": 0,
+            },
+        )
+        publisher = TiebaPublisher(cfg, CommonConfig(output_dir=str(Path(self.tmp.name) / "out")))
+        result = publisher.publish(_make_chapter(Path(self.tmp.name)))
+        self.assertEqual(result.status, "ok", result.message)
+        uploads = [r for r in _Handler.log if "uploadPicture_pc" in r["path"]]
+        threads = [r for r in _Handler.log if "thread/add" in r["path"]]
+        self.assertEqual(len(threads), 1)
+        # 第一张图被拒 2 次后第 3 次成功，加上其余 9 张 = 12 次请求
+        self.assertEqual(len(uploads), 12)
+
+    def test_upload_failure_error_message_mentions_retry(self):
+        """连续失败时给出明确中文（含重试次数），不再只报“上传失败”。"""
+        _Handler.upload_failures = 99
+        cfg = PlatformConfig(
+            name="tieba",
+            cookies={"BDUSS": "x"},
+            settings={
+                "forum": "漫画吧",
+                "max_pages_per_post": 50,
+                "upload_sleep": 0,
+                "upload_attempts": 2,
+                "upload_retry_wait": 0,
+            },
+        )
+        publisher = TiebaPublisher(cfg, CommonConfig(output_dir=str(Path(self.tmp.name) / "out")))
+        result = publisher.publish(_make_chapter(Path(self.tmp.name)))
+        self.assertEqual(result.status, "failed")
+        text = result.message
+        self.assertIn("已重试 2 次", text)
+        self.assertIn("限流", text)
 
 
 if __name__ == "__main__":

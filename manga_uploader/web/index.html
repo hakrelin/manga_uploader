@@ -343,7 +343,8 @@ try {
                     @click="switchProfile(quickProfile)">切换</button>
           </div>
           <p class="hint-text">预设存在 config.profiles.yaml；切换会把该预设的平台账号/通用设置写入
-            config.yaml（AI 接口设置保留），页面里未保存的改动会丢失。</p>
+            config.yaml（AI 接口设置保留），页面里未保存的改动会丢失。
+            预设里没写的平台 / 空的 Cookie 会保留当前值，不会被清空。</p>
         </div>
       </div>
 
@@ -577,7 +578,9 @@ try {
     </div>
     <div class="modal-body">
       <p class="hint-text">提交后由云端服务器在设定时间自动发布，本机可以关机。会随任务打包当前漫画与配置
-        （含各平台 Cookie）上传，请确认服务器可信；服务器地址与 Token 只保存在本浏览器。</p>
+        （含各平台 Cookie）上传，请确认服务器可信；服务器地址与 Token 只保存在本浏览器。<br>
+        ⚠ 这里只负责“排队等时间”：创建成功后到点前<b>不要</b>再点右上角的「一键发布」，
+        那是立即发布，会当场把内容发出去。</p>
       <div class="grid3">
         <div class="field field-wide">
           <label class="field-label">云端服务器地址</label>
@@ -593,7 +596,7 @@ try {
           </div>
         </div>
         <div class="field">
-          <label class="field-label">发布时间（本地时间）</label>
+          <label class="field-label">发布时间 <span class="field-hint">按你本机时区填写；创建后以服务器确认的时间为准</span></label>
           <input type="datetime-local" v-model="sched.at" class="input">
         </div>
       </div>

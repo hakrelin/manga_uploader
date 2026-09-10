@@ -339,6 +339,14 @@ createApp({
       const names = schedPlatformNames();
       if (!names.length) { toastMsg("请至少选择一个平台"); return; }
       if (!sched.at) { toastMsg("请选择发布时间"); return; }
+      // 选到过去的时间点时云端会“立刻”发布（很多人以为定时没生效），这里先拦下来
+      const atMs = new Date(sched.at).getTime();
+      if (!Number.isFinite(atMs) || atMs < Date.now() - 60000) {
+        const msg = "发布时间已经过去（" + sched.at + "），云端会当成「立即发布」直接发出去。请改选将来的时间。";
+        sched.error = msg;
+        toastMsg(msg);
+        return;
+      }
       sched.busy = true;
       sched.error = "";
       try {
@@ -353,7 +361,8 @@ createApp({
             config: payload(),
             platforms: names,
             chapters,
-            publish_at: sched.at,
+            // 用绝对时间戳（秒）提交：不受服务器/本机时区差异影响
+            publish_at: Math.floor(atMs / 1000),
             title: (summary.value && summary.value.meta && summary.value.meta.title) || metaForm.title || "",
           }),
         });
@@ -646,13 +655,26 @@ createApp({
       }
     }
 
+    // 合并一份配置载荷到页面状态。
+    // 关键点：预设是“快照”，早期保存的预设可能没有别的平台、或该平台 Cookie 为空。
+    // 这里按平台合并（页面里已有、载荷没写的平台/Cookie 一律保留），
+    // 否则切一次预设就会把其它平台的登录态显示成空、随后保存时真的清掉。
     function applyConfigPayload(cfg) {
       const c = cfg || {};
       Object.keys(config.common).forEach((k) => delete config.common[k]);
-      Object.keys(config.platforms).forEach((k) => delete config.platforms[k]);
       Object.assign(config.common, c.common || {});
-      for (const [k, v] of Object.entries(c.platforms || {})) {
-        config.platforms[k] = v;
+      for (const [k, incoming] of Object.entries(c.platforms || {})) {
+        const inc = incoming && typeof incoming === "object" ? incoming : {};
+        const cur = config.platforms[k] || {};
+        const cookies = Object.assign({}, cur.cookies || {});
+        for (const [ck, cv] of Object.entries(inc.cookies || {})) {
+          if (String(cv == null ? "" : cv).trim() || !(ck in cookies)) cookies[ck] = cv;
+        }
+        config.platforms[k] = {
+          enabled: !!inc.enabled,
+          cookies,
+          settings: Object.assign({}, cur.settings || {}, inc.settings || {}),
+        };
       }
     }
 
@@ -1292,7 +1314,10 @@ createApp({
         toastMsg("保存内容失败：" + e.message);
         return;
       }
-      if (!window.confirm("确认发布到：" + names.join("、") + "？\n\n发布后不可撤销。")) return;
+      if (!window.confirm(
+        "确认【立即发布】到：" + names.join("、") + "？\n\n" +
+        "「一键发布」是马上发出去，不做定时；要定时请用右上角「⏱ 云端定时」。\n发布后不可撤销。"
+      )) return;
       busy.value = true;
       try {
         const pub = { dir: comicDir.value.trim(), config: payload() };

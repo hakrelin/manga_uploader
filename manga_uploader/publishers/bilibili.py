@@ -104,7 +104,19 @@ class BilibiliPublisher(BasePublisher):
         if data.get("code") == 0 and info.get("isLogin"):
             uname = info.get("uname", "")
             mid = info.get("mid", "")
-            return CheckResult(self.key, True, f"已登录：{uname} (UID {mid})")
+            level = (info.get("level_info") or {}).get("current_level")
+            extra = []
+            if level is not None:
+                extra.append(f"Lv{level}")
+            if info.get("mobile_verified") in (0, False):
+                extra.append("手机未绑定")
+            text = f"已登录：{uname} (UID {mid})"
+            if extra:
+                text += "（" + "，".join(extra) + "）"
+            if info.get("mobile_verified") in (0, False):
+                # 未绑定手机的账号发专栏基本都会被风控拦（code=-352）
+                text += "。B站要求绑定手机后才能投稿，否则专栏/动态容易被 -352 拦下"
+            return CheckResult(self.key, True, text)
         message = data.get("message") or "未登录"
         return CheckResult(self.key, False, f"登录失败：{message}")
 
@@ -360,7 +372,16 @@ class BilibiliPublisher(BasePublisher):
             -101: "账号未登录，Cookie 可能过期",
             -111: "CSRF 校验失败，请刷新 bili_jct",
             -400: "请求参数被平台拒绝（可能是标题/正文/分类格式问题）",
+            -403: "账号权限不足（多为未绑定手机/未实名/新号等级过低）",
             -404: "草稿不存在，可能已被删除",
+            -352: (
+                "被B站风控拦截。常见原因：账号未绑定手机/未实名、等级过低、"
+                "短时间提交太多，或当前网络（机房 IP、代理/VPN 出口）被B站标记。"
+                "处理建议：先用该账号在网页端手动发一篇专栏确认权限，"
+                "改直连或换网络后再试，隔几十分钟再发；同一账号不要把同一篇反复提交"
+            ),
+            -412: "请求被B站拦截（风控/频率限制），请降低频率或换网络后重试",
+            -509: "请求过于频繁，B站已限流，请等待一段时间再发",
         }
         message = payload.get("message") or payload
         raise PublisherError(

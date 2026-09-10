@@ -39,6 +39,10 @@ from .webui import build_app
 MAX_BODY = 4 * 1024 * 1024 * 1024  # 单包最大 4GB
 WORKER_INTERVAL = 5.0
 CLEANUP_DELAY = 600.0  # 任务结束后先保留 10 分钟（可看日志/结果），再清大文件
+# 允许早于服务器时间这么多秒的“立即发布”；再早就是选错时间，直接报错
+IMMEDIATE_GRACE = 120.0
+# 计划时间距现在不足这么多秒时，任务列表里标成“立即发布”，避免用户以为定错了
+IMMEDIATE_NOTICE = 60.0
 
 
 def keep_seconds() -> float:
@@ -79,6 +83,19 @@ def parse_publish_at(value: Any) -> float:
 
 def fmt_time(epoch: float) -> str:
     return datetime.fromtimestamp(epoch).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def fmt_time_tz(epoch: float) -> str:
+    """带时区偏移的时间文本。
+
+    服务器与用户本机时区可能不同（“我明明设的 10 点”这类误会大多源于此），
+    所以给用户看的时间一律带上 UTC 偏移。
+    """
+    text = datetime.fromtimestamp(epoch).astimezone().strftime("%Y-%m-%d %H:%M:%S")
+    offset = datetime.fromtimestamp(epoch).astimezone().strftime("%z")
+    if offset:
+        return f"{text} UTC{offset[:3]}:{offset[3:]}"
+    return text
 
 
 class JobStore:
@@ -134,11 +151,23 @@ class JobStore:
         else:
             chapters = None
         publish_at = parse_publish_at(payload.get("publish_at"))
+        # 发布时间已经过去的话，调度线程会“立刻”把它发出去——很多人就是这么
+        # 误以为“定时没生效、直接发出去了”。这里直接拒绝，让调用方重新选时间。
+        now = now_epoch()
+        if publish_at < now - IMMEDIATE_GRACE:
+            raise ValueError(
+                f"发布时间 {fmt_time(publish_at)} 已经过去（服务器当前时间 "
+                f"{fmt_time(now)}），请改成一个将来的时间再提交"
+            )
         job = {
             "id": job_id,
             "created_at": fmt_time(now_epoch()),
             "publish_at": publish_at,
-            "publish_at_text": fmt_time(publish_at),
+            "publish_at_text": (
+                f"{fmt_time_tz(publish_at)}（立即发布）"
+                if publish_at - now <= IMMEDIATE_NOTICE
+                else fmt_time_tz(publish_at)
+            ),
             "status": "staging",  # staging -> ready/pending -> running -> done/failed/error/canceled
             "platforms": platforms,
             "chapters": chapters,
@@ -286,7 +315,7 @@ class JobStore:
             job_id,
             status="pending",
             publish_at=now_epoch(),
-            publish_at_text="立即",
+            publish_at_text="立即发布",
             started_at="",
             finished_at="",
             result=None,
@@ -371,9 +400,13 @@ def execute_job(store: JobStore, job_id: str) -> None:
         # dry_run 走纯计划路径，不发网络请求
         app.common.dry_run = bool(common.get("dry_run") or job.get("dry_run"))
         runner = _make_runner(app)
+        planned = float(job.get("publish_at") or 0)
+        delay = max(0.0, now_epoch() - planned) if planned else 0.0
         logging.getLogger(util.LOGGER_NAME).info(
-            "开始执行定时任务 %s：平台=%s 章节=%s",
+            "开始执行定时任务 %s：计划 %s，到点后 %.1fs 开始；平台=%s 章节=%s",
             job_id,
+            fmt_time_tz(planned) if planned else "—",
+            delay,
             ",".join(job["platforms"]),
             ",".join(job["chapters"]) if job["chapters"] else "全部",
         )

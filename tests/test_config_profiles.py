@@ -99,6 +99,78 @@ class ConfigProfilesTest(unittest.TestCase):
         self.assertEqual(prof.name, "config.profiles.yaml")
         self.assertEqual(prof.parent, cfg.parent)
 
+    def test_switch_keeps_cookies_of_other_platforms(self):
+        """切预设不该清掉“预设里没写/写空”的平台 Cookie（用户反馈的掉 Cookie）。"""
+        cfg, prof = self._paths()
+        # 当前 config.yaml 里两个平台都已填好 Cookie
+        cfg.write_text(
+            "common: {}\n"
+            "platforms:\n"
+            "  bilibili:\n"
+            "    enabled: true\n"
+            "    cookies: {SESSDATA: bili-sess, bili_jct: bili-csrf}\n"
+            "    settings: {publish_mode: article}\n"
+            "  tieba:\n"
+            "    enabled: true\n"
+            "    cookies: {BDUSS: tieba-bduss}\n"
+            "    settings: {forum: 东方吧}\n",
+            encoding="utf-8",
+        )
+        # 老预设：只有 e-hentai，且 bilibili 的 Cookie 是空的
+        save_profile_config(
+            prof,
+            "只有E站",
+            {
+                "common": {"timeout": 5},
+                "platforms": {
+                    "bilibili": {"enabled": False, "cookies": {}, "settings": {}},
+                    "ehentai": {
+                        "enabled": True,
+                        "cookies": {"ipb_member_id": "1", "ipb_pass_hash": "h"},
+                        "settings": {},
+                    },
+                },
+            },
+        )
+        got = switch_profile_config(prof, cfg, "只有E站")
+        text = cfg.read_text(encoding="utf-8")
+        self.assertIn("bili-sess", text)      # B站 Cookie 保留
+        self.assertIn("bili-csrf", text)
+        self.assertIn("tieba-bduss", text)    # 预设里没有的平台整体保留
+        self.assertIn("ipb_member_id", text)  # 预设自己的值照常写入
+        # 返回给前端的载荷同样带着补回来的 Cookie
+        self.assertEqual(got["platforms"]["bilibili"]["cookies"]["SESSDATA"], "bili-sess")
+        self.assertEqual(got["platforms"]["tieba"]["cookies"]["BDUSS"], "tieba-bduss")
+
+    def test_switch_prefers_profile_cookie_values(self):
+        """预设里非空的 Cookie 依然覆盖 config.yaml（换号场景不能被合并逻辑拦住）。"""
+        cfg, prof = self._paths()
+        cfg.write_text(
+            "platforms:\n"
+            "  bilibili:\n"
+            "    cookies: {SESSDATA: old, bili_jct: old-csrf}\n",
+            encoding="utf-8",
+        )
+        save_profile_config(
+            prof,
+            "新号",
+            {
+                "common": {},
+                "platforms": {
+                    "bilibili": {
+                        "enabled": True,
+                        "cookies": {"SESSDATA": "new", "bili_jct": ""},
+                        "settings": {},
+                    }
+                },
+            },
+        )
+        switch_profile_config(prof, cfg, "新号")
+        text = cfg.read_text(encoding="utf-8")
+        self.assertIn("SESSDATA: new", text)
+        # 预设里为空的字段用现有值补上，避免半个账号
+        self.assertIn("bili-csrf", text) if "bili-csrf" in text else self.assertIn("old-csrf", text)
+
 
 if __name__ == "__main__":
     unittest.main()

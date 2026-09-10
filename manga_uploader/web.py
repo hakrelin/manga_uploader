@@ -22,6 +22,7 @@ import threading
 import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import parse_qs, unquote, urlparse
@@ -448,6 +449,29 @@ def _save_comic_meta(
 
 # ---------------------------------------------------------------- HTTP 服务
 
+def _check_future_publish_at(value: Any) -> str:
+    """校验发布时间是将来；否则云端会“立刻”执行（用户会以为定时没生效）。
+
+    接受 epoch 秒或网页 datetime-local 的本地时间字符串（按 UTC+8 解释）。
+    """
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError("请选择发布时间")
+    try:
+        stamp = float(text)
+    except ValueError:
+        try:
+            dt = datetime.fromisoformat(text)
+        except ValueError as exc:
+            raise ValueError(f"发布时间格式不对：{text}") from exc
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone(timedelta(hours=8)))
+        stamp = dt.timestamp()
+    if stamp < time.time() - 120:
+        raise ValueError("发布时间已经过去，请选择将来的时间（否则云端会立刻发布出去）")
+    return text
+
+
 class WebHandler(BaseHTTPRequestHandler):
     server: "MangaServer"
     protocol_version = "HTTP/1.1"
@@ -869,9 +893,7 @@ class WebHandler(BaseHTTPRequestHandler):
             if not platforms:
                 raise ValueError("请至少选择一个平台")
             chapters = [str(c).strip() for c in (data.get("chapters") or []) if str(c).strip()] or None
-            publish_at = data.get("publish_at") or ""
-            if not publish_at:
-                raise ValueError("请选择发布时间")
+            publish_at = _check_future_publish_at(data.get("publish_at"))
             problems = validate_schedule_content(comic_dir, platforms, chapters)
             if problems:
                 raise ValueError("内容不完整，无法创建定时任务：" + "；".join(problems))

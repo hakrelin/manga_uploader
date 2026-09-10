@@ -79,6 +79,8 @@ DEFAULT_SETTINGS: dict[str, dict[str, Any]] = {
         "fid": 0,
         "max_pages_per_post": 9,   # 每楼最多 9 张（网页端硬上限）；第 1 楼固定只放封面
         "upload_sleep": 1.0,
+        "upload_attempts": 3,      # 单张传图失败（2230204 限流等）自动重试次数
+        "upload_retry_wait": 3.0,  # 重试间隔基准秒数（第 n 次等待 n 倍）
         "forum_interval": 3.0,     # 两个吧之间等待秒数，降低被限流概率
         "title_suffix": "",
         "use_system_proxy": False,

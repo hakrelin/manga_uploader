@@ -55,9 +55,6 @@ def _fmt_error(code: object, message: str) -> str:
     """把贴吧 error_code 转成用户能看懂的中文。"""
     code_str = str(code or "").strip()
     message = (message or "").strip()
-    # 已有关键信息时直接返回服务端文案
-    if message and not re.fullmatch(r"\d+", message):
-        return message
     table = {
         "230274": "该吧已被关闭或不存在，无法发帖",
         "230004": "未登录或登录状态失效，请更新 Cookie",
@@ -87,9 +84,16 @@ def _fmt_error(code: object, message: str) -> str:
         "230901": "该楼回复已达上限，请改用新的楼层",
         "230273": "操作失败，该帖子已不存在",
         "230008": "内容已提交成功，正在审核，请耐心等待",
+        "2230204": "传图被百度拒绝（多为上传过快的限流/风控），稍后重试即可",
+        "2230201": "图片格式或尺寸不被接受，请换 jpg/png 后重试",
         "210009": "系统繁忙，请稍后重试",
     }
-    return table.get(code_str, f"发帖失败（error_code={code_str}）")
+    # 已知错误码优先用中文说明（服务端经常只回“上传失败”这种没信息量的文案）
+    if code_str in table:
+        return table[code_str]
+    if message and not re.fullmatch(r"\d+", message):
+        return message
+    return f"发帖失败（error_code={code_str}）"
 
 
 def _need_vcode(payload: object) -> bool:
@@ -353,28 +357,47 @@ class TiebaPublisher(BasePublisher):
             }
         )
         fields = {key: value for key, value in payload.items() if key != "chunk"}
-        with open(page.path, "rb") as fh:
-            resp = self.http.post(
-                UPLOAD_URL,
-                data=fields,
-                files={"chunk": (page.path.name, fh, mime)},
-                headers={
-                    "Referer": f"{FORUM_URL}?kw={quote(forum)}&ie=utf-8",
-                    "X-Requested-With": "XMLHttpRequest",
-                    "Accept": "application/json, text/javascript, */*; q=0.01",
-                    "Origin": "https://tieba.baidu.com",
-                },
-            )
-        try:
-            payload = self._json_of(resp)
-        except ValueError as exc:
-            self.http._dump(resp, tag="tieba-upload")
-            raise PublisherError(f"贴吧传图接口未返回 JSON：{resp.text[:200]}") from exc
-        error_code = payload.get("error_code")
-        if error_code not in (None, "", 0, "0"):
-            self.http._dump(resp, tag="tieba-upload")
+        # 贴吧传图偶发被拒（error_code=2230204「上传失败」，多是上传过快触发限流）。
+        # 单张图失败不该让整层楼、整个吧白跑，这里自动重试若干轮再报错。
+        attempts = max(1, int(self.cfg.get("upload_attempts", 3) or 3))
+        retry_wait = float(self.cfg.get("upload_retry_wait", 3.0) or 0)
+        last_error = ""
+        for attempt in range(1, attempts + 1):
+            with open(page.path, "rb") as fh:
+                resp = self.http.post(
+                    UPLOAD_URL,
+                    data=fields,
+                    files={"chunk": (page.path.name, fh, mime)},
+                    headers={
+                        "Referer": f"{FORUM_URL}?kw={quote(forum)}&ie=utf-8",
+                        "X-Requested-With": "XMLHttpRequest",
+                        "Accept": "application/json, text/javascript, */*; q=0.01",
+                        "Origin": "https://tieba.baidu.com",
+                    },
+                )
+            try:
+                payload = self._json_of(resp)
+            except ValueError as exc:
+                self.http._dump(resp, tag="tieba-upload")
+                raise PublisherError(f"贴吧传图接口未返回 JSON：{resp.text[:200]}") from exc
+            error_code = payload.get("error_code")
+            if error_code in (None, "", 0, "0"):
+                break
             message = str(payload.get("error_msg") or payload.get("error") or payload)[:300]
-            raise PublisherError(f"贴吧传图失败：{_fmt_error(error_code, message)}")
+            last_error = _fmt_error(error_code, message)
+            if attempt < attempts:
+                self.log.warning(
+                    "贴吧传图失败（%s，第 %d/%d 次），稍后重试：%s",
+                    page.path.name,
+                    attempt,
+                    attempts,
+                    last_error,
+                )
+                if retry_wait > 0:
+                    time.sleep(retry_wait * attempt)
+            else:
+                self.http._dump(resp, tag="tieba-upload")
+                raise PublisherError(f"贴吧传图失败（已重试 {attempts} 次）：{last_error}")
         pic_info = payload.get("picInfo") or {}
         origin = pic_info.get("originPic") or {}
         big = pic_info.get("bigPic") or {}
