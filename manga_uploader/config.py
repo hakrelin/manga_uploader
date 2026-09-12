@@ -70,7 +70,7 @@ DEFAULT_SETTINGS: dict[str, dict[str, Any]] = {
         "upload_attempts": 3,       # 单张图片上传失败后的自动重试轮数
         "submit_attempts": 3,       # 提交（发布）被风控 -352/-412/-509 拦截后的重试次数
         "submit_retry_wait": 5.0,   # 风控重试基准秒数（第 n 次等 2^(n-1) 倍 + 随机抖动）
-        "image_delay": 0.0,         # 每张图上传后的随机延时上限（秒）；频繁 -352 时调到 1~2
+        "image_delay": 0.0,         # 每张图上传后的随机延时上限（秒，0~60）；频繁 -352 时调到 1~2
         "image_category": "draw",  # daily / draw / cos
         "max_pages_per_post": 9,   # 图文动态单条上限 9 张（仅 publish_mode=dynamic）
         "topics": ["#原创漫画#"],

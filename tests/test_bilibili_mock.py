@@ -344,6 +344,44 @@ class TestBilibiliPublisherMock(unittest.TestCase):
         self.assertTrue(any(path.startswith("/spi") for path in _Handler.gets))
         self.assertTrue(any(path.startswith("/nav") for path in _Handler.gets))
 
+    def test_image_delay_is_clamped_and_safe(self):
+        """image_delay：非法值回退 0，过大夹到 60 秒（不会把发布拖成几小时）。"""
+        chapter = _make_chapter(Path(self.tmp.name))
+        with mock.patch("time.sleep") as sleeper:
+            result = self._publisher(
+                {"publish_mode": "article", "image_delay": 9999}
+            ).publish(chapter)
+        self.assertEqual(result.status, "ok", result.message)
+        self.assertEqual(sleeper.call_count, 10)
+        for call in sleeper.call_args_list:
+            self.assertLessEqual(call.args[0], 60.0)
+
+        # 手改配置写成非数字：回退成 0（不延时），而不是崩在 float() 上
+        second = Path(self.tmp.name) / "second"
+        second.mkdir(parents=True, exist_ok=True)
+        chapter = _make_chapter(second)
+        with mock.patch("time.sleep") as sleeper:
+            result = self._publisher(
+                {"publish_mode": "article", "image_delay": "abc"}
+            ).publish(chapter)
+        self.assertEqual(result.status, "ok", result.message)
+        self.assertEqual(sleeper.call_count, 0)
+
+    def test_retry_settings_are_clamped(self):
+        """重试次数/退避基准同样夹住：填 100 次不会真的等差重试 100 轮。"""
+        _Handler.submit_failures = 99
+        chapter = _make_chapter(Path(self.tmp.name))
+        with mock.patch("time.sleep") as sleeper:
+            result = self._publisher(
+                {"publish_mode": "article", "submit_attempts": 100, "submit_retry_wait": 9999}
+            ).publish(chapter)
+        self.assertEqual(result.status, "partial")
+        # 次数夹到上限 10
+        self.assertEqual(len(self._last_posts("/submit")), 10)
+        # 单次退避最多 120 秒
+        for call in sleeper.call_args_list:
+            self.assertLessEqual(call.args[0], 120.0)
+
     def test_ensure_session_keeps_user_filled_cookies(self):
         """配置里填好的设备 Cookie 原样使用，不覆盖、也不再多打网络请求。"""
         cfg = PlatformConfig(

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import html
 import json
+import math
 import mimetypes
 import random
 import time
@@ -30,6 +31,36 @@ from ..models import Chapter, CheckResult, PublishResult
 from .. import composer
 from ..util import chunk_list
 from .base import BasePublisher, CaptchaRequiredError, PublisherError
+
+# 数值型设置的安全范围（防止手改配置填成 9999 把发布拖成几小时）
+IMAGE_DELAY_MAX = 60.0        # image_delay：每张图上传后最多随机等多少秒
+RETRY_WAIT_MAX = 600.0        # submit_retry_wait：退避基准最大 600 秒
+RETRY_WAIT_CAP = 120.0        # 单次退避最多等 120 秒
+ATTEMPTS_MAX = 10             # upload_attempts / submit_attempts 上限
+
+
+def _float_setting(value, default, *, lo=0.0, hi=None) -> float:
+    """安全解析数值设置：非法值回退默认，并按 lo/hi 夹住。
+
+    配置可能被手改（image_delay: abc）或填得很大（image_delay: 9999），
+    直接 float() 会抛异常，照单全收又会把发布拖成几小时。
+    """
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return float(default)
+    if math.isnan(number) or math.isinf(number):
+        return float(default)
+    number = max(number, lo)
+    if hi is not None:
+        number = min(number, hi)
+    return number
+
+
+def _int_setting(value, default, *, lo=1, hi=ATTEMPTS_MAX) -> int:
+    """整数设置：非法值回退默认，并夹在 lo~hi 之间。"""
+    return int(_float_setting(value, default, lo=lo, hi=hi))
+
 
 NAV_URL = "https://api.bilibili.com/x/web-interface/nav"
 # 设备指纹接口（无需登录）：返回 b_3/b_4，对应 Cookie buvid3/buvid4。
@@ -355,7 +386,7 @@ class BilibiliPublisher(BasePublisher):
             (ARTICLE_UPCOVER_URL, "file"),
         )
         # B站偶发的单图失败：整轮接口都失败后整体重试（次数可配，默认 3）
-        attempts = max(1, int(self.cfg.get("upload_attempts", 3) or 3))
+        attempts = _int_setting(self.cfg.get("upload_attempts", 3), 3)
         last_error = "未知错误"
         for attempt in range(1, attempts + 1):
             for endpoint, field in candidates:
@@ -515,7 +546,7 @@ class BilibiliPublisher(BasePublisher):
                 "等级过低、短时间提交太多，或当前网络出口（机房 IP、代理/VPN）被B站标记。"
                 "程序已自动补全设备指纹 Cookie 并按指数退避重试过；仍失败请按顺序处理："
                 "① 直接去B站创作中心手动发布这篇草稿；"
-                "② 把 image_delay 调到 1~2 秒，隔几十分钟再发；"
+                "② 把 image_delay 调到 1~2 秒（0~60 秒），隔几十分钟再发；"
                 "③ 关代理/VPN 或换网络（手机热点）后重试；"
                 "④ 用该账号在网页端手动发一篇专栏，确认账号本身有投稿权限"
             ),
@@ -575,12 +606,15 @@ class BilibiliPublisher(BasePublisher):
         """正式提交专栏。
 
         被风控拦（-352/-412/-509）不是参数问题，等一会儿往往就能过：
-        按 submit_retry_wait × 2^(n-1) + 随机抖动退避重试，重试前刷新设备指纹。
+        按 submit_retry_wait × 2^(n-1) + 随机抖动退避重试（单次最多等 120 秒），
+        重试前刷新设备指纹。
         """
         data = dict(data)
         data["aid"] = aid
-        attempts = max(1, int(self.cfg.get("submit_attempts", 3) or 3))
-        base_wait = max(0.0, float(self.cfg.get("submit_retry_wait", 5) or 0))
+        attempts = _int_setting(self.cfg.get("submit_attempts", 3), 3)
+        base_wait = _float_setting(
+            self.cfg.get("submit_retry_wait", 5), 5, lo=0.0, hi=RETRY_WAIT_MAX
+        )
         for attempt in range(1, attempts + 1):
             resp = self.http.post(
                 ARTICLE_SUBMIT_URL, data=data, headers=self._api_headers(ARTICLE_EDIT_REFERER)
@@ -598,7 +632,10 @@ class BilibiliPublisher(BasePublisher):
                 and code in RISK_CONTROL_CODES
                 and not self._needs_captcha(payload)
             ):
-                wait = base_wait * (2 ** (attempt - 1)) + random.uniform(0.0, 1.5)
+                wait = min(
+                    base_wait * (2 ** (attempt - 1)) + random.uniform(0.0, 1.5),
+                    RETRY_WAIT_CAP,
+                )
                 self.log.warning(
                     "B站 提交被风控拦截（code=%s，第 %d/%d 次），%.1f 秒后重试",
                     code,
@@ -657,8 +694,16 @@ class BilibiliPublisher(BasePublisher):
                         )
                         # 固定间隔（common.interval_seconds）+ 随机抖动（image_delay），
                         # 让请求节奏更像人工操作；被 -352 拦过就把 image_delay 调到 1~2
-                        wait = float(self.common.interval_seconds or 0)
-                        jitter = max(0.0, float(self.cfg.get("image_delay", 0) or 0))
+                        # （image_delay 上限 60 秒，见 IMAGE_DELAY_MAX）
+                        wait = _float_setting(
+                            self.common.interval_seconds, 0.0, lo=0.0, hi=RETRY_WAIT_MAX
+                        )
+                        jitter = _float_setting(
+                            self.cfg.get("image_delay", 0),
+                            0.0,
+                            lo=0.0,
+                            hi=IMAGE_DELAY_MAX,
+                        )
                         if jitter:
                             wait += random.uniform(0.0, jitter)
                         if wait:
