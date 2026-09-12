@@ -89,7 +89,10 @@ class HttpClient:
         if extra_headers:
             self.session.headers.update(extra_headers)
         for name, value in (cookies or {}).items():
-            self.session.cookies.set(name, value)
+            # 配置界面上留空的字段会保存成空字符串：不要塞进 cookie jar，
+            # 否则自动补全时会出现 “buvid4=; buvid4=xxx” 这种重复下发。
+            if str(value if value is not None else "").strip():
+                self.session.cookies.set(name, str(value))
         effective_proxy = proxy_url.strip() if proxy_url else ""
         if not effective_proxy and use_system_proxy:
             effective_proxy = detect_system_proxy()

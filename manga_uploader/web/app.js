@@ -2031,9 +2031,20 @@ createApp({
           modal.value = null;
           return;
         }
+        // 可填充的键 = 本平台卡片声明的 Cookie 字段（buvid3/buvid4/b_nut/
+        // DedeUserID 等，即使配置里原本没有这些键）+ 配置里已有的键。
+        const card = cards.value.find((c) => c.key === m.key);
+        const known = new Set(Object.keys(p));
+        ((card && card.cookie_fields) || []).forEach((f) => known.add(f.name));
         let filled = 0;
-        keys.forEach((k) => { if (k in p) { p[k] = parsed[k]; filled++; } });
-        toastMsg(`已填 ${filled} 个 Cookie 到 ${m.key}`);
+        const unknown = [];
+        keys.forEach((k) => {
+          if (known.has(k)) { p[k] = parsed[k]; filled++; } else { unknown.push(k); }
+        });
+        toastMsg(
+          `已填 ${filled} 个 Cookie 到 ${m.key}` +
+          (unknown.length ? `（忽略未用到的 ${unknown.length} 项）` : "")
+        );
         modal.value = null;
       } else if (m.kind === "meta") {
         if (!m.title.trim()) { toastMsg("标题不能为空"); return; }

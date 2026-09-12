@@ -344,6 +344,30 @@ class TestBilibiliPublisherMock(unittest.TestCase):
         self.assertTrue(any(path.startswith("/spi") for path in _Handler.gets))
         self.assertTrue(any(path.startswith("/nav") for path in _Handler.gets))
 
+    def test_ensure_session_keeps_user_filled_cookies(self):
+        """配置里填好的设备 Cookie 原样使用，不覆盖、也不再多打网络请求。"""
+        cfg = PlatformConfig(
+            name="bilibili",
+            cookies={
+                "SESSDATA": "s",
+                "bili_jct": "csrf",
+                "buvid3": "my-buvid3",
+                "buvid4": "my-buvid4",
+                "b_nut": "1700000000",
+                "DedeUserID": "12345",
+            },
+            settings={"publish_mode": "article"},
+        )
+        publisher = BilibiliPublisher(
+            cfg, CommonConfig(output_dir=str(Path(self.tmp.name) / "out"))
+        )
+        self.assertEqual(publisher.ensure_session(), {})
+        jar = publisher.http.session.cookies
+        self.assertEqual(jar.get("buvid4"), "my-buvid4")
+        self.assertEqual(jar.get("b_nut"), "1700000000")
+        self.assertEqual(jar.get("DedeUserID"), "12345")
+        self.assertEqual(_Handler.gets, [])  # 不需要再请求 spi / nav
+
     def test_article_requests_carry_browser_headers(self):
         """接口请求必须带 Referer/Origin（裸请求容易被风控判成脚本）。"""
         chapter = _make_chapter(Path(self.tmp.name))

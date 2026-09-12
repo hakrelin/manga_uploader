@@ -329,7 +329,8 @@ class UploaderApp:
         body.columnconfigure(0, weight=1)
         title = ttk.Label(
             body,
-            text="把各 Cookie 分别填入对应输入框（如 SESSDATA、bili_jct、BDUSS、token）。"
+            text="把各 Cookie 分别填入对应输入框（如 SESSDATA、bili_jct、BDUSS、token）；"
+        "B站建议把 buvid3/buvid4/b_nut/DedeUserID 也填上，能减少 -352 风控。"
             "已登录的浏览器里 F12 → Network → 请求头 Cookie 可复制单个值；"
             "也可点“粘贴整段 Cookie”自动拆分。账号密码登录因验证码限制请用浏览器登录。",
             wraplength=950,
@@ -2427,7 +2428,14 @@ class UploaderApp:
                 code = poll.get("code")
                 if code == 0:
                     cookies = {name: c.value for name, c in session.cookies.items()}
-                    wanted = ["SESSDATA", "bili_jct", "buvid3", "DedeUserID"]
+                    wanted = [
+                        "SESSDATA",
+                        "bili_jct",
+                        "buvid3",
+                        "buvid4",
+                        "b_nut",
+                        "DedeUserID",
+                    ]
                     picked = {k: v for k, v in cookies.items() if k in wanted}
                     if not picked:
                         picked = cookies

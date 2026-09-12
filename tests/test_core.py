@@ -234,6 +234,34 @@ class TestHelpers(unittest.TestCase):
         payload = {"info": {"imgurl": "http://x/y.jpg"}}
         self.assertEqual(_find_first(payload, ("imgurl", "url")), "http://x/y.jpg")
 
+    def test_empty_cookie_values_are_not_sent(self):
+        """配置界面留空的 Cookie 不能进 jar，否则自动补全会重复下发。"""
+        from manga_uploader.http_client import HttpClient
+
+        client = HttpClient(cookies={"SESSDATA": "s", "buvid4": "", "b_nut": "   "})
+        self.assertEqual(client.session.cookies.get("SESSDATA"), "s")
+        self.assertIsNone(client.session.cookies.get("buvid4"))
+        self.assertIsNone(client.session.cookies.get("b_nut"))
+        import requests
+
+        prepared = client.session.prepare_request(
+            requests.Request("GET", "https://api.bilibili.com/x/web-interface/nav")
+        )
+        header = prepared.headers.get("Cookie", "")
+        self.assertEqual(header, "SESSDATA=s")
+        self.assertNotIn("buvid4", header)
+
+    def test_bilibili_card_exposes_device_cookie_fields(self):
+        """配置界面要能填 B站风控依赖的 buvid3/buvid4/b_nut/DedeUserID。"""
+        from manga_uploader.webui import PLATFORM_CARDS
+
+        card = next(c for c in PLATFORM_CARDS if c["key"] == "bilibili")
+        names = [f["name"] for f in card["cookie_fields"]]
+        for name in ("SESSDATA", "bili_jct", "buvid3", "buvid4", "b_nut", "DedeUserID"):
+            self.assertIn(name, names)
+        required = [f["name"] for f in card["cookie_fields"] if f.get("required")]
+        self.assertEqual(required, ["SESSDATA", "bili_jct"])
+
     def test_clean_proxy_url(self):
         self.assertEqual(_clean_proxy_url("127.0.0.1:7890"), "http://127.0.0.1:7890")
         self.assertEqual(_clean_proxy_url("http=http://a:1;https=http://b:2"), "http://a:1")

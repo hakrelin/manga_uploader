@@ -68,12 +68,20 @@ PLATFORM_CARDS: list[dict[str, Any]] = [
         "key": "bilibili",
         "label": "B站（专栏文章，可切图文动态）",
         "login_url": "https://passport.bilibili.com/login",
+        # 必需项之外，下面几个是 B站风控（-352）依赖的会话 Cookie：
+        # 建议点“粘贴整段 Cookie”一次填全；留空也能发（发布前自动补全），
+        # 但填上更稳，尤其是账号已经被 -352 拦过的时候。
         "cookie_fields": [
             {"name": "SESSDATA", "required": True},
             {"name": "bili_jct", "required": True, "hint": "CSRF 令牌"},
-            {"name": "buvid3", "required": False, "hint": "建议填写"},
+            {"name": "buvid3", "required": False, "hint": "设备指纹，建议填写"},
+            {"name": "buvid4", "required": False, "hint": "设备指纹，建议填写（-352 风控看它）"},
+            {"name": "b_nut", "required": False, "hint": "首次访问时间戳（10 位秒）"},
+            {"name": "DedeUserID", "required": False, "hint": "登录 UID，建议填写"},
         ],
-        "hint": "默认把每话发成一篇专栏（正文带图）；要发图文动态可在 config 里把 publish_mode 改成 dynamic。",
+        "hint": "默认把每话发成一篇专栏（正文带图）；要发图文动态可在 config 里把 publish_mode 改成 dynamic。"
+        "建议点“粘贴整段 Cookie”把 buvid3/buvid4/b_nut/DedeUserID 一起填全（整段粘贴会自动识别）；"
+        "留空也能发布——程序会在发布前自动补全，但填上能明显减少 -352 风控。",
         "qr": True,
         "controls": {
             "publish_mode": {
@@ -1133,7 +1141,15 @@ _BILI_QR_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "Chrome/126.0 Safari/537.36"
 )
-_BILI_QR_WANTED = ["SESSDATA", "bili_jct", "buvid3", "DedeUserID"]
+# 扫码登录能拿到的会话 Cookie：设备指纹一并保存，减少后续 -352
+_BILI_QR_WANTED = [
+    "SESSDATA",
+    "bili_jct",
+    "buvid3",
+    "buvid4",
+    "b_nut",
+    "DedeUserID",
+]
 
 
 def bilibili_qr_new() -> tuple[Any, str, str]:
