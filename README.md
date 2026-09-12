@@ -217,7 +217,7 @@ Headers 里的 `Cookie:`，按下面表格填入 `config.yaml`（GUI 支持分�
 
 | 平台 | 需要的 Cookie | 备注 |
 | --- | --- | --- |
-| B站 | `SESSDATA`、`bili_jct`（建议 `buvid3`） | 发专栏/动态需绑定手机；`bili_jct` 是 CSRF 令牌 |
+| B站 | `SESSDATA`、`bili_jct`（建议连 `buvid3`、`buvid4`、`DedeUserID` 一起填） | 发专栏/动态需绑定手机；`bili_jct` 是 CSRF 令牌。缺 `DedeUserID`/`buvid*` 时程序会在发布前自动补全（见下方“B站 -352”） |
 | 贴吧 | `BDUSS` | 发帖权限受账号/吧等级限制 |
 | e-hentai | `ipb_member_id`、`ipb_pass_hash` | 需站方上传资格；通常还需能直连外网 |
 | 再漫画 | `token`（建议 `clientId`） | 登录后取 `token`；投稿入口见平台网页 |
@@ -253,6 +253,13 @@ Cookie 会过期（B站 SESSDATA 常见数月），`check` 会提示失效，重
 3. `POST /x/article/creative/article/submit` 正式发布，输出
    `https://www.bilibili.com/read/cv{aid}`；
 4. 单篇最多 `max_article_pages`（默认 100）张，超出按顺序自动拆多篇。
+
+发帖前会先补全 B站风控依赖的会话 Cookie（`buvid3`/`buvid4`/`b_nut`/`DedeUserID`），
+并对所有接口带上浏览器风格的 `Referer`/`Origin`；正式提交（第 3 步）若被风控返回
+`-352`/`-412`/`-509`，会按 `submit_retry_wait × 2^(n-1)`（默认 3 次，最多约 15 秒）
+退避重试，重试前刷新设备指纹。一直失败时**草稿会保留**，程序会把
+`https://member.bilibili.com/platform/upload/text/edit?aid=…` 写进结果与日志，
+去创作中心点一次“发布”即可。
 
 旧版图文动态（`publish_mode: dynamic`，参照
 [bilibili-API-collect](https://github.com/SocialSisterYi/bilibili-API-collect)）：
@@ -323,6 +330,16 @@ Cookie 会过期（B站 SESSDATA 常见数月），`check` 会提示失效，重
 
 - `check` 某平台失败：Cookie 过期/缺失，或账号权限不足。
 - 上传返回 412/验证码：平台风控，降低频率、等待或先手动发一帖。
+- **B站专栏一直 `code=-352`（风控校验失败）**：不是程序 bug，是服务端判定这次请求
+  可疑。程序侧已尽量消除可改进的因素（补全 `buvid3`/`buvid4`/`b_nut`/`DedeUserID`、
+  带 `Referer`/`Origin`、风控错误指数退避重试、失败保留草稿）。仍报错时按顺序处理：
+  1. 直接去创作中心（投稿管理 → 专栏草稿）手动发布程序留下的那篇草稿，最省事；
+  2. 把 `platforms.bilibili.settings.image_delay` 调到 `1`~`2`（每张图上传后随机
+     延时），隔几十分钟再发，**不要**把同一篇反复提交（重复刷会加重风控）；
+  3. 关掉代理/VPN，或换个网络（手机热点）再试；
+  4. 确认账号已绑定手机/实名、等级不太低；用该账号在网页端手动发一篇专栏验证权限；
+  5. 若响应里带 `v_voucher`，说明B站要求人机验证，先在浏览器登录会员中心完成
+     一次验证再回来发布（程序会明确提示，不会盲目重试）。
 - 发布接口报非预期响应：接口可能更新，把 `output/debug/*.html` 响应保存好
   再调整对应 `publishers/*.py` 的请求参数。
 - 图片被跳过：检查格式与单张大小上限（B站专栏仅 jpg/png 且 ≤5MB；图文动态

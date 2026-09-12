@@ -4,6 +4,7 @@ import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from unittest import mock
 from urllib.parse import parse_qs
 
 from PIL import Image
@@ -16,10 +17,15 @@ from manga_uploader.publishers.bilibili import BilibiliPublisher
 
 class _Handler(BaseHTTPRequestHandler):
     requests_log: list = []
+    gets: list = []
     draft_counter = 100
     article_counter = 850000
     article_image_calls = 0
     article_image_failures = 0
+    # 模拟 -352 风控：前 N 次提交返回风控错误
+    submit_failures = 0
+    # 风控响应里带 v_voucher（要求人机验证）
+    submit_voucher = False
 
     def log_message(self, *args):  # 静默
         pass
@@ -33,9 +39,19 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
+        self.__class__.gets.append(self.path)
         if self.path.startswith("/nav"):
             self._send_json(
                 {"code": 0, "message": "0", "data": {"isLogin": True, "uname": "测试", "mid": 1}}
+            )
+        elif self.path.startswith("/spi"):
+            # 设备指纹接口：真实接口返回 b_3/b_4（对应 buvid3/buvid4）
+            self._send_json(
+                {
+                    "code": 0,
+                    "message": "0",
+                    "data": {"b_3": "MOCK-BUVID3-INFOC", "b_4": "MOCK-BUVID4"},
+                }
             )
         else:
             self._send_json({"code": -404, "message": "not found"}, 404)
@@ -43,7 +59,9 @@ class _Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(length)
-        self.__class__.requests_log.append({"path": self.path, "body": body})
+        self.__class__.requests_log.append(
+            {"path": self.path, "body": body, "headers": dict(self.headers)}
+        )
         if self.path.startswith("/upload-dyn"):
             self._send_json(
                 {
@@ -92,6 +110,13 @@ class _Handler(BaseHTTPRequestHandler):
                 }
             )
         elif self.path.startswith("/submit"):
+            if self.__class__.submit_failures > 0:
+                self.__class__.submit_failures -= 1
+                payload = {"code": -352, "message": "-352", "ttl": 1}
+                if self.__class__.submit_voucher:
+                    payload["data"] = {"v_voucher": "mock-voucher"}
+                self._send_json(payload)
+                return
             self.__class__.article_counter += 1
             self._send_json(
                 {
@@ -140,6 +165,7 @@ class TestBilibiliPublisherMock(unittest.TestCase):
             "upcover": bili_mod.ARTICLE_UPCOVER_URL,
             "draft": bili_mod.ARTICLE_DRAFT_URL,
             "submit": bili_mod.ARTICLE_SUBMIT_URL,
+            "spi": bili_mod.FINGER_SPI_URL,
         }
         bili_mod.DYNAMIC_UPLOAD_IMAGE_URL = base + "/upload-dyn"
         bili_mod.CREATE_DYN_URL = base + "/dyn"
@@ -147,6 +173,7 @@ class TestBilibiliPublisherMock(unittest.TestCase):
         bili_mod.ARTICLE_UPCOVER_URL = base + "/upcover"
         bili_mod.ARTICLE_DRAFT_URL = base + "/draft"
         bili_mod.ARTICLE_SUBMIT_URL = base + "/submit"
+        bili_mod.FINGER_SPI_URL = base + "/spi"
 
     @classmethod
     def tearDownClass(cls):
@@ -160,6 +187,7 @@ class TestBilibiliPublisherMock(unittest.TestCase):
                     "upcover": "ARTICLE_UPCOVER_URL",
                     "draft": "ARTICLE_DRAFT_URL",
                     "submit": "ARTICLE_SUBMIT_URL",
+                    "spi": "FINGER_SPI_URL",
                 }[key],
                 value,
             )
@@ -167,10 +195,13 @@ class TestBilibiliPublisherMock(unittest.TestCase):
 
     def setUp(self):
         _Handler.requests_log = []
+        _Handler.gets = []
         _Handler.draft_counter = 100
         _Handler.article_counter = 850000
         _Handler.article_image_calls = 0
         _Handler.article_image_failures = 0
+        _Handler.submit_failures = 0
+        _Handler.submit_voucher = False
         self.tmp = tempfile.TemporaryDirectory()
 
     def tearDown(self):
@@ -299,6 +330,89 @@ class TestBilibiliPublisherMock(unittest.TestCase):
         self.assertEqual(bili_mod.ARTICLE_ALLOWED_EXTS, {".jpg", ".jpeg", ".png"})
         self.assertEqual(bili_mod.ARTICLE_MAX_BYTES, 5 * 1024 * 1024)
         self.assertIsNotNone(publisher)
+
+    def test_ensure_session_fills_device_cookies(self):
+        """发布前自动补全 buvid3/buvid4/b_nut/DedeUserID（-352 风控依赖）。"""
+        publisher = self._publisher({"publish_mode": "article"})
+        added = publisher.ensure_session()
+        self.assertIn("buvid4", added)
+        self.assertIn("b_nut", added)
+        self.assertEqual(added.get("DedeUserID"), "1")
+        jar = publisher.http.session.cookies
+        self.assertEqual(jar.get("buvid4"), "MOCK-BUVID4")
+        self.assertEqual(jar.get("buvid3"), "b")  # 已有值不覆盖
+        self.assertTrue(any(path.startswith("/spi") for path in _Handler.gets))
+        self.assertTrue(any(path.startswith("/nav") for path in _Handler.gets))
+
+    def test_article_requests_carry_browser_headers(self):
+        """接口请求必须带 Referer/Origin（裸请求容易被风控判成脚本）。"""
+        chapter = _make_chapter(Path(self.tmp.name))
+        result = self._publisher({"publish_mode": "article"}).publish(chapter)
+        self.assertEqual(result.status, "ok", result.message)
+        for record in self._last_posts("/draft") + self._last_posts("/submit"):
+            self.assertEqual(
+                record["headers"].get("Referer"), bili_mod.ARTICLE_EDIT_REFERER
+            )
+            self.assertEqual(record["headers"].get("Origin"), bili_mod.MEMBER_ORIGIN)
+        upload = self._last_posts("/upcover")[0]
+        self.assertEqual(upload["headers"].get("Referer"), bili_mod.ARTICLE_REFERER)
+        self.assertEqual(upload["headers"].get("Origin"), bili_mod.MEMBER_ORIGIN)
+
+    def test_352_retries_with_backoff_then_succeeds(self):
+        """-352 是风控，不是参数错：退避重试后应当能发出去。"""
+        _Handler.submit_failures = 2
+        chapter = _make_chapter(Path(self.tmp.name))
+        with mock.patch("time.sleep", lambda *a, **k: None):
+            result = self._publisher(
+                {"publish_mode": "article", "submit_retry_wait": 0}
+            ).publish(chapter)
+        self.assertEqual(result.status, "ok", result.message)
+        self.assertEqual(len(self._last_posts("/submit")), 3)
+        self.assertIn("cv850001", result.url)
+
+    def test_352_keeps_draft_for_manual_publish(self):
+        """一直 -352 时保留草稿，并给出创作中心手动发布入口。"""
+        _Handler.submit_failures = 99
+        chapter = _make_chapter(Path(self.tmp.name))
+        with mock.patch("time.sleep", lambda *a, **k: None):
+            result = self._publisher(
+                {"publish_mode": "article", "submit_retry_wait": 0}
+            ).publish(chapter)
+        self.assertEqual(result.status, "partial")
+        self.assertEqual(len(self._last_posts("/submit")), 3)  # 默认重试 3 次
+        drafts = result.details["drafts"]
+        self.assertEqual(len(drafts), 1)
+        self.assertIn("aid=101", drafts[0])
+        self.assertEqual(result.url, drafts[0])
+        self.assertIn("已保留草稿", result.message)
+        self.assertIn("-352", result.message)
+
+    def test_voucher_requires_manual_verification(self):
+        """响应带 v_voucher：提示人工验证，且不做无意义的重试。"""
+        _Handler.submit_failures = 99
+        _Handler.submit_voucher = True
+        chapter = _make_chapter(Path(self.tmp.name))
+        with mock.patch("time.sleep", lambda *a, **k: None):
+            result = self._publisher(
+                {"publish_mode": "article", "submit_retry_wait": 0}
+            ).publish(chapter)
+        self.assertEqual(result.status, "partial")
+        self.assertEqual(len(self._last_posts("/submit")), 1)
+        self.assertIn("人机验证", result.message)
+        self.assertEqual(len(result.details["drafts"]), 1)
+
+    def test_image_delay_adds_random_pause(self):
+        """image_delay：每张图上传后插入 0~image_delay 秒随机延时。"""
+        chapter = _make_chapter(Path(self.tmp.name))
+        with mock.patch("time.sleep") as sleeper:
+            result = self._publisher(
+                {"publish_mode": "article", "image_delay": 1.0}
+            ).publish(chapter)
+        self.assertEqual(result.status, "ok", result.message)
+        self.assertEqual(sleeper.call_count, 10)
+        for call in sleeper.call_args_list:
+            self.assertGreaterEqual(call.args[0], 0.0)
+            self.assertLessEqual(call.args[0], 1.0)
 
     def test_publish_missing_cookie(self):
         cfg = PlatformConfig(name="bilibili", cookies={})

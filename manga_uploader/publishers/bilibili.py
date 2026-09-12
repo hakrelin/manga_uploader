@@ -29,9 +29,12 @@ from urllib.parse import quote
 from ..models import Chapter, CheckResult, PublishResult
 from .. import composer
 from ..util import chunk_list
-from .base import BasePublisher, PublisherError
+from .base import BasePublisher, CaptchaRequiredError, PublisherError
 
 NAV_URL = "https://api.bilibili.com/x/web-interface/nav"
+# 设备指纹接口（无需登录）：返回 b_3/b_4，对应 Cookie buvid3/buvid4。
+# B站 web 风控会参考这两个值，只有 SESSDATA/bili_jct 的裸请求容易被 -352 拦下。
+FINGER_SPI_URL = "https://api.bilibili.com/x/frontend/finger/spi"
 
 # 图文动态（旧）
 DYNAMIC_UPLOAD_IMAGE_URL = "https://api.bilibili.com/x/dynamic/feed/draw/upload_bfs"
@@ -43,9 +46,25 @@ ARTICLE_DRAFT_URL = "https://api.bilibili.com/x/article/creative/draft/addupdate
 ARTICLE_SUBMIT_URL = "https://api.bilibili.com/x/article/creative/article/submit"
 
 ARTICLE_REFERER = "https://member.bilibili.com/platform/upload/text"
+ARTICLE_EDIT_REFERER = "https://member.bilibili.com/platform/upload/text/edit"
+MEMBER_ORIGIN = "https://member.bilibili.com"
+WEB_ORIGIN = "https://www.bilibili.com"
+# 风控类错误码：-352 风控校验失败 / -412 请求被拦截 / -509 限流
+RISK_CONTROL_CODES = (-352, -412, -509)
+# 发布时会自动补全的风控相关 Cookie
+DEVICE_COOKIES = ("buvid3", "buvid4", "b_nut", "DedeUserID")
 # 单张正文图片限制 5MB，允许 jpg/png
 ARTICLE_MAX_BYTES = 5 * 1024 * 1024
 ARTICLE_ALLOWED_EXTS = {".jpg", ".jpeg", ".png"}
+
+
+class BilibiliRiskControlError(PublisherError):
+    """B站风控拦截（-352 等）。此时草稿通常已建好，可引导用户手动发布。"""
+
+    def __init__(self, message: str, *, code: int | None = None, aid: str = ""):
+        super().__init__(message)
+        self.code = code
+        self.aid = str(aid or "")
 
 
 class BilibiliPublisher(BasePublisher):
@@ -92,6 +111,87 @@ class BilibiliPublisher(BasePublisher):
 
     # ---------- 公共 ----------
 
+    # ---------- 会话 / 风控 ----------
+
+    @staticmethod
+    def _api_headers(
+        referer: str = ARTICLE_REFERER, origin: str = MEMBER_ORIGIN
+    ) -> dict[str, str]:
+        """接口请求头：补齐 Referer / Origin / Accept，模仿会员中心网页的 XHR。
+
+        只有 User-Agent 的裸请求（缺 Referer/Origin）更容易被判成脚本行为，
+        触发 -352 风控校验失败。
+        """
+        return {
+            "Referer": referer,
+            "Origin": origin,
+            "Accept": "application/json, text/plain, */*",
+            "Sec-Fetch-Site": "same-site",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Dest": "empty",
+        }
+
+    def cookie_audit(self) -> list[str]:
+        """返回缺失的风控相关 Cookie 名（自检提示用）。"""
+        jar = self.http.session.cookies
+        return [name for name in DEVICE_COOKIES if not jar.get(name)]
+
+    def ensure_session(self) -> dict[str, str]:
+        """补全 B站风控依赖的会话 Cookie，返回本次补上的键值。
+
+        - buvid3 / buvid4：设备指纹，来自 /x/frontend/finger/spi（无需登录）
+        - b_nut：首次访问时间戳
+        - DedeUserID：登录 UID，Cookie 里没有时从 nav 接口取
+
+        只作用于本次发布的会话，不写回配置文件。缺失这些值时，只有
+        SESSDATA/bili_jct 的请求很容易被 -352 风控拦下。
+        """
+        added: dict[str, str] = {}
+        jar = self.http.session.cookies
+        if not jar.get("buvid3") or not jar.get("buvid4"):
+            try:
+                payload = self.http.get_json(
+                    FINGER_SPI_URL,
+                    headers=self._api_headers(WEB_ORIGIN + "/", WEB_ORIGIN),
+                    retry=False,
+                )
+                data = payload.get("data") or {}
+                for key, name in (("b_3", "buvid3"), ("b_4", "buvid4")):
+                    value = str(data.get(key) or "").strip()
+                    if value and not jar.get(name):
+                        jar.set(name, value, domain=".bilibili.com")
+                        added[name] = value
+            except Exception as exc:
+                self.log.warning("B站 获取设备指纹失败（继续发布）：%s", exc)
+        if not jar.get("b_nut"):
+            value = str(int(time.time()))
+            jar.set("b_nut", value, domain=".bilibili.com")
+            added["b_nut"] = value
+        if not jar.get("DedeUserID") and not self.missing_cookies():
+            try:
+                payload = self.http.get_json(
+                    NAV_URL,
+                    headers=self._api_headers(WEB_ORIGIN + "/", WEB_ORIGIN),
+                    retry=False,
+                )
+                mid = str((payload.get("data") or {}).get("mid") or "").strip()
+                if payload.get("code") == 0 and mid and mid != "0":
+                    jar.set("DedeUserID", mid, domain=".bilibili.com")
+                    added["DedeUserID"] = mid
+            except Exception as exc:
+                self.log.warning("B站 获取 DedeUserID 失败（继续发布）：%s", exc)
+        if added:
+            self.log.info("B站 已自动补全会话 Cookie：%s", "、".join(sorted(added)))
+        return added
+
+    @staticmethod
+    def _draft_link(aid: str) -> str:
+        """草稿的手动发布入口（被风控拦下时引导去创作中心手动发）。"""
+        aid = str(aid or "").strip()
+        if not aid:
+            return ""
+        return f"https://member.bilibili.com/platform/upload/text/edit?aid={aid}"
+
     def check(self) -> CheckResult:
         missing = self.missing_cookies()
         if missing:
@@ -116,6 +216,13 @@ class BilibiliPublisher(BasePublisher):
             if info.get("mobile_verified") in (0, False):
                 # 未绑定手机的账号发专栏基本都会被风控拦（code=-352）
                 text += "。B站要求绑定手机后才能投稿，否则专栏/动态容易被 -352 拦下"
+            audit = self.cookie_audit()
+            if audit:
+                text += (
+                    "。Cookie 里缺少 "
+                    + "/".join(audit)
+                    + "（发布时会自动补全；把这些一起填进 config.yaml 更稳）"
+                )
             return CheckResult(self.key, True, text)
         message = data.get("message") or "未登录"
         return CheckResult(self.key, False, f"登录失败：{message}")
@@ -144,6 +251,8 @@ class BilibiliPublisher(BasePublisher):
 
     def publish(self, chapter: Chapter) -> PublishResult:
         self.require_cookies()
+        # 上传/提交前补全设备指纹与会话 Cookie，降低 -352 概率
+        self.ensure_session()
         if not chapter.pages:
             return PublishResult.skipped(self.key, chapter, "没有图片")
         if self._mode(chapter) == "article":
@@ -256,7 +365,7 @@ class BilibiliPublisher(BasePublisher):
                             endpoint,
                             files={field: (page.path.name, fh, mime)},
                             data={"csrf": self.csrf},
-                            headers={"Referer": ARTICLE_REFERER},
+                            headers=self._api_headers(),
                         )
                     payload = resp.json()
                 except Exception as exc:  # 网络层/非 JSON 失败，换下一候选
@@ -383,8 +492,18 @@ class BilibiliPublisher(BasePublisher):
         return data
 
     @staticmethod
-    def _raise_api_error(tag: str, payload: dict) -> None:
+    def _needs_captcha(payload: dict) -> bool:
+        """响应里带 v_voucher / gaia_vtoken：要求人机验证，重试没用。"""
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            return False
+        return bool(data.get("v_voucher") or data.get("gaia_vtoken"))
+
+    def _raise_api_error(self, tag: str, payload: dict, aid: str = "") -> None:
         code = payload.get("code")
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            data = {}
         tips = {
             -101: "账号未登录，Cookie 可能过期",
             -111: "CSRF 校验失败，请刷新 bili_jct",
@@ -392,22 +511,37 @@ class BilibiliPublisher(BasePublisher):
             -403: "账号权限不足（多为未绑定手机/未实名/新号等级过低）",
             -404: "草稿不存在，可能已被删除",
             -352: (
-                "被B站风控拦截。常见原因：账号未绑定手机/未实名、等级过低、"
-                "短时间提交太多，或当前网络（机房 IP、代理/VPN 出口）被B站标记。"
-                "处理建议：先用该账号在网页端手动发一篇专栏确认权限，"
-                "改直连或换网络后再试，隔几十分钟再发；同一账号不要把同一篇反复提交"
+                "被B站风控拦截（服务端判定，不是程序 bug）。常见原因：账号未绑定手机/未实名、"
+                "等级过低、短时间提交太多，或当前网络出口（机房 IP、代理/VPN）被B站标记。"
+                "程序已自动补全设备指纹 Cookie 并按指数退避重试过；仍失败请按顺序处理："
+                "① 直接去B站创作中心手动发布这篇草稿；"
+                "② 把 image_delay 调到 1~2 秒，隔几十分钟再发；"
+                "③ 关代理/VPN 或换网络（手机热点）后重试；"
+                "④ 用该账号在网页端手动发一篇专栏，确认账号本身有投稿权限"
             ),
             -412: "请求被B站拦截（风控/频率限制），请降低频率或换网络后重试",
             -509: "请求过于频繁，B站已限流，请等待一段时间再发",
         }
         message = payload.get("message") or payload
-        raise PublisherError(
-            f"B站 专栏{tag}失败（code={code}）：{message}"
-            + (f"。{tips[code]}" if code in tips else "")
-        )
+        text = f"B站 专栏{tag}失败（code={code}）：{message}"
+        if code in tips:
+            text += f"。{tips[code]}"
+        if self._needs_captcha(payload):
+            error = CaptchaRequiredError(
+                text
+                + "。B站下发了人机验证（v_voucher）：请先用浏览器登录会员中心完成验证，"
+                "再回来重新发布"
+            )
+            error.aid = str(aid or "")  # 草稿可能已存在，交给上层保留草稿
+            raise error
+        if code in RISK_CONTROL_CODES:
+            raise BilibiliRiskControlError(text, code=code, aid=aid)
+        raise PublisherError(text)
 
     def _draft_article(self, data: dict) -> str:
-        resp = self.http.post(ARTICLE_DRAFT_URL, data=data)
+        resp = self.http.post(
+            ARTICLE_DRAFT_URL, data=data, headers=self._api_headers(ARTICLE_EDIT_REFERER)
+        )
         try:
             payload = resp.json()
         except ValueError:
@@ -421,38 +555,65 @@ class BilibiliPublisher(BasePublisher):
             raise PublisherError(f"B站 草稿响应缺少 aid：{payload}")
         return aid
 
-    def _submit_article(self, aid: str, data: dict) -> str:
-        data = dict(data)
-        data["aid"] = aid
-        resp = self.http.post(ARTICLE_SUBMIT_URL, data=data)
-        try:
-            payload = resp.json()
-        except ValueError:
-            raise PublisherError(f"B站 提交接口未返回 JSON：{resp.text[:200]}")
-        if payload.get("code") != 0:
-            self.http._dump(resp, tag="bilibili-article-submit")
-            self._raise_api_error("发布", payload)
-        # 草稿返回的 aid 不一定是最终文章 id，提交响应里通常会带正式 id。
-        # 找不到正式 id 时退回草稿 aid（旧逻辑），并记录响应便于排查。
+    def _final_article_id(self, payload: dict, aid: str) -> str:
+        """提交响应里的正式文章 id；找不到时退回草稿 aid（旧逻辑）。"""
         info = payload.get("data")
         if not isinstance(info, dict):
             info = {}
         candidates = ("cvid", "cv_id", "article_id", "art_id", "id", "aid")
-        final_id = ""
         for key in candidates:
             value = info.get(key)
             if value not in (None, "", 0, "0"):
-                final_id = str(value)
-                break
-        if not final_id:
-            self.log.warning(
-                "B站 提交接口响应未带正式文章 id，退回草稿 aid；data=%s",
-                str(info)[:300],
+                self.log.info("B站 发布成功：草稿 aid=%s → 正式 id=%s", aid, value)
+                return str(value)
+        self.log.warning(
+            "B站 提交接口响应未带正式文章 id，退回草稿 aid；data=%s", str(info)[:300]
+        )
+        return aid
+
+    def _submit_article(self, aid: str, data: dict) -> str:
+        """正式提交专栏。
+
+        被风控拦（-352/-412/-509）不是参数问题，等一会儿往往就能过：
+        按 submit_retry_wait × 2^(n-1) + 随机抖动退避重试，重试前刷新设备指纹。
+        """
+        data = dict(data)
+        data["aid"] = aid
+        attempts = max(1, int(self.cfg.get("submit_attempts", 3) or 3))
+        base_wait = max(0.0, float(self.cfg.get("submit_retry_wait", 5) or 0))
+        for attempt in range(1, attempts + 1):
+            resp = self.http.post(
+                ARTICLE_SUBMIT_URL, data=data, headers=self._api_headers(ARTICLE_EDIT_REFERER)
             )
-            final_id = aid
-        else:
-            self.log.info("B站 发布成功：草稿 aid=%s → 正式 id=%s", aid, final_id)
-        return final_id
+            try:
+                payload = resp.json()
+            except ValueError:
+                raise PublisherError(f"B站 提交接口未返回 JSON：{resp.text[:200]}")
+            if payload.get("code") == 0:
+                return self._final_article_id(payload, aid)
+            self.http._dump(resp, tag="bilibili-article-submit")
+            code = payload.get("code")
+            if (
+                attempt < attempts
+                and code in RISK_CONTROL_CODES
+                and not self._needs_captcha(payload)
+            ):
+                wait = base_wait * (2 ** (attempt - 1)) + random.uniform(0.0, 1.5)
+                self.log.warning(
+                    "B站 提交被风控拦截（code=%s，第 %d/%d 次），%.1f 秒后重试",
+                    code,
+                    attempt,
+                    attempts,
+                    wait,
+                )
+                if wait > 0:
+                    time.sleep(wait)
+                self.ensure_session()
+                continue
+            self._raise_api_error("发布", payload, aid=aid)
+        raise BilibiliRiskControlError(  # pragma: no cover - 循环内必然 return/raise
+            f"B站 专栏发布失败：重试 {attempts} 次仍被风控拦截", aid=aid
+        )
 
     def _publish_article(self, chapter: Chapter) -> PublishResult:
         pages = self.prepare_pages(
@@ -463,6 +624,7 @@ class BilibiliPublisher(BasePublisher):
             groups = chunk_list(pages, self.article_max_pages)
             published: list[str] = []
             errors: list[str] = []
+            drafts: list[str] = []
             page_done = 0
             for index, group in enumerate(groups, 1):
                 try:
@@ -493,8 +655,14 @@ class BilibiliPublisher(BasePublisher):
                             f"已上传图片 {page_done}/{len(pages)}",
                             chapter_key=chapter.key,
                         )
-                        if self.common.interval_seconds:
-                            time.sleep(float(self.common.interval_seconds))
+                        # 固定间隔（common.interval_seconds）+ 随机抖动（image_delay），
+                        # 让请求节奏更像人工操作；被 -352 拦过就把 image_delay 调到 1~2
+                        wait = float(self.common.interval_seconds or 0)
+                        jitter = max(0.0, float(self.cfg.get("image_delay", 0) or 0))
+                        if jitter:
+                            wait += random.uniform(0.0, jitter)
+                        if wait:
+                            time.sleep(wait)
 
                     content = self._article_content(chapter, urls)
                     data = self._article_post_data(
@@ -521,18 +689,42 @@ class BilibiliPublisher(BasePublisher):
                         f"第 {index}/{len(groups)} 篇专栏已发布",
                         chapter_key=chapter.key,
                     )
+                except (BilibiliRiskControlError, CaptchaRequiredError) as exc:
+                    # 风控拦截/要求人机验证时草稿已经建好：留草稿并给出手动
+                    # 发布入口，避免用户白传一遍图还得自己重做
+                    draft_aid = str(getattr(exc, "aid", "") or "")
+                    errors.append(f"第 {index} 篇专栏失败：{exc}")
+                    link = self._draft_link(draft_aid)
+                    if link:
+                        drafts.append(link)
+                    self.log.error("第 %d 篇专栏被风控拦截：%s", index, exc)
+                    if link:
+                        self.log.warning(
+                            "第 %d 篇已保存为草稿（aid=%s），可在B站创作中心一键手动发布：%s",
+                            index,
+                            draft_aid,
+                            link,
+                        )
+                    continue
                 except PublisherError as exc:
                     errors.append(f"第 {index} 篇专栏失败：{exc}")
                     self.log.error("第 %d 篇专栏失败：%s", index, exc)
                     continue
 
             if errors:
+                note = ""
+                if drafts:
+                    note = (
+                        "。已保留草稿（B站创作中心 → 投稿管理 → 专栏草稿），"
+                        "可在这里手动发布：" + "，".join(drafts)
+                    )
                 return PublishResult.partial(
                     self.key,
                     chapter,
-                    url=published[0] if published else "",
-                    message=f"部分失败：{'; '.join(errors)}",
+                    url=published[0] if published else (drafts[0] if drafts else ""),
+                    message=f"部分失败：{'; '.join(errors)}{note}",
                     urls=published,
+                    drafts=drafts,
                     mode="article",
                 )
             note = f"已拆成 {len(published)} 篇专栏" if len(published) > 1 else "已发布为专栏文章"
