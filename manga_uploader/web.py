@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import parse_qs, unquote, urlparse
 
-from . import __version__
+from . import build_stamp
 from . import composer
 from .comic import find_meta_file, load_chapters, read_meta
 from .config import (
@@ -623,7 +623,7 @@ class WebHandler(BaseHTTPRequestHandler):
             return
         html = index.read_text(encoding="utf-8")
         html = html.replace("__CSRF_TOKEN__", self.server.csrf_token)
-        html = html.replace("__VERSION__", __version__)
+        html = html.replace("__VERSION__", build_stamp())
         body = html.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -641,7 +641,7 @@ class WebHandler(BaseHTTPRequestHandler):
             self._json(
                 200,
                 {
-                    "version": __version__,
+                    "version": build_stamp(),
                     "config": payload,
                     "cards": PLATFORM_CARDS,
                     "platforms": list(PLATFORM_CLASSES),

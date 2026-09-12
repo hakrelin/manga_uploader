@@ -29,7 +29,7 @@ from typing import Any, Callable, Optional
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-from . import __version__
+from . import build_stamp
 from .comic import META_FILES, load_chapters
 from . import composer
 from .config import (
@@ -186,7 +186,7 @@ class _ScrollFrame(ttk.Frame):
 class UploaderApp:
     def __init__(self, root: tk.Tk, config_path: str | None = None) -> None:
         self.root = root
-        self.root.title(f"漫画多平台发布器 v{__version__}")
+        self.root.title(f"漫画多平台发布器 v{build_stamp()}")
         self.root.geometry("1020x780")
         self.root.minsize(880, 640)
 

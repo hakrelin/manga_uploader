@@ -14,6 +14,7 @@ from manga_uploader.publishers.ehentai import _parse_upload_page
 from manga_uploader.publishers.tieba import _find_first
 from manga_uploader.http_client import _clean_proxy_url, detect_system_proxy
 from manga_uploader.util import prepare_page
+from manga_uploader import __version__, build_stamp, git_revision
 
 
 class TestComicScan(unittest.TestCase):
@@ -436,6 +437,21 @@ class TestRunnerAccounts(unittest.TestCase):
 
         runner.make_publisher = _boom  # type: ignore[assignment]
         self.assertEqual(runner.accounts(["tieba"]), {})
+
+
+class TestBuildStamp(unittest.TestCase):
+    def test_build_stamp_contains_version_and_revision(self):
+        """界面标题要能看出跑的是哪一版代码（方便核对朋友/云端是否最新）。"""
+        self.assertTrue(build_stamp().startswith(__version__))
+        rev = git_revision()
+        if rev:
+            self.assertRegex(rev, r"^[0-9a-f]{7}$")
+            self.assertEqual(build_stamp(), f"{__version__}+{rev}")
+
+    def test_git_revision_without_repo(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(git_revision(Path(tmp)), "")
+            self.assertEqual(build_stamp(Path(tmp)), __version__)
 
 
 if __name__ == "__main__":

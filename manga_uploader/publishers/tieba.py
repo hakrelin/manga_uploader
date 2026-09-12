@@ -51,10 +51,65 @@ TIEBA_PC_SIGN_SECRET = "36770b1f34c9bbf2e7d1a99d2b82fa9e"
 # 服务端按 chunk 实际内容去重/入库，因此同一用户连续传多图不会冲突。
 TIEBA_FILE_STRING = "[object File]"
 
+# ---------------------------------------------------------- 乱码自愈
+# 贴吧响应历史上出现过两种“伪中文”：
+#   1) 真 GBK 正文被按 UTF-8 解 → 锟斤拷 式的替换字符；
+#   2) UTF-8 正文被按 GBK（或 Big5）解 → 闈為潪涔勶紙灏忎竴娈典匠璇濓級。
+# 第 2 种在旧版本客户端（把 UTF-8 响应当 GBK 解）里很常见，账号昵称被搬来
+# 搬去时也可能留下这种痕迹。这里做一次反向解码自愈：只有解出来的文本“更像
+# 正常中文”（常用字明显更多）时才采用，解不回来或本来就是正常中文则原样返回，
+# 不会把好端端的昵称改坏。
+_MOJIBAKE_COMMON = frozenset(
+    "的一是了我不人在他有这个上们来到时大地为子中你说生国年着就那和要她出也得里后自以会家可下而过天去能对小多然于心"
+    "学么之都好看起发当没成只如事把还用第样道想作种开美总从无情己面最女但现前些所同日手又行意动方期它头经长儿回位分"
+    "爱老因很给名法间斯知世什两次使身者被高已亲其进此话常与活正感见明问力理尔点文几定本公特做外孩相西果走将月十实向"
+    "声车全信重三机工物气每并别真打太新比才便夫再书部水像眼等体却加电主界门利海受听表德少克代员许先口由死安写性马光"
+    "白或住难望教命花结乐色更拉东神记处让母父应直字场平报友关放至张认接告入笑内英军候民岁往何度山觉路带万男边风解叫"
+    "任金快原吃妈变通师立象数四失满战远格士音轻目条呢病始达深完今提求清王化空业思切怎非找片罗钱吗语元喜曾离飞科言干"
+    "流欢约各即指合反题必该论交终林请医晚制球决传画保读运及则房早院量苦火布品近坐产答星精视五连司巴奇管类未朋且婚台"
+    "夜青北队久乎越观落尽形影红爸百令周吧识步希亚术留市半热送兴造谈容极随演收首根讲整式取照办强石古华拿计您装似足双"
+    "妻尼转诉米称丽客南领节衣站黑刻统断福城故历惊脸选包紧争另建维绝树系伤示愿持千史谁准联妇纪基买志静阿诗独复痛消社"
+    "算义竟确酒需单治卡幸兰念举仅钟怕共毛句息功官待究跟穿室易游程号居考突皮哪费倒价图具刚脑永歌响商礼细黄块脚味灵"
+    "改据般破引食仍存众注笔甚某沉血备习校默务土微娘须试怀料调广苏显赛查密议底列富梦错座参八除跑亮假印设线温虽掉京初"
+    "养香停际致阳纸李纳验助激够严证帝饭忘趣支春集丈木研班普导顿睡展跳获艺六波察群皇段急庭创区奥器谢弟店否害草排背止"
+    "组州朝封睛板角况曲馆育忙质河续哥呼若推境遇雨标姐充围案伦护冷警贝著雪索剧啊船险烟依斗值帮汉慢佛肯闻唱沙局伯族低"
+    "玩资屋击速顾泪洲团圣旁堂兵七露园牛哭旅街劳型烈姑陈莫鱼异抱宝权鲁简态级票怪寻杀律胜份汽右洋范床舞秘午登楼贵吸责"
+    "例追较职属渐左录丝牙党继托赶章智冲叶胡吉卖坚喝肉遗救修松临藏担戏善卫药悲敢靠伊村戴词森耳差短祖云规窗散迷油旧适"
+    "乡架恩投弹铁博雷府压超负勒杂醒洗采毫嘴毕九冰既状乱景席珍童顶派素脱农疑练野按犯拍征坏骨余承置臂彩灯巨琴免环姆暗"
+    "换技翻束增忍餐洛塞缺忆判欧层付阵玛批岛项狗休懂武革良恶恋委拥娜妙探呀营退摇弄桌熟诺宣银势奖宫忽套康供优课鸟喊降"
+    "夏困刘罪亡鞋健模败伴守挥鲜财孤枪禁恐伙杰迹妹遍盖副坦牌江顺秋萨菜划授归浪凡预奶雄升编典袋莱含盛济蒙棋端腿招释介"
+    "烧误"
+)
+
+
+def _mojibake_score(text: str) -> int:
+    """文本里常用汉字的个数：乱码越多，这个值越小。"""
+    return sum(1 for ch in text if ch in _MOJIBAKE_COMMON)
+
+
+def _repair_mojibake(text: object) -> str:
+    """把“UTF-8 正文被按 GBK/Big5 解”的伪中文还原成正常中文。
+
+    例：闈為潪涔勶紙灏忎竴娈典匠璇濓級 → 非非乄（小一段佳话）。
+    还原结果不像正常中文时原样返回，因此对正常昵称是安全的（幂等）。
+    """
+    value = str(text or "")
+    if not value:
+        return value
+    for codec in ("gbk", "big5"):
+        try:
+            fixed = value.encode(codec).decode("utf-8")
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            continue
+        if fixed and fixed != value and _mojibake_score(fixed) > _mojibake_score(value):
+            return fixed
+    return value
+
+
 def _fmt_error(code: object, message: str) -> str:
     """把贴吧 error_code 转成用户能看懂的中文。"""
     code_str = str(code or "").strip()
-    message = (message or "").strip()
+    message = _repair_mojibake(message).strip()
     table = {
         "230274": "该吧已被关闭或不存在，无法发帖",
         "230004": "未登录或登录状态失效，请更新 Cookie",
@@ -196,12 +251,13 @@ class TiebaPublisher(BasePublisher):
             return "已登录"
         creator = data.get("creator")
         creator = creator if isinstance(creator, dict) else {}
-        raw_name = str(data.get("raw_name") or "").strip()
-        nick = str(creator.get("show_nickname") or "").strip()
+        # 接口/旧客户端可能把 UTF-8 昵称按 GBK 解成伪中文，这里自愈一次
+        raw_name = _repair_mojibake(data.get("raw_name")).strip()
+        nick = _repair_mojibake(creator.get("show_nickname")).strip()
         if not nick:
-            nick = str(creator.get("name_show") or "").strip()
+            nick = _repair_mojibake(creator.get("name_show")).strip()
         if not nick:
-            nick = str(creator.get("name") or "").strip()
+            nick = _repair_mojibake(creator.get("name")).strip()
         if not nick:
             nick = raw_name
         if raw_name and raw_name != nick:
@@ -214,12 +270,24 @@ class TiebaPublisher(BasePublisher):
 
         贴吧接口的 Content-Type 常声明 charset=GBK，但正文实际是 UTF-8；
         requests 会按 GBK 解码导致中文变乱码（如 紙月9 → 绱欐湀9）。
-        这里先按字节强解 UTF-8，失败（个别接口真是 GBK）再退回 requests。
+        这里先按字节强解 UTF-8；只有当正文里混进极个别坏字节（其余仍是
+        UTF-8）时，才用“只替换坏字节”的方式兜底——绝不能整段退回 GBK，
+        否则一个坏字节会把整篇中文都变成 闈為潪涔 式乱码；确认是真 GBK
+        （坏字节很多）才交给 requests。
         """
+        body = resp.content
         try:
-            return json.loads(resp.content.decode("utf-8"))
+            return json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            pass
+        try:
+            text = body.decode("utf-8", errors="replace")
+            data = json.loads(text)
         except (UnicodeDecodeError, ValueError):
             return resp.json()
+        if text.count("\ufffd") <= 2:  # 只有极个别坏字节，整体仍是 UTF-8
+            return data
+        return resp.json()
 
     def _json_request(self, url: str, **kwargs) -> object:
         resp = self.http.get(url, **kwargs)
@@ -240,7 +308,8 @@ class TiebaPublisher(BasePublisher):
         except Exception as exc:
             return CheckResult(self.key, False, f"网络请求失败：{exc}")
         if data.get("is_login") not in (1, "1", True):
-            return CheckResult(self.key, False, f"未登录（{data.get('error') or 'Cookie 无效'}）")
+            reason = _repair_mojibake(data.get("error")) or "Cookie 无效"
+            return CheckResult(self.key, False, f"未登录（{reason}）")
         # tbs 接口不含昵称，另读个人中心接口拿账号昵称
         try:
             info = self._json_request(SYS_USER_URL)

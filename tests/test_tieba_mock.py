@@ -16,6 +16,10 @@ from manga_uploader.publishers import tieba as tieba_mod
 from manga_uploader.publishers.tieba import TiebaPublisher
 
 
+# 真实出现过的乱码：非非乄（小一段佳话） 的 UTF-8 字节被按 GBK 解
+_MOJIBAKE_NICK = "非非乄（小一段佳话）".encode("utf-8").decode("gbk")
+
+
 class _Handler(BaseHTTPRequestHandler):
     log: list = []
     forum_redirect = False
@@ -23,6 +27,7 @@ class _Handler(BaseHTTPRequestHandler):
     captcha_thread = False
     thread_seq = 0
     upload_failures = 0  # 还剩几次传图要按 2230204「上传失败」拒绝
+    moji_nickname = False  # 复刻“昵称被按 GBK 解成伪中文”的响应
 
     def log_message(self, *args):
         pass
@@ -49,19 +54,24 @@ class _Handler(BaseHTTPRequestHandler):
         if path.endswith("/tbs"):
             self._reply_json({"is_login": 1, "tbs": "tok123"})
         elif path.endswith("/sys/user_json"):
-            self._reply_gbk_declared_utf8_json(
-                {
-                    "tbs": "tok123",
-                    "raw_name": "测试账号",
+            payload = {
+                "tbs": "tok123",
+                "raw_name": "测试账号",
+                "id": 5504679593,
+                "creator": {
+                    "name": "测试账号",
+                    "name_show": "贴吧用户_abc",
+                    "show_nickname": "测试昵称",
                     "id": 5504679593,
-                    "creator": {
-                        "name": "测试账号",
-                        "name_show": "贴吧用户_abc",
-                        "show_nickname": "测试昵称",
-                        "id": 5504679593,
-                    },
-                }
-            )
+                },
+            }
+            if self.__class__.moji_nickname:
+                # 昵称字段本身已经是“UTF-8 被按 GBK 解”的伪中文
+                payload["creator"]["show_nickname"] = _MOJIBAKE_NICK
+                payload["creator"]["name_show"] = _MOJIBAKE_NICK
+                payload["creator"]["name"] = _MOJIBAKE_NICK
+                payload["raw_name"] = ""
+            self._reply_gbk_declared_utf8_json(payload)
         elif path.endswith("/newmoindex"):
             self._reply_json(
                 {
@@ -172,6 +182,18 @@ class _Handler(BaseHTTPRequestHandler):
             self._reply_json({"no": -1, "error": "unknown"})
 
 
+class _FakeResponse:
+    """最小化模拟 requests.Response 的 content/text/json 行为。"""
+
+    def __init__(self, content: bytes, encoding: str = "gbk"):
+        self.content = content
+        self.encoding = encoding
+        self.text = content.decode(encoding, errors="replace")
+
+    def json(self):
+        return json.loads(self.text)
+
+
 def _make_chapter(tmp: Path, count: int = 10) -> Chapter:
     folder = tmp / "ch01"
     folder.mkdir(parents=True)
@@ -233,6 +255,7 @@ class TestTiebaPublisherMock(unittest.TestCase):
         _Handler.captcha_thread = False
         _Handler.thread_seq = 0
         _Handler.upload_failures = 0
+        _Handler.moji_nickname = False
         self.tmp = tempfile.TemporaryDirectory()
 
     def tearDown(self):
@@ -509,6 +532,49 @@ class TestTiebaPublisherMock(unittest.TestCase):
         self.assertIn("已重试 2 次", text)
         self.assertIn("限流", text)
 
+
+    def test_login_label_repairs_mojibake_nickname(self):
+        """昵称被按 GBK 解成伪中文时要能自愈还原。"""
+        data = {
+            "raw_name": "",
+            "creator": {"show_nickname": _MOJIBAKE_NICK, "name": ""},
+        }
+        self.assertEqual(TiebaPublisher._login_label(data), "非非乄（小一段佳话）")
+
+    def test_repair_mojibake_keeps_normal_names(self):
+        """自愈只对乱码生效，正常中文/英文昵称原样返回。"""
+        repair = tieba_mod._repair_mojibake
+        self.assertEqual(repair(_MOJIBAKE_NICK), "非非乄（小一段佳话）")
+        self.assertEqual(repair("绱欐湀9"), "紙月9")
+        for text in ("紙月9", "非非乄（小一段佳话）", "东方吧", "测试昵称", "abc123", ""):
+            self.assertEqual(repair(text), text)
+
+    def test_check_login_repairs_mojibake_nickname(self):
+        """端到端：接口回乱码昵称时，“检查登录”显示正确的中文名。"""
+        _Handler.moji_nickname = True
+        cfg = PlatformConfig(
+            name="tieba",
+            cookies={"BDUSS": "x"},
+            settings={"upload_sleep": 0},
+        )
+        publisher = TiebaPublisher(cfg, CommonConfig(output_dir=str(Path(self.tmp.name) / "out")))
+        result = publisher.check()
+        self.assertTrue(result.ok, result.message)
+        self.assertIn("非非乄", result.message)
+        self.assertNotIn("闈為", result.message)
+
+    def test_json_of_keeps_utf8_when_body_has_one_stray_byte(self):
+        """正文整体是 UTF-8、只混进 1 个坏字节时，不能整段退回 GBK 解码。"""
+        body = json.dumps({"raw_name": "紙月9", "junk": "xxyy"}, ensure_ascii=False).encode("utf-8")
+        resp = _FakeResponse(body.replace(b"xxyy", b"xx\x84yy"))
+        data = TiebaPublisher._json_of(resp)
+        self.assertEqual(data["raw_name"], "紙月9")
+
+    def test_json_of_falls_back_to_real_gbk_body(self):
+        """确认是真 GBK 正文时，仍然退回 requests 自己的解码。"""
+        body = json.dumps({"raw_name": "測試帳號紙月9"}, ensure_ascii=False).encode("gbk")
+        data = TiebaPublisher._json_of(_FakeResponse(body, encoding="gbk"))
+        self.assertEqual(data["raw_name"], "測試帳號紙月9")
 
     def test_identity_reports_logged_in_account(self):
         """发布日志/任务记录要能写清“这次用的是哪个贴吧账号”。"""
