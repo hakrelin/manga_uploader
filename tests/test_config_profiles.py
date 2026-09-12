@@ -10,6 +10,7 @@ from manga_uploader.webui import (
     delete_profile_config,
     load_config_profiles,
     normalize_profile_name,
+    preview_profile_config,
     rename_profile_config,
     save_profile_config,
     switch_profile_config,
@@ -86,6 +87,56 @@ class ConfigProfilesTest(unittest.TestCase):
             rename_profile_config(prof, "A", "B")
         with self.assertRaises(ConfigError):
             switch_profile_config(prof, prof, "不存在")
+
+    def test_preview_lists_replaced_cookies(self):
+        """切换预设前能列出会被替换的 Cookie —— 防止静默换成别人的账号。"""
+        cfg, prof = self._paths()
+        # config.yaml 现在是「我的账号」
+        cfg.write_text(
+            "common: {}\nplatforms:\n"
+            "  tieba: {enabled: true, cookies: {BDUSS: mine}, settings: {}}\n",
+            encoding="utf-8",
+        )
+        other = {
+            "common": {},
+            "platforms": {
+                "tieba": {
+                    "enabled": True,
+                    "cookies": {"BDUSS": "someone-else"},
+                    "settings": {},
+                },
+                "bilibili": {
+                    "enabled": True,
+                    "cookies": {"SESSDATA": "s", "bili_jct": "c"},
+                    "settings": {},
+                },
+            },
+        }
+        save_profile_config(prof, "朋友的号", other)
+        changes = preview_profile_config(prof, cfg, "朋友的号")
+        self.assertEqual(changes.get("tieba"), ["BDUSS"])
+        # 预设里有、config.yaml 里没有的，也算“会被写入”
+        self.assertEqual(changes.get("bilibili"), ["SESSDATA", "bili_jct"])
+        # 预览不能改盘上的配置
+        self.assertIn("BDUSS: mine", cfg.read_text(encoding="utf-8"))
+
+        # 和当前值一样的预设：没有需要提醒的变更
+        mine = {
+            "common": {},
+            "platforms": {
+                "tieba": {
+                    "enabled": True,
+                    "cookies": {"BDUSS": "mine"},
+                    "settings": {},
+                }
+            },
+        }
+        save_profile_config(prof, "我的号", mine)
+        self.assertEqual(
+            preview_profile_config(prof, cfg, "我的号"), {}
+        )
+        with self.assertRaises(ConfigError):
+            preview_profile_config(prof, cfg, "不存在")
 
     def test_name_validation(self):
         with self.assertRaises(ConfigError):

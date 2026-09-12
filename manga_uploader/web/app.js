@@ -630,6 +630,16 @@ createApp({
 
     function platShort(card) { return card.label.split("（")[0]; }
 
+    // 页面里的 Cookie 和 config.yaml 对不上时的提示（发布前给用户看）
+    function staleAccountsText(diff) {
+      const rows = Object.entries(diff || {})
+        .map(([k, names]) => `  · ${PLAT_LABELS[k] || k}：${names.join("、")}`);
+      if (!rows.length) return "";
+      return "⚠ 页面里的 Cookie 与 config.yaml 不一致（可能是另一个标签页/预设改过）：\n"
+        + rows.join("\n")
+        + "\n本次按上面「使用账号」里的那份发；不确定就先点「保存配置」。";
+    }
+
     function platStatus(card) {
       if (connected(card)) return "已连接";
       const p = config.platforms[card.key];
@@ -734,6 +744,25 @@ createApp({
       if (!target) return;
       busy.value = true;
       try {
+        // 预设是快照：里面非空的 Cookie 会覆盖当前账号。切换前先把会动的
+        // 字段摆出来，避免“切一下配置，发帖账号就变成别人的”。
+        let changes = {};
+        try {
+          const pre = await api("/api/config-profiles", {
+            method: "POST", json: true,
+            body: JSON.stringify({ action: "preview", name: target }),
+          });
+          changes = pre.changes || {};
+        } catch (e) { changes = {}; }
+        const rows = Object.entries(changes)
+          .map(([k, names]) => `  · ${PLAT_LABELS[k] || k}：${names.join("、")}`);
+        if (rows.length && !window.confirm(
+          `配置「${target}」会写入/替换以下登录凭据：\n` + rows.join("\n") +
+          "\n\n注意：① 这些 Cookie 会覆盖 config.yaml 里当前的账号；" +
+          "\n② 页面上还没点“保存配置”的改动会丢失。\n\n确认切换？"
+        )) {
+          return;
+        }
         const r = await api("/api/config-profiles", {
           method: "POST", json: true,
           body: JSON.stringify({ action: "switch", name: target }),
@@ -742,6 +771,19 @@ createApp({
         activeProfile.value = r.active || target;
         quickProfile.value = activeProfile.value;
         toastMsg(`已切换到配置：${target}`);
+        // 切换后立刻探测“现在到底会用哪个账号”，直接把结果摆给用户
+        const probeKeys = Object.keys(changes).filter((k) => PLAT_LABELS[k]);
+        if (probeKeys.length) {
+          try {
+            const acc = await api("/api/accounts", {
+              method: "POST", json: true,
+              body: JSON.stringify({ config: payload(), platforms: probeKeys }),
+            });
+            const text = Object.entries(acc.accounts || {})
+              .map(([k, v]) => `${PLAT_LABELS[k] || k}=${v}`).join("；");
+            if (text) toastMsg(`已切换到配置：${target}｜当前使用账号：${text}`);
+          } catch (e) { /* 探测失败不影响切换 */ }
+        }
       } catch (e) {
         toastMsg("切换配置失败：" + e.message);
       } finally {
@@ -1326,6 +1368,7 @@ createApp({
       }
       // 发布前把“这次会用哪个账号”摆出来，避免又出现“填的是 A、发出去是 B”
       let accountText = "";
+      let staleDiff = {};
       try {
         const acc = await api("/api/accounts", {
           method: "POST", json: true,
@@ -1336,10 +1379,13 @@ createApp({
         });
         accountText = Object.keys(acc.accounts || {})
           .map((k) => schedPlatformLabel(k) + "=" + acc.accounts[k]).join("；");
+        staleDiff = acc.stale || {};
       } catch (e) { accountText = ""; }
+      const staleText = staleAccountsText(staleDiff);
       if (!window.confirm(
         "确认【立即发布】到：" + names.join("、") + "？\n\n" +
         (accountText ? "使用账号：" + accountText + "\n\n" : "") +
+        (staleText ? staleText + "\n\n" : "") +
         "「一键发布」是马上发出去，不做定时；要定时请用右上角「⏱ 云端定时」。\n发布后不可撤销。"
       )) return;
       busy.value = true;
@@ -2121,7 +2167,7 @@ createApp({
       markPlatformTouched,
       anyUnconfigured, publishTargetsText, xhSettings,
       pubProgress, pubChips, pubPercent, stageLabel,
-      platShort, platStatus, connected, extrasOf, extraLabel,
+      platShort, platStatus, connected, extrasOf, extraLabel, staleAccountsText,
       saveConfig, openAccount, toggleExpand, openLogin,
       checkOne, checkAll, pasteCookie, qrLogin, detectProxy,
       fieldMapOpen, onSourceChange, pickDir, pickZip, loadComic, onDrop,

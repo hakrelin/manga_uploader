@@ -1116,6 +1116,52 @@ def merge_payload_keep_cookies(
     return merged
 
 
+def preview_profile_config(
+    profiles_path: str | Path, config_path: str | Path, name: Any
+) -> dict[str, list[str]]:
+    """切换预设前预览：返回 {平台: [会被替换/写入的 Cookie 名]}（不写盘）。
+
+    预设是“快照”，里面非空的 Cookie 会覆盖 config.yaml 的现值。别人给的
+    预设里带着别人的 BDUSS/SESSDATA，一切换就会静默换成别人的账号——
+    也就是“填的是我、发出去是他”，所以切换前先把要动的字段摆出来。
+    """
+    name = normalize_profile_name(name)
+    data = load_config_profiles(profiles_path)
+    if name not in data["profiles"]:
+        raise ConfigError(f"找不到配置：{name}")
+    entry = data["profiles"][name]
+    payload = entry.get("config")
+    if not isinstance(payload, dict):
+        raise ConfigError(f"配置「{name}」内容损坏，请删除后重新保存")
+    merged = merge_payload_keep_cookies(config_path, payload)
+    # 直接读盘（webui 里没有 load_config，别踩这个坑）
+    try:
+        import yaml
+
+        raw = yaml.safe_load(Path(config_path).read_text(encoding="utf-8")) or {}
+        current_cookies = {
+            str(key): dict((item or {}).get("cookies") or {})
+            for key, item in (raw.get("platforms") or {}).items()
+            if isinstance(item, dict)
+        }
+    except Exception:
+        current_cookies = {}
+    changes: dict[str, list[str]] = {}
+    for key, cfg in (merged.get("platforms") or {}).items():
+        if not isinstance(cfg, dict):
+            continue
+        now = current_cookies.get(str(key)) or {}
+        names = sorted(
+            str(cname)
+            for cname, cvalue in (cfg.get("cookies") or {}).items()
+            if str(cvalue or "").strip()
+            and str(cvalue).strip() != str(now.get(cname) or "").strip()
+        )
+        if names:
+            changes[str(key)] = names
+    return changes
+
+
 def switch_profile_config(
     profiles_path: str | Path, config_path: str | Path, name: Any
 ) -> dict[str, Any]:

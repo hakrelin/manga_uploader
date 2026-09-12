@@ -251,6 +251,28 @@ class TestHelpers(unittest.TestCase):
         self.assertEqual(header, "SESSDATA=s")
         self.assertNotIn("buvid4", header)
 
+    def test_cookie_diff_flags_conflicting_accounts(self):
+        """页面配置与 config.yaml 的 Cookie 不同时要能发现（发错账号的根源）。"""
+        from manga_uploader.web import _cookie_diff
+
+        page = {
+            "platforms": {
+                "tieba": {"cookies": {"BDUSS": "page-bduss"}},
+                "bilibili": {"cookies": {"SESSDATA": "same", "bili_jct": ""}},
+                "ehentai": {"cookies": {"ipb_member_id": "1"}},
+            }
+        }
+        disk = {
+            "platforms": {
+                "tieba": {"cookies": {"BDUSS": "disk-bduss"}},
+                "bilibili": {"cookies": {"SESSDATA": "same"}},
+                "ehentai": {"cookies": {}},
+            }
+        }
+        diff = _cookie_diff(page, disk)
+        self.assertEqual(diff, {"tieba": ["BDUSS"]})
+        self.assertEqual(_cookie_diff(page, page), {})
+
     def test_bilibili_card_exposes_device_cookie_fields(self):
         """配置界面要能填 B站风控依赖的 buvid3/buvid4/b_nut/DedeUserID。"""
         from manga_uploader.webui import PLATFORM_CARDS

@@ -55,6 +55,7 @@ from .webui import (
     looks_like_full_comic,
     load_config_profiles,
     normalize_profile_name,
+    preview_profile_config,
     read_staff_rows,
     rename_profile_config,
     save_config,
@@ -179,6 +180,63 @@ def _load_payload(config_path: Optional[str] = None) -> tuple[dict[str, Any], Op
         return _app_to_payload(app), None
     except ConfigError as exc:
         return _default_payload(), str(exc)
+
+
+def _cookie_diff(
+    page_payload: dict[str, Any], disk_payload: dict[str, Any]
+) -> dict[str, list[str]]:
+    """比较「页面里的配置」与「磁盘 config.yaml」的 Cookie 差异。
+
+    发布 / 定时任务用的是**页面里的配置**（前端真值）。如果用户是在另一个
+    标签页、或切换过预设，页面里的 Cookie 可能已经不是磁盘里的那一份，
+    “填的是 A、发出去是 B”多半就是这么来的。只报「两边都非空且不同」的
+    字段，避免用户单纯没点保存时也弹提示。
+    """
+    page_platforms = (page_payload or {}).get("platforms") or {}
+    disk_platforms = (disk_payload or {}).get("platforms") or {}
+    if not isinstance(page_platforms, dict) or not isinstance(disk_platforms, dict):
+        return {}
+    diff: dict[str, list[str]] = {}
+    for key, page_cfg in page_platforms.items():
+        if not isinstance(page_cfg, dict):
+            continue
+        disk_cfg = disk_platforms.get(key)
+        disk_cookies = (disk_cfg or {}).get("cookies") or {}
+        names = sorted(
+            str(cname)
+            for cname, cvalue in (page_cfg.get("cookies") or {}).items()
+            if str(cvalue or "").strip()
+            and str(disk_cookies.get(cname) or "").strip()
+            and str(cvalue).strip() != str(disk_cookies.get(cname)).strip()
+        )
+        if names:
+            diff[str(key)] = names
+    return diff
+
+
+def _stale_account_warning(
+    state: Any, payload: dict[str, Any], keys: list[str]
+) -> str:
+    """页面 Cookie 与 config.yaml 不一致时的提示文本（无差异返回空串）。"""
+    try:
+        disk_payload, _ = _load_payload(getattr(state, "config_path", None))
+        diff = _cookie_diff(payload, disk_payload)
+    except Exception:
+        return ""
+    rows = []
+    for key, fields in diff.items():
+        if keys and key not in keys:
+            continue
+        label = PLATFORM_CLASSES[key].display_name if key in PLATFORM_CLASSES else key
+        rows.append(f"{label}（{'/'.join(fields)}）")
+    if not rows:
+        return ""
+    return (
+        "注意：页面里的 Cookie 与 config.yaml 不一致 —— "
+        + "、".join(rows)
+        + "。本次按**页面里**的配置执行；若你刚在另一个标签页/预设下改过账号，"
+        "请先核对下面的“使用账号”再继续"
+    )
 
 
 def _enabled_with_cookie(payload: dict[str, Any]) -> list[str]:
@@ -901,6 +959,11 @@ class WebHandler(BaseHTTPRequestHandler):
                 raise ValueError("内容不完整，无法创建定时任务：" + "；".join(problems))
             # 记下“这个任务会用哪个账号”：打包的是此刻页面里的 Cookie，
             # 之后再改账号也不会影响已排队的任务，所以要留个快照给用户核对。
+            stale_note = _stale_account_warning(
+                self.server.state, data.get("config") or {}, platforms
+            )
+            if stale_note:
+                self.server.state.ring.append("WARN", stale_note)
             account_snapshot: dict[str, str] = {}
             try:
                 probe_app = build_app(data.get("config") or {})
@@ -969,6 +1032,11 @@ class WebHandler(BaseHTTPRequestHandler):
             self._json(200, {"ok": False, "error": str(exc)})
             return
         self._json(200, {"ok": True, "job": result.get("job")})
+
+    def _load_payload(self) -> dict[str, Any]:
+        """读磁盘 config.yaml 的前端载荷（用于和页面配置比对）。"""
+        payload, _ = _load_payload(self.server.state.config_path)
+        return payload
 
     def _config_path(self) -> Path:
         explicit = self.server.state.config_path
@@ -1040,6 +1108,12 @@ class WebHandler(BaseHTTPRequestHandler):
                 )
                 self._json(200, {"ok": True, "created": created})
                 return
+            if action == "preview":
+                changes = preview_profile_config(
+                    profiles_path, self._config_path(), data.get("name")
+                )
+                self._json(200, {"ok": True, "changes": changes})
+                return
             if action == "switch":
                 name = normalize_profile_name(data.get("name"))
                 payload = switch_profile_config(
@@ -1098,7 +1172,15 @@ class WebHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             self._json(200, {"ok": False, "error": f"账号探测失败：{exc}", "accounts": {}})
             return
-        self._json(200, {"ok": True, "accounts": accounts})
+        # 顺带告诉前端：页面里的 Cookie 和磁盘 config.yaml 是否对不上
+        self._json(
+            200,
+            {
+                "ok": True,
+                "accounts": accounts,
+                "stale": _cookie_diff(data.get("config") or {}, self._load_payload()),
+            },
+        )
 
     def _api_check(self) -> None:
         data = self._read_json()
@@ -1219,6 +1301,9 @@ class WebHandler(BaseHTTPRequestHandler):
             self._json(400, {"error": "没有启用的平台或都未填 Cookie"})
             return
         state.ring.append("INFO", f"开始发布到：{', '.join(names)}（章节 {only or '全部'}）")
+        stale = _stale_account_warning(state, data.get("config") or {}, names)
+        if stale:
+            state.ring.append("WARN", stale)
 
         def worker() -> None:
             try:
