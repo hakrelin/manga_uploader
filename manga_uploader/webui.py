@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import os
 import re
 import shutil
@@ -523,10 +524,43 @@ def _chapter_entry(data: dict, chapter_key: str) -> dict:
     return entry
 
 
-def read_staff_rows(comic_dir: str | Path, chapter_key: str) -> Optional[dict]:
-    """读章节的 staff 数据：{"rows": [[职位, 名字], …], "bg": 背景页 0-based 序号}。
+# staff 页“职位条目”位置/大小的车间级覆盖值：只认这三个键，越界钳制，
+# 默认值（scale=1、dx=dy=0）不写盘，避免 manga.json 里出现一堆无用字段。
+STAFF_LAYOUT_LIMITS: dict[str, tuple[float, float]] = {
+    "scale": (0.2, 3.0),   # 字号 + 行距等比缩放
+    "dx": (-2000.0, 2000.0),  # 设计像素：相对布局默认中心左右移动
+    "dy": (-2000.0, 2000.0),  # 设计像素：相对布局默认块中心上下移动
+}
 
-    无保存记录返回 None；有记录但缺 bg 时 bg 为 None（前端用布局默认）。
+
+def clean_staff_layout(value: object) -> dict:
+    """清洗 staff 布局覆盖值：只留 scale/dx/dy 三个有限数值，超范围钳制。
+
+    非法输入（字符串、NaN、布尔等）一律忽略；返回空 dict 表示“用布局默认”。
+    """
+    if not isinstance(value, dict):
+        return {}
+    out: dict = {}
+    for key, (low, high) in STAFF_LAYOUT_LIMITS.items():
+        raw = value.get(key)
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+            continue
+        try:
+            num = float(raw)
+        except (TypeError, ValueError):  # pragma: no cover - 上面已限定类型
+            continue
+        if not math.isfinite(num):
+            continue
+        out[key] = round(min(high, max(low, num)), 3)
+    return out
+
+
+def read_staff_rows(comic_dir: str | Path, chapter_key: str) -> Optional[dict]:
+    """读章节的 staff 数据：{"rows": [[职位, 名字], …], "bg": 背景页 0-based 序号,
+    "layout": {"scale":…, "dx":…, "dy":…}}。
+
+    无保存记录返回 None；有记录但缺 bg 时 bg 为 None（前端用布局默认）；
+    没调过职位条目位置/大小时 layout 为 None（同样用布局默认）。
     """
     root = Path(comic_dir)
     meta_file = find_meta_file(root)
@@ -547,7 +581,7 @@ def read_staff_rows(comic_dir: str | Path, chapter_key: str) -> Optional[dict]:
         staff = entry.get("staff")
         if not isinstance(staff, dict):
             return None
-        out: dict = {"rows": None, "bg": None}
+        out: dict = {"rows": None, "bg": None, "layout": None}
         if isinstance(staff.get("rows"), list):
             rows: list[list[str]] = []
             for row in staff["rows"]:
@@ -557,6 +591,9 @@ def read_staff_rows(comic_dir: str | Path, chapter_key: str) -> Optional[dict]:
         bg = staff.get("bg")
         if isinstance(bg, int) and bg >= 0:
             out["bg"] = bg
+        layout = clean_staff_layout(staff.get("layout"))
+        if layout:
+            out["layout"] = layout
         return out
     return None
 
@@ -566,10 +603,13 @@ def write_staff_rows(
     chapter_key: str,
     rows: list,
     bg: Optional[int] = None,
+    layout: Optional[dict] = None,
 ) -> int:
-    """把 staff 名单（和背景页选择）写进 manga.json 章节条目的 staff 字段。
+    """把 staff 名单（背景页选择 + 职位条目位置/大小）写进 manga.json 章节条目。
 
-    空名单且无 bg 时删字段。返回行数。
+    layout 传 None 表示“不改动已存的布局覆盖值”（旧前端/其他调用点）；
+    传空 dict（或全是默认值）表示恢复默认，会删掉 staff.layout 字段。
+    空名单、无 bg、也无布局覆盖时删 staff 字段。返回行数。
     """
     clean: list[list[str]] = []
     for row in rows or []:
@@ -586,14 +626,21 @@ def write_staff_rows(
         data = {}
     entry = _chapter_entry(data, str(chapter_key or "root"))
     have_bg = isinstance(bg, int) and not isinstance(bg, bool)
-    if isinstance(rows, list) or have_bg:
+    touch_layout = layout is not None
+    clean_layout = clean_staff_layout(layout) if touch_layout else {}
+    if isinstance(rows, list) or have_bg or touch_layout:
         staff = entry.get("staff") if isinstance(entry.get("staff"), dict) else {}
         if isinstance(rows, list):
             # 空名单也原样保存：用户清空模板后重开面板不应又被默认职位顶回来
             staff["rows"] = clean
         if have_bg:
             staff["bg"] = max(0, bg)
-        if clean or have_bg:
+        if touch_layout:
+            if clean_layout:
+                staff["layout"] = clean_layout
+            else:
+                staff.pop("layout", None)  # 全默认值 → 回到布局默认，不留字段
+        if clean or have_bg or clean_layout:
             entry["staff"] = staff
         else:
             entry.pop("staff", None)

@@ -10,6 +10,7 @@ from PIL import Image
 
 from manga_uploader.comic import load_chapters
 from manga_uploader.webui import (
+    clean_staff_layout,
     is_staff_page_name,
     read_staff_rows,
     staff_page_name,
@@ -165,6 +166,92 @@ class TestUpsertStaffPage(unittest.TestCase):
         files = sorted(p.name for p in self.root.iterdir() if p.suffix in (".jpg", ".png"))
         self.assertIn("mystaff.png", files)
         self.assertIn("001staff.png", files)
+
+
+class TestStaffLayoutOverride(unittest.TestCase):
+    """职位条目的位置/大小（staff.layout）读写：越界钳制、默认不落盘、旧前端不误删。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name) / "comic"
+        _make_comic(self.root, ["001.jpg", "002.jpg"])
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _staff_field(self) -> dict:
+        meta = json.loads((self.root / "manga.json").read_text(encoding="utf-8"))
+        entry = meta["chapters"][0]
+        return entry.get("staff") or {}
+
+    def test_roundtrip(self):
+        write_staff_rows(
+            self.root, "root", [["图源", "A"]], bg=0,
+            layout={"scale": 1.25, "dx": 120, "dy": -80},
+        )
+        saved = read_staff_rows(self.root, "root")
+        self.assertEqual(saved["rows"], [["图源", "A"]])
+        self.assertEqual(saved["bg"], 0)
+        self.assertEqual(saved["layout"], {"scale": 1.25, "dx": 120.0, "dy": -80.0})
+        # 小数只保留 3 位，避免 manga.json 里出现一长串浮点尾巴
+        write_staff_rows(self.root, "root", [["图源", "A"]], bg=0,
+                         layout={"scale": 1.23456, "dx": 1.6, "dy": -2.4})
+        self.assertEqual(
+            read_staff_rows(self.root, "root")["layout"],
+            {"scale": 1.235, "dx": 1.6, "dy": -2.4},
+        )
+
+    def test_out_of_range_is_clamped_and_junk_ignored(self):
+        write_staff_rows(
+            self.root, "root", [["图源", "A"]], bg=0,
+            layout={"scale": 99, "dx": -99999, "dy": "abc", "谁是": 1},
+        )
+        self.assertEqual(
+            read_staff_rows(self.root, "root")["layout"],
+            {"scale": 3.0, "dx": -2000.0},
+        )
+
+    def test_clean_staff_layout_helper(self):
+        self.assertEqual(clean_staff_layout(None), {})
+        self.assertEqual(clean_staff_layout({"scale": True}), {})
+        self.assertEqual(clean_staff_layout({"dx": float("nan")}), {})
+        self.assertEqual(clean_staff_layout({"dy": 12.3456}), {"dy": 12.346})
+
+    def test_default_layout_drops_field_but_keeps_rows(self):
+        write_staff_rows(self.root, "root", [["校对", "B"]], bg=1,
+                         layout={"scale": 1.4, "dx": 30, "dy": 40})
+        write_staff_rows(self.root, "root", [["校对", "B"]], bg=1, layout={})
+        saved = read_staff_rows(self.root, "root")
+        self.assertIsNone(saved["layout"])
+        self.assertNotIn("layout", self._staff_field())
+        self.assertEqual(saved["rows"], [["校对", "B"]])
+        self.assertEqual(saved["bg"], 1)
+
+    def test_layout_kept_when_argument_omitted(self):
+        """没传 layout（旧前端/其他调用点）时不能把已存的调整清掉。"""
+        write_staff_rows(self.root, "root", [["翻译", "C"]], bg=0,
+                         layout={"scale": 0.8, "dx": -25, "dy": 60})
+        write_staff_rows(self.root, "root", [["翻译", "C"]], bg=2)
+        saved = read_staff_rows(self.root, "root")
+        self.assertEqual(saved["bg"], 2)
+        self.assertEqual(saved["layout"], {"scale": 0.8, "dx": -25.0, "dy": 60.0})
+
+    def test_layout_only_entry_is_preserved(self):
+        """只调了位置/大小、名单留空时也要能存住这一项。"""
+        write_staff_rows(self.root, "root", None, bg=None,
+                         layout={"scale": 1.5, "dx": 0, "dy": -100})
+        saved = read_staff_rows(self.root, "root")
+        self.assertIsNotNone(saved)
+        self.assertIsNone(saved["rows"])
+        self.assertEqual(saved["layout"], {"scale": 1.5, "dx": 0.0, "dy": -100.0})
+        self.assertIn("layout", self._staff_field())
+
+    def test_empty_rows_and_default_layout_drops_staff(self):
+        write_staff_rows(self.root, "root", [["嵌字", "D"]], bg=0,
+                         layout={"scale": 1.2, "dx": 10, "dy": 10})
+        write_staff_rows(self.root, "root", [], bg=None, layout={})
+        self.assertIsNone(read_staff_rows(self.root, "root"))
+        self.assertNotIn("staff", self._staff_field())
 
 
 if __name__ == "__main__":

@@ -741,6 +741,7 @@ try {
         <li>右键页面可插入、替换、删除、移动；所有改动先落在预览里，点「应用页面改动」或一键发布时才真正写盘。</li>
         <li>「001 重命名」会把整章按当前页序改成 001 / 002 / …；staff 页会保留为「封面名+staff」（如 001staff.png），方便按文件名排序的平台。</li>
         <li>点右下角 ⚙ →「制作 Staff 页」：先选背景页（默认封面），职位名单可点「填入常用职位」再改，点「插入 / 替换」即生成到封面之后；重复生成会覆盖旧 staff 页。</li>
+        <li>同一面板右侧的「职位条目 位置 / 大小」可调中间那块的 <b>大小</b>（40%~200%，字号/行距/描边等比缩放）和 <b>左右 / 上下</b> 偏移（设计像素）；也可以直接在预览里按住职位文字拖动。调整随章节保存，重开面板自动恢复，「恢复默认」回到布局默认的居中位置。</li>
         <li>点右下角 ⚙ →「加尾页」：把内置的梅子版尾页追加到章节末尾；章节已有尾页时不会重复添加。</li>
         <li>点右下角 ⚙ →「B站封面」：默认用第一页整图；可手动框选截取范围（手机横版可选手动偏上/偏下），也可上传自定义封面图，随章节一起保存。</li>
         <li>不需要模板 staff 页时，右键删除后点「应用页面改动」即可真正移除；之后想用自己的 staff 图，正常插入/替换即可。</li>
@@ -912,7 +913,9 @@ try {
       </div>
       <div class="staff-body">
         <div class="staff-preview">
-          <canvas ref="staffCanvas" class="staff-canvas"></canvas>
+          <canvas ref="staffCanvas" class="staff-canvas"
+                  title="按住拖动可移动职位条目（也可用右侧滑块精调）"
+                  @mousedown="staffDragStart"></canvas>
         </div>
         <div class="staff-editor">
           <div class="staff-bg-row">
@@ -923,6 +926,48 @@ try {
             <button class="staff-step" title="下一页（页码 +1）" @click="staffBgStep(1)">下一页 ▶</button>
           </div>
           <p class="staff-hint staff-font-status">{{ staffFontStatus }}</p>
+          <div class="staff-adjust">
+            <div class="staff-adjust-head">
+              <span>职位条目 位置 / 大小</span>
+              <button class="staff-adjust-reset" title="回到布局默认：居中、100% 大小"
+                      @click="resetStaffAdjust">恢复默认</button>
+            </div>
+            <div class="staff-adjust-row">
+              <span class="staff-adjust-label">大小</span>
+              <input type="range" class="staff-range" min="40" max="200" step="1"
+                     :value="Math.round(staffAdjust.scale * 100)"
+                     @input="setStaffScale($event.target.value)">
+              <input type="number" class="input staff-num" min="40" max="200" step="1"
+                     :value="Math.round(staffAdjust.scale * 100)"
+                     @change="setStaffScale($event.target.value)">
+              <span class="staff-unit">%</span>
+            </div>
+            <div class="staff-adjust-row">
+              <span class="staff-adjust-label">左右</span>
+              <input type="range" class="staff-range" min="-800" max="800" step="1"
+                     :value="Math.round(staffAdjust.dx)"
+                     @input="setStaffOffset('dx', $event.target.value)">
+              <input type="number" class="input staff-num" min="-800" max="800" step="1"
+                     :value="Math.round(staffAdjust.dx)"
+                     @change="setStaffOffset('dx', $event.target.value)">
+              <span class="staff-unit">px</span>
+            </div>
+            <div class="staff-adjust-row">
+              <span class="staff-adjust-label">上下</span>
+              <input type="range" class="staff-range" min="-800" max="800" step="1"
+                     :value="Math.round(staffAdjust.dy)"
+                     @input="setStaffOffset('dy', $event.target.value)">
+              <input type="number" class="input staff-num" min="-800" max="800" step="1"
+                     :value="Math.round(staffAdjust.dy)"
+                     @change="setStaffOffset('dy', $event.target.value)">
+              <span class="staff-unit">px</span>
+            </div>
+            <p class="staff-hint">
+              左键拖动左边预览里的职位文字也能直接移动（滚轮/滑块精调）。
+              大小会连同字号、行距、描边等比缩放（100% = 布局默认）；
+              「保存名单」或「插入 / 替换」时一起存进 manga.json，重开面板自动恢复。
+            </p>
+          </div>
           <div v-for="(row, i) in staffRows" :key="i" class="staff-row">
             <input v-model="row[0]" class="input staff-role" placeholder="职位" @input="renderStaffPreview">
             <span class="staff-colon">：</span>

@@ -1024,7 +1024,56 @@ html, body {
   border: 1px solid var(--border);
   border-radius: 4px;
   background: var(--surface-3);
+  cursor: grab; /* 按住可拖动职位条目 */
 }
+.staff-canvas-dragging { cursor: grabbing; }
+
+/* 职位条目的位置 / 大小：滑块 + 数字输入（数字可精确填，滑块可快速试） */
+.staff-adjust {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+.staff-adjust-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--text-2);
+}
+.staff-adjust-reset {
+  border: 1px solid var(--border);
+  background: var(--surface-3);
+  color: var(--text-3);
+  font-size: 11px;
+  line-height: 1;
+  padding: 4px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 0.15s, border-color 0.15s;
+}
+.staff-adjust-reset:hover { color: var(--accent); border-color: var(--accent); }
+.staff-adjust-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-3);
+}
+.staff-adjust-label { width: 30px; flex: none; }
+.staff-range { flex: 1; min-width: 0; accent-color: var(--accent); }
+.staff-num {
+  width: 62px;
+  flex: none;
+  text-align: center;
+  padding: 2px 4px;
+}
+.staff-unit { width: 16px; flex: none; }
 
 /* 各平台发布参数 */
 .pv-platforms {

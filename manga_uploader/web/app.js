@@ -238,6 +238,10 @@ createApp({
       get: () => staffBgIndex.value + 1, // 界面用 1-based 页码
       set: (v) => { staffBgIndex.value = Number.isFinite(v) ? Math.max(1, v) - 1 : 1; },
     });
+    // 职位条目（中间那一块“职位：名字”）的位置与大小：scale 缩放字号+行距，
+    // dx/dy 是相对布局默认中心的设计像素偏移；默认值不落盘（见 staffAdjustPayload）
+    const staffAdjust = reactive({ scale: 1, dx: 0, dy: 0 });
+    let staffDrag = null; // 预览里拖动职位块的起点（null = 没在拖）
     const chapterToolsOpen = ref(null); // 展开章节工具菜单的章节 key
     // B站封面面板：默认第一页整图，可手动调截取范围或上传自定义封面
     const bcover = reactive({
@@ -1857,14 +1861,124 @@ createApp({
       const rows = staffRows.value
         .map((r) => [(r[0] || "").trim(), (r[1] || "").trim()])
         .filter((r) => r[0] || r[1]);
-      // 声明已固化底图；职位行围绕设计块中心居中，增删行上下均匀伸缩
+      // 声明已固化底图；职位行围绕设计块中心居中，增删行上下均匀伸缩。
+      // 面板里的「大小/左右/上下」是相对这套默认值的覆盖（字号、行距、描边等比缩放）。
+      const geom = staffGeometry(layout);
       ctx.fillStyle = layout.rows.color;
-      ctx.font = `${layout.rows.size_px * scale}px "${rowsFamily}"`;
+      ctx.font = `${geom.sizePx * scale}px "${rowsFamily}"`;
       rows.forEach((r, i) => {
-        const y = (layout.rows.block_center_y
-          + (i - (rows.length - 1) / 2) * layout.rows.line_height) * scale;
-        drawText(r.join(layout.rows.join), layout.center_x * scale, y, layout.rows.stroke);
+        const y = (geom.centerY + (i - (rows.length - 1) / 2) * geom.lineHeight) * scale;
+        drawText(
+          r.join(layout.rows.join),
+          geom.centerX * scale,
+          y,
+          geom.strokeWidth > 0 ? { width: geom.strokeWidth, color: layout.rows.stroke.color } : null,
+        );
       });
+    }
+
+    // 布局默认值 + 面板调整 → 实际绘制几何（设计像素）。预览/导出/生成同源。
+    function staffGeometry(layout) {
+      const base = layout.rows;
+      const scale = Number(staffAdjust.scale) > 0 ? Number(staffAdjust.scale) : 1;
+      return {
+        scale,
+        sizePx: base.size_px * scale,
+        lineHeight: base.line_height * scale,
+        centerX: layout.center_x + (Number(staffAdjust.dx) || 0),
+        centerY: base.block_center_y + (Number(staffAdjust.dy) || 0),
+        strokeWidth: (base.stroke && base.stroke.width ? base.stroke.width : 0) * scale,
+      };
+    }
+
+    // 落盘用的覆盖值：全默认时返回 {}（后端会删掉 manga.json 里的 staff.layout）
+    function staffAdjustPayload() {
+      const scale = Math.round((Number(staffAdjust.scale) || 1) * 1000) / 1000;
+      const dx = Math.round(Number(staffAdjust.dx) || 0);
+      const dy = Math.round(Number(staffAdjust.dy) || 0);
+      if (scale === 1 && dx === 0 && dy === 0) return {};
+      return { scale, dx, dy };
+    }
+
+    function applyStaffAdjust(saved) {
+      const src = saved && typeof saved === "object" ? saved : {};
+      const scale = Number(src.scale);
+      const dx = Number(src.dx);
+      const dy = Number(src.dy);
+      staffAdjust.scale = Number.isFinite(scale) && scale > 0 ? scale : 1;
+      staffAdjust.dx = Number.isFinite(dx) ? Math.round(dx) : 0;
+      staffAdjust.dy = Number.isFinite(dy) ? Math.round(dy) : 0;
+    }
+
+    // 拖动/拖滑块时重绘很频繁：用 rAF 合并，避免每次 mousemove 都重画整页
+    let staffRenderRaf = 0;
+    function staffRenderSoon() {
+      if (staffRenderRaf) return;
+      staffRenderRaf = requestAnimationFrame(() => {
+        staffRenderRaf = 0;
+        renderStaffPreview();
+      });
+    }
+
+    // 面板控件：大小（%）/ 左右 / 上下（设计像素偏移）
+    function setStaffScale(percent) {
+      const n = Number(percent);
+      if (Number.isFinite(n)) {
+        staffAdjust.scale = Math.min(200, Math.max(40, n)) / 100;
+        staffRenderSoon();
+      }
+    }
+
+    function setStaffOffset(axis, value) {
+      const n = Number(value);
+      if (!Number.isFinite(n) || (axis !== "dx" && axis !== "dy")) return;
+      staffAdjust[axis] = Math.min(800, Math.max(-800, Math.round(n)));
+      staffRenderSoon();
+    }
+
+    function resetStaffAdjust() {
+      staffAdjust.scale = 1;
+      staffAdjust.dx = 0;
+      staffAdjust.dy = 0;
+      renderStaffPreview();
+    }
+
+    // 预览里直接拖动职位块：屏幕像素 → 设计像素（按画布显示比例换算）
+    function staffDragStart(e) {
+      const canvas = staffCanvas.value;
+      const layout = staffLayout;
+      if (!canvas || !layout || !layout.design || e.button !== 0) return;
+      const rect = canvas.getBoundingClientRect();
+      if (!rect.width) return;
+      e.preventDefault();
+      staffDrag = {
+        x: e.clientX,
+        y: e.clientY,
+        dx: Number(staffAdjust.dx) || 0,
+        dy: Number(staffAdjust.dy) || 0,
+        designPerScreen: layout.design.w / rect.width,
+      };
+      canvas.classList.add("staff-canvas-dragging");
+      document.addEventListener("mousemove", staffDragMove);
+      document.addEventListener("mouseup", staffDragEnd);
+    }
+
+    function staffDragMove(e) {
+      if (!staffDrag) return;
+      const dx = staffDrag.dx + (e.clientX - staffDrag.x) * staffDrag.designPerScreen;
+      const dy = staffDrag.dy + (e.clientY - staffDrag.y) * staffDrag.designPerScreen;
+      staffAdjust.dx = Math.min(800, Math.max(-800, Math.round(dx)));
+      staffAdjust.dy = Math.min(800, Math.max(-800, Math.round(dy)));
+      staffRenderSoon();
+    }
+
+    function staffDragEnd() {
+      if (!staffDrag) return;
+      staffDrag = null;
+      const canvas = staffCanvas.value;
+      if (canvas) canvas.classList.remove("staff-canvas-dragging");
+      document.removeEventListener("mousemove", staffDragMove);
+      document.removeEventListener("mouseup", staffDragEnd);
     }
 
     async function renderStaffPreview() {
@@ -1887,6 +2001,7 @@ createApp({
     async function openStaff(ch) {
       staffPanel.ch = ch;
       staffPanel.open = true;
+      applyStaffAdjust(null); // 先归零：上一章的调整不能串到本章
       try {
         const layout = await loadStaffLayout();
         let saved = null;
@@ -1896,6 +2011,7 @@ createApp({
           saved = Array.isArray(r.rows) ? r.rows : null; // 显式保存过空名单也要尊重
           staffBgIndex.value = Number.isFinite(r.bg) && r.bg !== null && r.bg >= 0
             ? r.bg : (layout.bg_default_index || 0);
+          applyStaffAdjust(r.layout); // 章节里存过的职位条目位置/大小
         } catch (e) { /* 读取失败时保持空白名单 */ }
         // 不再自动塞“常用职位模版”：默认空白，需要时点「填入常用职位」
         staffRows.value = (saved || []).map((row) => [row[0] || "", row[1] || ""]);
@@ -1942,6 +2058,7 @@ createApp({
     function closeStaff() {
       staffPanel.open = false;
       staffPanel.ch = null;
+      staffDragEnd();
     }
 
     async function saveStaffRows() {
@@ -1952,7 +2069,7 @@ createApp({
         const r = await api("/api/staff", {
           method: "POST", json: true,
           body: JSON.stringify({ dir: comicDir.value.trim(), chapter: ch.key,
-            rows: staffRows.value, bg: staffBgIndex.value }),
+            rows: staffRows.value, bg: staffBgIndex.value, layout: staffAdjustPayload() }),
         });
         toastMsg(`已保存名单（${r.rows} 行）`);
       } catch (e) {
@@ -1974,7 +2091,7 @@ createApp({
         // 让后端按当前磁盘页序插 staff，避免“删了模板页再生成”报页数不一致。
         const clean = !ch._dirty && !Object.keys(ch._pageMeta || {}).length;
         const body = { dir: comicDir.value.trim(), chapter: ch.key,
-          rows: staffRows.value, bg: staffBgIndex.value };
+          rows: staffRows.value, bg: staffBgIndex.value, layout: staffAdjustPayload() };
         if (clean) body.pages = ch.pages;
         await api("/api/staff", { // 名单+背景页随生成一并落盘
           method: "POST", json: true, body: JSON.stringify(body),
@@ -2152,6 +2269,8 @@ createApp({
       startRenameNumeric,
       staffPanel, staffRows, staffCanvas, staffBusy, staffExportOpen,
       staffBgPage, staffBgStep, onStaffBgChange, staffFontStatus,
+      staffAdjust, setStaffScale, setStaffOffset, resetStaffAdjust,
+      staffDragStart, staffDragMove, staffDragEnd,
       chapterToolsOpen, toggleChapterTools, applyPageEdits,
       openStaff, closeStaff, renderStaffPreview, saveStaffRows, renderStaffPage, exportStaffImage,
       addTailPage,
