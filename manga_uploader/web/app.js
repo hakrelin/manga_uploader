@@ -558,6 +558,68 @@ createApp({
       const names = cards.value.filter(connected).map((c) => c.label.split("（")[0]);
       return "发布到：" + (names.length ? names.join("、") : "（未配置，去「平台账号」连接）");
     });
+
+    // ---------------- 工作台：快速切换发布平台 ----------------
+    // 与「平台账号」页的“启用此平台”是同一份状态（config.platforms[key].enabled）：
+    // 「一键发布」和「云端定时」都按它决定发到哪些平台，所以在这里点一下就能改本次发布目标。
+    const quickTargets = computed(() => {
+      const out = {};
+      cards.value.forEach((c) => {
+        const p = config.platforms[c.key];
+        out[c.key] = !!(p && p.enabled);
+      });
+      return out;
+    });
+    const quickPlatHint = computed(() => {
+      const on = cards.value.filter((c) => quickTargets.value[c.key]);
+      if (!on.length) {
+        return "未选平台：一键发布会直接报“没有启用的平台”，先点上面的平台名选中要发的平台。";
+      }
+      const ready = on.filter(connected);
+      const missing = on.filter((c) => !connected(c));
+      const missingText = missing.map(platShort).join("、");
+      let text;
+      if (!missing.length) text = "本次会发到：" + ready.map(platShort).join("、");
+      else if (!ready.length) text = "已选中 " + missingText + "，但还缺 Cookie，点「管理账号…」补全后才能发出去";
+      else {
+        text = "本次会发到：" + ready.map(platShort).join("、")
+          + "；" + missingText + " 还缺 Cookie，补全后才会一起发";
+      }
+      // 顺便提示“账号已配好但本次没勾”的平台，避免以为账号丢了
+      const idle = cards.value.filter((c) => !quickTargets.value[c.key] && connectedReady(c));
+      if (idle.length) text += "；另有 " + idle.map(platShort).join("、") + " 已配好账号，点一下即可加入本次发布";
+      return text;
+    });
+    // 只看 Cookie 是否齐（忽略 enabled）：用于提示“账号还在，只是没勾”
+    function connectedReady(card) {
+      const p = config.platforms[card.key];
+      if (!p) return false;
+      return requiredCookies(card).every((n) => (p.cookies || {})[n]);
+    }
+    function quickChipTitle(card) {
+      const p = config.platforms[card.key] || {};
+      const missing = requiredCookies(card).filter((n) => !(p.cookies || {})[n]);
+      if (!p.enabled) {
+        return missing.length
+          ? card.label + " 还没填 " + missing.join("/") + "：点一下选中它，再去「平台账号」补 Cookie"
+          : "点一下把 " + card.label + " 加进本次发布（账号已配好）";
+      }
+      if (connected(card)) return "已启用且已登录，点一下本次不发这个平台";
+      return "已启用，但缺少 " + (missing.join("/") || "必需 Cookie")
+        + "，点「管理账号…」补全后才能发布";
+    }
+    function toggleQuickPlatform(card) {
+      const p = config.platforms[card.key];
+      if (!p) return;
+      p.enabled = !p.enabled;
+      if (p.enabled && !connected(card)) {
+        const missing = requiredCookies(card).filter((n) => !(p.cookies || {})[n]);
+        toastMsg("已选中 " + platShort(card) + "，但还缺 " + (missing.join("/") || "必需 Cookie")
+          + "，去「平台账号」补全后才能发出去");
+      } else {
+        toastMsg((p.enabled ? "本次发布会发到 " : "本次发布不发 ") + platShort(card));
+      }
+    }
     // ---------------- 发布进度条 ----------------
 
     const pubChips = computed(() =>
@@ -2285,6 +2347,7 @@ createApp({
       SOURCE_CHOICES, CATE_OPTIONS,
       markPlatformTouched,
       anyUnconfigured, publishTargetsText, xhSettings,
+      quickTargets, quickPlatHint, quickChipTitle, toggleQuickPlatform,
       pubProgress, pubChips, pubPercent, stageLabel,
       platShort, platStatus, connected, extrasOf, extraLabel, staleAccountsText,
       saveConfig, openAccount, toggleExpand, openLogin,

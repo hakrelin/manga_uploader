@@ -363,6 +363,55 @@ html, body {
 
 /* ============ 平台行（工作台） ============ */
 
+/* 工作台「漫画与内容」顶部的快速切换发布平台 */
+.plat-quick {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+  padding: 9px 12px;
+  margin-bottom: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+.plat-quick-label { font-size: 12.5px; font-weight: 600; color: var(--text-2); flex: none; }
+.plat-quick-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.qchip {
+  appearance: none;
+  font: inherit;
+  font-size: 12.5px;
+  line-height: 1.45;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text-2);
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+.qchip:hover:not(:disabled) { border-color: var(--accent); color: var(--text); }
+.qchip:disabled { opacity: 0.55; cursor: not-allowed; }
+.qchip .plat-dot { opacity: 0.3; }
+.qchip.on {
+  border-color: var(--accent);
+  background: var(--accent-weak);
+  color: var(--accent);
+  font-weight: 600;
+}
+.qchip.on .plat-dot { opacity: 1; }
+.qchip.warn { border-color: var(--warn); color: var(--warn); background: transparent; }
+.qchip-mark { font-size: 11px; opacity: 0.85; }
+.plat-quick-hint {
+  flex: 1 1 200px;
+  min-width: 160px;
+  font-size: 12px;
+  color: var(--text-3);
+}
+
 .plat-list { display: flex; flex-direction: column; }
 .plat-row {
   display: flex;

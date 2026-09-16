@@ -108,6 +108,23 @@ try {
           <span v-if="summary" class="badge">{{ summary.pages }} 页 · {{ summary.size }}</span>
         </div>
         <div class="card-body">
+          <!-- 快速切换发布平台：直接点选本次要发到哪些平台，不用回「平台账号」页 -->
+          <div class="plat-quick">
+            <span class="plat-quick-label">发布平台</span>
+            <div class="plat-quick-chips">
+              <button v-for="c in cards" :key="'q-' + c.key" class="qchip"
+                      :class="{ on: quickTargets[c.key], warn: quickTargets[c.key] && !connected(c) }"
+                      :disabled="busy || running" :title="quickChipTitle(c)"
+                      @click="toggleQuickPlatform(c)">
+                <span class="plat-dot" :class="'dot-' + c.key"></span>
+                <span>{{ platShort(c) }}</span>
+                <span class="qchip-mark">{{ quickTargets[c.key] ? (connected(c) ? '✓' : '!') : '+' }}</span>
+              </button>
+            </div>
+            <span class="plat-quick-hint">{{ quickPlatHint }}</span>
+            <button class="btn btn-ghost btn-sm" :disabled="busy" @click="nav = 'accounts'">管理账号…</button>
+          </div>
+
           <!-- 未选择：大框点击 / 拖拽 / 路径输入 -->
           <template v-if="!summary">
             <div class="big-drop" :class="{ 'is-busy': busy, over: dragOver }"
@@ -723,7 +740,7 @@ try {
       <ol>
         <li>① 导入 / 选择一本漫画（文件夹、ZIP、CBZ、7Z、RAR 或图片）；</li>
         <li>① 填写中文标题、作者、简介等基本信息，并检查各平台发布内容；</li>
-        <li>「平台账号」页启用平台并填入 Cookie（B 站可扫码登录）；</li>
+        <li>「平台账号」页填好 Cookie（B 站可扫码登录）；日常要换发布平台，直接点①区顶部的「发布平台」按钮快速切换；</li>
         <li>② 点「全文预览」逐平台核对标题、正文与页序，可对页面做增删/排序；</li>
         <li>② 点「一键发布」，顶部进度条会显示当前平台与阶段。</li>
       </ol>
@@ -731,6 +748,9 @@ try {
       <h3>漫画导入与内容</h3>
       <ul>
         <li>把 ZIP / CBZ / 7Z / RAR / 图片 / 文件夹拖入①区即可导入；也可点“选择文件夹 / 压缩包”，或在路径栏输入目录后回车（7Z/RAR 需要本机安装 7-Zip）。</li>
+        <li>①区顶部的「发布平台」一排按钮就是<b>快速切换</b>本次要发到哪些平台：点平台名启用 / 停用，不用回「平台账号」页。
+          蓝色 ✓ = 已选中且已登录；橙色 ! = 已选中但缺 Cookie（点「管理账号…」补全）；灰色 + = 本次不发。
+          改动立刻对「一键发布」「云端定时」生效；想长期保留，再点「平台账号」或「设置」页的「保存配置」。</li>
         <li>单张超过 10MB 的图片发布时会自动压缩；预览里显示的是缩略图，不影响上传原图。</li>
         <li>基本信息里的中文标题是各平台标题的主要来源；输入日文标题后可自动回填罗马音（可在账号页配置 AI 接口）。</li>
         <li>“各平台发布内容”默认按漫画信息自动组合，留空即自动，手写后会以手写内容为准，保存后写回 manga.json。</li>
