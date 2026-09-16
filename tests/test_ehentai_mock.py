@@ -3,12 +3,15 @@ import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from unittest import mock
 
 from PIL import Image
 
 from manga_uploader.config import CommonConfig, PlatformConfig
+from manga_uploader.http_client import HttpError
 from manga_uploader.models import Chapter
 from manga_uploader.publishers import ehentai as eh_mod
+from manga_uploader.publishers.base import PublisherError
 from manga_uploader.publishers.ehentai import EhentaiPublisher
 
 UPLOAD_HTML = """<!DOCTYPE html><html><body>
@@ -127,6 +130,58 @@ def _make_chapter(tmp: Path) -> Chapter:
         source_dir=folder,
         raw={"platforms": {"ehentai": {"category": "Manga", "extra_tags": ["artist:someone"]}}},
     )
+
+
+# 复刻朋友 2026-09-16 日志里的报错文本（国内直连 upload.e-hentai.org 超时）
+_CONNECT_BOOM = (
+    "GET https://upload.e-hentai.org/managegallery?act=new 多次重试后仍然失败："
+    "HTTPSConnectionPool(host='upload.e-hentai.org', port=443): Max retries exceeded with "
+    "url: /managegallery?act=new (Caused by ConnectTimeoutError(..., 'Connection to "
+    "upload.e-hentai.org timed out. (connect timeout=30.0)'))"
+)
+
+
+class TestEhentaiConnectErrors(unittest.TestCase):
+    """连不上境外站时，报错要直接告诉用户「去配代理」，而不是丢一串 requests 堆栈。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.cfg = PlatformConfig(
+            name="ehentai",
+            cookies={"ipb_member_id": "1", "ipb_pass_hash": "h"},
+            settings={},
+        )
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _publisher(self):
+        return EhentaiPublisher(
+            self.cfg, CommonConfig(output_dir=str(Path(self.tmp.name) / "out"))
+        )
+
+    def test_check_reports_proxy_hint_on_connect_timeout(self):
+        publisher = self._publisher()
+        with mock.patch.object(publisher.http, "get", side_effect=HttpError(_CONNECT_BOOM)):
+            result = publisher.check()
+        self.assertFalse(result.ok)
+        self.assertIn("upload.e-hentai.org", result.message)
+        self.assertIn("代理", result.message)
+        self.assertIn("proxy_url", result.message)
+
+    def test_publish_reports_proxy_hint_on_connect_timeout(self):
+        publisher = self._publisher()
+        with mock.patch.object(publisher.http, "get", side_effect=HttpError(_CONNECT_BOOM)):
+            with self.assertRaises(PublisherError) as ctx:
+                publisher.publish(_make_chapter(Path(self.tmp.name)))
+        text = str(ctx.exception)
+        self.assertIn("代理", text)
+        self.assertIn("proxy_url", text)
+
+    def test_connect_error_detector_ignores_business_errors(self):
+        """业务报错（服务端 200 但提示未登录/无资格）不能被当成网络不通。"""
+        self.assertTrue(eh_mod._is_connect_error(HttpError(_CONNECT_BOOM)))
+        self.assertFalse(eh_mod._is_connect_error(PublisherError("Cookie 无效或未登录")))
 
 
 class TestEhentaiPublisherMock(unittest.TestCase):

@@ -22,12 +22,36 @@ from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urljoin, urlsplit
 
+from ..http_client import HttpError
 from ..models import Chapter, CheckResult, PublishResult
 from .. import composer
 from .base import BasePublisher, PublisherError
 
 UPLOAD_PAGE_URL = "https://upload.e-hentai.org/managegallery?act=new"
 CHECK_PAGE_URL = "https://e-hentai.org/home.php"
+
+
+# e-hentai 是境外站点：upload.e-hentai.org 在国内直连基本必然超时。
+# 报错时把“怎么办”直接写进提示，省得用户对着 ConnectTimeoutError 猜。
+CONNECT_HINT = (
+    "e-hentai 的上传域名（upload.e-hentai.org）在国内直连通常连不上。"
+    "请任选其一后重试：① 在配置的 e-hentai 里勾选「使用系统代理」（或填写代理地址 "
+    "proxy_url，例如 http://127.0.0.1:7890）；② 在 GUI「设置」里开启全局系统代理；"
+    "③ 让本机能直连外网（换网络/开代理软件的系统代理）。"
+    "注意贴吧/B站等国内站不需要代理，可以在 platforms.<平台>.settings 里单独给 "
+    "e-hentai 配代理、国内站保持直连。"
+)
+
+
+def _is_connect_error(exc: BaseException) -> bool:
+    """判断异常是否为“连不上/超时”这类网络不可达（而非站点的业务报错）。"""
+    text = f"{exc.__class__.__name__}: {exc}".lower()
+    for marker in ("timed out", "timeout", "max retries exceeded", "connection refused",
+                   "connectionerror", "failed to establish", "connection reset",
+                   "proxyerror", "sslerror", "name resolution", "getaddrinfo"):
+        if marker in text:
+            return True
+    return False
 
 
 def _is_upload_page_url(url: str) -> bool:
@@ -268,6 +292,12 @@ class EhentaiPublisher(BasePublisher):
         try:
             resp = self.http.get(UPLOAD_PAGE_URL)
         except Exception as exc:
+            if _is_connect_error(exc):
+                return CheckResult(
+                    self.key,
+                    False,
+                    f"网络请求失败（连不上 upload.e-hentai.org）：{exc}\n{CONNECT_HINT}",
+                )
             return CheckResult(self.key, False, f"网络请求失败：{exc}")
         if not _is_upload_page_url(resp.url):
             self.http._dump(resp, tag="ehentai-check-page")
@@ -561,6 +591,12 @@ class EhentaiPublisher(BasePublisher):
             action = urljoin(UPLOAD_PAGE_URL, form.action or UPLOAD_PAGE_URL)
             resp = self._upload_files(action, data, file_name, pages)
             return self._interpret_response(resp, chapter, len(pages))
+        except HttpError as exc:
+            if _is_connect_error(exc):
+                raise PublisherError(
+                    f"e-hentai 请求连不上（连接超时/被拒绝）：{exc}\n{CONNECT_HINT}"
+                ) from exc
+            raise
         finally:
             self.cleanup_prepared(chapter)
 

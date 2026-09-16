@@ -285,6 +285,12 @@ Cookie 会过期（B站 SESSDATA 常见数月），`check` 会提示失效，重
 按配置顺序**依次串行**执行，并用 `forum_interval`（默认 3 秒）拉开间隔防限流；
 某个吧失败不阻断后续吧（全部失败才报失败，部分成功会列出已发布的帖子链接）。
 
+百度偶尔会对完全正常的请求返回 `110003 内部错误` / `210009 系统繁忙`（同一份内容隔几秒
+再发就过）：程序对这两个码会 **自动退避重试 2 次**（+6 秒、+15 秒），日志里能看到
+「被百度临时拒绝…自动重试」。仍失败说明不是偶发，按提示处理：先用浏览器在目标吧
+手动发一帖确认该吧能发（有些吧有等级/吧务限制），浏览器里先过一次验证码，或换个网络再试。
+（`230871 发贴太频繁` / `220034 发言太快` 属于真频控，程序不重试，等一会儿再发即可。）
+
 ### e-hentai
 
 1. 打开 `https://upload.e-hentai.org/managegallery?act=new` 并动态解析上传表单；
@@ -298,6 +304,12 @@ Cookie 会过期（B站 SESSDATA 常见数月），`check` 会提示失效，重
 认识的字段（主标题/简介/标签/分类/语言/评分），并支持 GUI 里按“页面字段名 +
 内容来源”逐行自定义映射，结果保存到 `config.yaml` 的
 `platforms.ehentai.settings.field_map`。
+
+> **e-hentai 是境外站点：`upload.e-hentai.org` 在国内直连基本连不上（表现为连接超时，
+> 日志里是 `ConnectTimeoutError ... connect timeout=30.0`）。** 上传前请给它单独配代理：
+> 在配置的 e-hentai 里勾选「使用系统代理」，或填 `proxy_url`（如 `http://127.0.0.1:7890`）。
+> 国内平台（B站/贴吧/再漫画/小黑盒）不需要代理，可在 `platforms.<平台>.settings` 里
+> 单独设置，做到「e-hentai 走代理、国内站直连」。程序在连不上时会把这段提示直接写进报错。
 
 ### 小黑盒（图文 / 文章自动选择）
 
@@ -378,6 +390,9 @@ Cookie 会过期（B站 SESSDATA 常见数月），`check` 会提示失效，重
   再调整对应 `publishers/*.py` 的请求参数。
 - 图片被跳过：检查格式与单张大小上限（B站专栏仅 jpg/png 且 ≤5MB；图文动态
   与贴吧收 jpg/png/gif；再漫画 ≤10MB）。
+- **e-hentai 报 `ConnectTimeoutError` / `Connection to upload.e-hentai.org timed out`**：
+  不是账号问题，是本机连不上该站点。按上面的「e-hentai」小节给该平台配代理后再发；
+  国内站继续直连即可。
 - 国内站报网络错误而开了系统代理：GUI「设置」里取消勾选系统代理，或把
   `use_system_proxy` 设为 false；也可在 `platforms.<平台>.settings` 单独配置
   `use_system_proxy: false` 和 `proxy_url: ""` 让该平台直连。

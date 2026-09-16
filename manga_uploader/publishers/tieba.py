@@ -142,6 +142,9 @@ def _fmt_error(code: object, message: str) -> str:
         "2230204": "传图被百度拒绝（多为上传过快的限流/风控），稍后重试即可",
         "2230201": "图片格式或尺寸不被接受，请换 jpg/png 后重试",
         "210009": "系统繁忙，请稍后重试",
+        "110003": "百度返回“内部错误”（该吧的等级/吧务限制、账号换设备或换 IP 后的风控、"
+                  "首楼内容被判广告，都会是这个码）。已自动重试；仍失败请先用浏览器在该吧"
+                  "手动发一帖确认能发，再回来重试",
     }
     # 已知错误码优先用中文说明（服务端经常只回“上传失败”这种没信息量的文案）
     if code_str in table:
@@ -149,6 +152,20 @@ def _fmt_error(code: object, message: str) -> str:
     if message and not re.fullmatch(r"\d+", message):
         return message
     return f"发帖失败（error_code={code_str}）"
+
+
+# add_pc 返回这些码时值得自动重试：百度对同一份请求经常是第一次拦、隔几秒再发就过。
+# 110003 = 内部错误，210009 = 系统繁忙；230871/220034 是明确的频控，重试只会更糟，故不重试。
+ADD_RETRY_CODES = {"110003", "210009"}
+ADD_RETRY_WAITS = (6.0, 15.0)
+
+
+class _RetryableAdd(PublisherError):
+    """add_pc 返回的“可重试”错误（内部错误 / 系统繁忙），单独抛出来交给上层退避重试。"""
+
+    def __init__(self, message: str, code: str = "") -> None:
+        super().__init__(message)
+        self.code = str(code)
 
 
 def _need_vcode(payload: object) -> bool:
@@ -547,6 +564,8 @@ class TiebaPublisher(BasePublisher):
                 raise CaptchaRequiredError(
                     f"贴吧{kind}需要人机验证（验证码）。请在浏览器中打开贴吧完成一次验证后重试。"
                 )
+            if str(error_code) in ADD_RETRY_CODES:
+                raise _RetryableAdd(f"贴吧{kind}失败：{reason}", str(error_code))
             raise PublisherError(f"贴吧{kind}失败：{reason}")
         if payload.get("msg") == "发送成功":
             return {"tid": str(payload.get("tid") or ""), "pid": str(payload.get("pid") or "")}
@@ -565,6 +584,39 @@ class TiebaPublisher(BasePublisher):
             raise PublisherError(f"贴吧{kind}成功但响应中没有帖子编号：{resp.text[:200]}")
         return {"tid": tid, "pid": pid}
 
+    def _submit_post(
+        self, url: str, data: dict, headers: dict, tag: str, kind: str, forum: str
+    ) -> dict:
+        """提交主题帖/楼层，对百度“内部错误/系统繁忙”这类瞬时拒绝退避重试。
+
+        调用到这里时图片早已上传完成，重试成本很低；而同一份请求隔几秒再发一次
+        经常就能过（朋友的日志里东方吧首楼就是被 110003「内部错误」直接拒掉的）。
+        频控类错误（230871 发贴太频繁 / 220034 发言太快）不在这里重试——只会更糟。
+        """
+        last: PublisherError | None = None
+        for attempt in range(len(ADD_RETRY_WAITS) + 1):
+            resp = self.http.post(url, data=data, headers=headers)
+            try:
+                return self._parse_add_response(resp, tag, kind)
+            except _RetryableAdd as exc:
+                last = exc
+                if attempt >= len(ADD_RETRY_WAITS):
+                    break
+                wait = ADD_RETRY_WAITS[attempt]
+                self.log.warning(
+                    "%s %s被百度临时拒绝（%s），%.0f 秒后自动重试（%d/%d）",
+                    forum,
+                    kind,
+                    exc,
+                    wait,
+                    attempt + 1,
+                    len(ADD_RETRY_WAITS),
+                )
+                time.sleep(wait)
+        raise PublisherError(
+            f"{last}（已自动重试 {len(ADD_RETRY_WAITS)} 次仍失败）"
+        ) from last
+
     def _post_thread(self, forum: str, fid: str, tbs: str, title: str, content: str) -> str:
         data = _pc_sign(
             {
@@ -581,18 +633,14 @@ class TiebaPublisher(BasePublisher):
                 "_client_type": 20,
             }
         )
-        resp = self.http.post(
-            THREAD_ADD_URL,
-            data=data,
-            headers={
-                "Referer": f"{FORUM_URL}?kw={quote(forum)}&ie=utf-8",
-                "Origin": "https://tieba.baidu.com",
-                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-            },
-        )
-        result = self._parse_add_response(resp, "tieba-thread", "发帖")
+        headers = {
+            "Referer": f"{FORUM_URL}?kw={quote(forum)}&ie=utf-8",
+            "Origin": "https://tieba.baidu.com",
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        }
+        result = self._submit_post(THREAD_ADD_URL, data, headers, "tieba-thread", "发帖", forum)
         if not result["tid"]:
-            raise PublisherError(f"贴吧发帖成功但未返回 tid：{resp.text[:200]}")
+            raise PublisherError(f"贴吧发帖成功但未返回 tid：{result}")
         return result["tid"]
 
     def _reply_post(self, forum: str, fid: str, tbs: str, tid: str, content: str) -> str:
@@ -613,16 +661,12 @@ class TiebaPublisher(BasePublisher):
                 "_client_type": 20,
             }
         )
-        resp = self.http.post(
-            POST_ADD_URL,
-            data=data,
-            headers={
-                "Referer": f"https://tieba.baidu.com/p/{tid}",
-                "Origin": "https://tieba.baidu.com",
-                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-            },
-        )
-        result = self._parse_add_response(resp, "tieba-post", "追加楼层")
+        headers = {
+            "Referer": f"https://tieba.baidu.com/p/{tid}",
+            "Origin": "https://tieba.baidu.com",
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        }
+        result = self._submit_post(POST_ADD_URL, data, headers, "tieba-post", "追加楼层", forum)
         return result["pid"]
 
     def _publish_one_forum(

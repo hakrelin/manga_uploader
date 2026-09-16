@@ -4,6 +4,7 @@ import re
 import tempfile
 import threading
 import unittest
+from unittest import mock
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -24,6 +25,7 @@ class _Handler(BaseHTTPRequestHandler):
     log: list = []
     forum_redirect = False
     fail_thread = False
+    thread_busy = 0  # 前几次 thread/add 回 110003「内部错误」（百度偶发）
     captcha_thread = False
     thread_seq = 0
     upload_failures = 0  # 还剩几次传图要按 2230204「上传失败」拒绝
@@ -138,6 +140,21 @@ class _Handler(BaseHTTPRequestHandler):
             )
         elif "thread/add" in self.path:
             self.__class__.thread_seq += 1
+            if self.__class__.thread_busy > 0:
+                self.__class__.thread_busy -= 1
+                # 复刻朋友 2026-09-16 日志里东方吧首楼的真实响应
+                self._reply_json(
+                    {
+                        "opgroup": "0",
+                        "error_code": "110003",
+                        "error_msg": "内部错误",
+                        "info": [],
+                        "follow_status": "0",
+                        "forum_id": "71007",
+                        "logid": 3196720442,
+                    }
+                )
+                return
             if self.__class__.fail_thread and self.__class__.thread_seq >= 2:
                 self._reply_json(
                     {
@@ -252,6 +269,7 @@ class TestTiebaPublisherMock(unittest.TestCase):
         _Handler.log = []
         _Handler.forum_redirect = False
         _Handler.fail_thread = False
+        _Handler.thread_busy = 0
         _Handler.captcha_thread = False
         _Handler.thread_seq = 0
         _Handler.upload_failures = 0
@@ -487,6 +505,50 @@ class TestTiebaPublisherMock(unittest.TestCase):
         threads = [r for r in _Handler.log if "thread/add" in r["path"]]
         self.assertEqual(len(threads), 2)
 
+
+    def test_thread_internal_error_retries_then_succeeds(self):
+        """东方吧首楼被百度回 110003「内部错误」：自动退避重试后应当发出去。"""
+        _Handler.thread_busy = 1
+        cfg = PlatformConfig(
+            name="tieba",
+            cookies={"BDUSS": "x"},
+            settings={"forum": "漫画吧", "max_pages_per_post": 50, "upload_sleep": 0},
+        )
+        publisher = TiebaPublisher(cfg, CommonConfig(output_dir=str(Path(self.tmp.name) / "out")))
+        with mock.patch.object(tieba_mod, "ADD_RETRY_WAITS", (0.01,)):
+            result = publisher.publish(_make_chapter(Path(self.tmp.name)))
+        self.assertEqual(result.status, "ok", result.message)
+        threads = [r for r in _Handler.log if "thread/add" in r["path"]]
+        # 第一次被拒 + 第二次成功 = 2 次请求
+        self.assertEqual(len(threads), 2)
+
+    def test_thread_internal_error_gives_up_with_actionable_message(self):
+        """一直回 110003 时：重试到底后给出中文可操作提示，并上报失败楼层。"""
+        _Handler.thread_busy = 99
+        cfg = PlatformConfig(
+            name="tieba",
+            cookies={"BDUSS": "x"},
+            settings={"forum": "漫画吧", "max_pages_per_post": 50, "upload_sleep": 0},
+        )
+        publisher = TiebaPublisher(cfg, CommonConfig(output_dir=str(Path(self.tmp.name) / "out")))
+        with mock.patch.object(tieba_mod, "ADD_RETRY_WAITS", (0.01, 0.01)):
+            result = publisher.publish(_make_chapter(Path(self.tmp.name)))
+        self.assertEqual(result.status, "failed")
+        self.assertIn("已自动重试 2 次", result.message)
+        self.assertIn("内部错误", result.message)
+        threads = [r for r in _Handler.log if "thread/add" in r["path"]]
+        self.assertEqual(len(threads), 3)  # 1 次原始 + 2 次重试
+
+    def test_rate_limit_codes_are_not_retried(self):
+        """真频控（230871 发贴太频繁）不该重试，否则只会加重风控。"""
+        self.assertNotIn("230871", tieba_mod.ADD_RETRY_CODES)
+        self.assertNotIn("220034", tieba_mod.ADD_RETRY_CODES)
+
+    def test_error_table_explains_internal_error(self):
+        """110003 要给出中文说明，而不是只透传百度的「内部错误」。"""
+        text = tieba_mod._fmt_error("110003", "内部错误")
+        self.assertIn("内部错误", text)
+        self.assertIn("重试", text)
 
     def test_upload_retries_after_rate_limit(self):
         """贴吧限流（2230204 上传失败）：自动重试后仍然成功发帖。"""
