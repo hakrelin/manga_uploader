@@ -25,6 +25,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -422,6 +423,171 @@ def apply_update(
 
 # ---------------------------------------------------------------- 依赖安装
 
+PIP_TAIL_LINES = 20
+
+
+def _console_width(default: int = 100) -> int:
+    """终端可用宽度（拿不到就按 100 算）。"""
+    try:
+        width = shutil.get_terminal_size((default, 24)).columns
+    except Exception:  # noqa: BLE001
+        return default
+    return width - 1 if width > 40 else default
+
+
+def _is_tty() -> bool:
+    try:
+        return bool(sys.stdout.isatty())
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _fmt_elapsed(seconds: float) -> str:
+    total = int(seconds)
+    return f"{total // 60:02d}:{total % 60:02d}"
+
+
+def _human_bytes(count: float) -> str:
+    if count >= 1048576:
+        return f"{count / 1048576:.1f}MB"
+    if count >= 1024:
+        return f"{count / 1024:.0f}KB"
+    return f"{count:.0f}B"
+
+
+def _progress_bar(percent: int, width: int = 14) -> str:
+    percent = max(0, min(100, percent))
+    filled = int(round(percent * width / 100))
+    return "#" * filled + "-" * (width - filled)
+
+
+def _spin_bar(seconds: float, width: int = 14) -> str:
+    """拿不到百分比时的“还在跑”指示条：光标在条内来回移动。"""
+    period = 2.5
+    pos = seconds % (period * 2)
+    if pos > period:
+        pos = period * 2 - pos
+    filled = min(max(int(round(pos / period * width)), 1), width)
+    return "#" * filled + "-" * (width - filled)
+
+
+class _PipProgress:
+    """pip 输出解析结果：当前文件的字节进度 + 最近一条普通输出行。"""
+
+    def __init__(self) -> None:
+        self.percent: Optional[int] = None
+        self.sizes = ""
+        self.context = ""
+        self.tail: list[str] = []
+
+    def feed(self, raw_line: str) -> None:
+        line = raw_line.strip()
+        if not line:
+            return
+        match = re.match(r"^Progress (\d+) of (\d+)$", line)
+        if match:
+            done, total = int(match.group(1)), int(match.group(2))
+            self.percent = round(done * 100 / total) if total > 0 else None
+            self.sizes = f"{_human_bytes(done)}/{_human_bytes(total)}"
+            return
+        if "|" in line and re.search(r"\d+\s*%", line):
+            return  # 终端样式的进度条（正常情况下不会出现，保险起见跳过）
+        self.context = line
+        self.tail.append(line)
+        del self.tail[: -PIP_TAIL_LINES * 3]
+
+
+def _pump_pip_output(stream, state: _PipProgress) -> None:
+    """后台线程：按 \r / \n 切分 pip 输出（进度条会用 \r 原地刷新）。"""
+    pending = ""
+    while True:
+        chunk = stream.read(4096)
+        if not chunk:
+            break
+        pending += chunk.decode("utf-8", "replace")
+        parts = re.split(r"[\r\n]+", pending)
+        pending = parts.pop()
+        for part in parts:
+            state.feed(part)
+    state.feed(pending)
+
+
+def _pip_progress_mode(venv_py: Path, cwd: Path) -> str:
+    """挑一个 pip 支持的进度模式。
+
+    默认的 `on` 只在真终端上画进度条，而我们的输出要走管道、逐行读，
+    所以用 `raw`（输出 “Progress 已下载字节 of 总字节”）；老版本 pip 没这个选项就退回 `on`。
+    """
+    try:
+        probe = subprocess.run(
+            [str(venv_py), "-m", "pip", "install", "--progress-bar", "raw", "--help"],
+            cwd=str(cwd),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=120,
+        )
+    except Exception:  # noqa: BLE001 - 探测失败按“不支持”处理
+        return "on"
+    return "raw" if probe.returncode == 0 else "on"
+
+
+def _run_pip(cmd: list[str], cwd: Path, action: str) -> int:
+    """跑一次 pip：过程中显示一行实时进度，返回退出码。"""
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = "utf-8"  # 固定输出编码，中文与进度都能正确读出来
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(cwd),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            env=env,
+            bufsize=0,
+        )
+    except OSError as exc:
+        warn(f"无法启动 pip：{exc}")
+        return 1
+
+    state = _PipProgress()
+    reader = threading.Thread(
+        target=_pump_pip_output, args=(proc.stdout, state), daemon=True
+    )
+    reader.start()
+
+    width = _console_width()
+    spin = "|/-\\"
+    show = _is_tty()
+    start = time.monotonic()
+    index = 0
+    while proc.poll() is None:
+        if show:
+            elapsed = time.monotonic() - start
+            if state.percent is None:
+                head = f"  {spin[index % 4]} [{_spin_bar(elapsed)}] 已用 {_fmt_elapsed(elapsed)}"
+            else:
+                head = (
+                    f"  {spin[index % 4]} [{_progress_bar(state.percent)}] "
+                    f"{state.percent:3d}%  {state.sizes}  已用 {_fmt_elapsed(elapsed)}"
+                )
+            text = state.context or "正在准备（连接下载源 / 解析依赖）…"
+            line = f"{head}  {text}"[:width]
+            sys.stdout.write("\r" + line.ljust(width))
+            sys.stdout.flush()
+        index += 1
+        time.sleep(0.35)
+    reader.join(timeout=5)
+    if show:
+        sys.stdout.write("\r" + " " * width + "\r")
+        sys.stdout.flush()
+
+    code = proc.returncode if proc.returncode is not None else 1
+    if code != 0:
+        warn(f"{action}失败（退出码 {code}），最后几行 pip 输出：")
+        for line in state.tail[-PIP_TAIL_LINES:]:
+            print("      " + line)
+    return code
+
+
 def install_dependencies(root: Path) -> bool:
     """把新版 requirements.txt 装进 .venv；返回是否成功（.venv 缺失视为跳过）。"""
     venv_py = root / ".venv" / "Scripts" / "python.exe"
@@ -433,10 +599,15 @@ def install_dependencies(root: Path) -> bool:
     req = root / "requirements.txt"
     if not req.is_file():
         return True
+    mode = _pip_progress_mode(venv_py, root)
     mirrors = ("https://pypi.tuna.tsinghua.edu.cn/simple", "https://pypi.org/simple")
     for index, mirror in enumerate(mirrors, 1):
-        info(f"安装依赖（{index}/{len(mirrors)}：{mirror}）…")
-        proc = subprocess.run(
+        info(
+            f"安装依赖（{index}/{len(mirrors)}：{mirror}）…"
+            "首次要下载几十 MB，下面一行进度会实时刷新"
+        )
+        started = time.monotonic()
+        code = _run_pip(
             [
                 str(venv_py),
                 "-m",
@@ -447,13 +618,16 @@ def install_dependencies(root: Path) -> bool:
                 "--timeout",
                 "60",
                 "--upgrade",
+                "--progress-bar",
+                mode,
                 "-r",
                 str(req),
             ],
-            cwd=str(root),
+            root,
+            "安装依赖",
         )
-        if proc.returncode == 0:
-            info("依赖安装完成")
+        if code == 0:
+            info(f"依赖安装完成（用时 {_fmt_elapsed(time.monotonic() - started)}）")
             return True
     warn("依赖安装失败，可先忽略；下次启动 start.bat 检测到环境不可用时会自动重建")
     return False
