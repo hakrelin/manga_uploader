@@ -325,6 +325,64 @@ def _chapter_summary(comic_dir: str) -> dict[str, Any]:
     }
 
 
+# 这些字段不是“按漫画信息组合”出来的（来自 config.yaml 或手填），
+# 前端判断“自动值 / 手写覆盖”时跳过它们
+PLATFORM_SETTING_FIELDS: dict[str, set[str]] = {
+    "ehentai": {"category", "language", "langtype"},
+    "bilibili": {"list_name"},
+    "tieba": {"forum"},
+    "zaimanhua": {"cate"},
+}
+
+
+def _compose_platform_content(
+    chapter: Chapter, data: dict[str, Any], tags: list[str]
+) -> dict[str, dict[str, str]]:
+    """把漫画信息组合成各平台发布内容（composer 的那套规则）。"""
+    return {
+        "ehentai": {
+            "category": str(
+                ((data.get("platforms") or {}).get("ehentai") or {}).get("category") or ""
+            ),
+            "language": str(
+                ((data.get("platforms") or {}).get("ehentai") or {}).get("language")
+                or "Chinese"
+            ),
+            "langtype": str(
+                ((data.get("platforms") or {}).get("ehentai") or {}).get("langtype") or ""
+            ),
+            "gname_en": composer.ehentai_title_en(chapter),
+            "gname_jp": composer.ehentai_title_jp(chapter),
+            "comment": composer.ehentai_comment(chapter),
+        },
+        "bilibili": {
+            "title": composer.platform_title(chapter, "bilibili"),
+            "description": composer.platform_body(chapter, "bilibili"),
+            # 标签默认用漫画顶层标签；文集沿用已保存值（需手选/手填）
+            "tags": ", ".join(tags),
+            "list_name": str(
+                ((data.get("platforms") or {}).get("bilibili") or {}).get("list_name") or ""
+            ),
+        },
+        "tieba": {
+            "title": composer.platform_title(chapter, "tieba"),
+            "description": composer.platform_body(chapter, "tieba"),
+        },
+        "zaimanhua": {
+            "work_name": composer.zaim_work_name(chapter),
+            "chapter_name": composer.zaim_chapter_name(chapter),
+            "introduction": composer.zaim_introduction(chapter),
+            "cate": str(
+                ((data.get("platforms") or {}).get("zaimanhua") or {}).get("cate") or ""
+            ),
+        },
+        "xiaoheihe": {
+            "title": composer.xiaoheihe_title(chapter),
+            "description": composer.xiaoheihe_body(chapter),
+        },
+    }
+
+
 def _book_to_compose(comic_dir: str, book: dict[str, Any]) -> dict[str, Any]:
     """把漫画信息表单组合成各平台发布内容（纯计算，不写盘）。
 
@@ -387,46 +445,29 @@ def _book_to_compose(comic_dir: str, book: dict[str, Any]) -> dict[str, Any]:
         for key in ("event_en", "author_en", "circle_en", "title_en")
     }
 
-    composed: dict[str, dict[str, str]] = {}
-    composed["ehentai"] = {
-        "category": str(
-            ((data.get("platforms") or {}).get("ehentai") or {}).get("category") or ""
-        ),
-        "language": str(
-            ((data.get("platforms") or {}).get("ehentai") or {}).get("language")
-            or "Chinese"
-        ),
-        "langtype": str(
-            ((data.get("platforms") or {}).get("ehentai") or {}).get("langtype") or ""
-        ),
-        "gname_en": composer.ehentai_title_en(chapter),
-        "gname_jp": composer.ehentai_title_jp(chapter),
-        "comment": composer.ehentai_comment(chapter),
-    }
-    for plat in ("bilibili", "tieba"):
-        composed[plat] = {
-            "title": composer.platform_title(chapter, plat),
-            "description": composer.platform_body(chapter, plat),
-        }
-    # B站专栏专属：标签默认用漫画顶层标签；文集沿用已保存值（需手选/手填）
-    composed["bilibili"]["tags"] = ", ".join(tags)
-    composed["bilibili"]["list_name"] = str(
-        ((data.get("platforms") or {}).get("bilibili") or {}).get("list_name") or ""
+    composed = _compose_platform_content(chapter, data, tags)
+    # “纯自动”组合结果：忽略 manga.json 里已存的平台覆盖，只用漫画信息算一遍。
+    # 前端拿它判断页面上的值到底是自动组合出来的、还是用户手写的覆盖：
+    # 两者一样就不再当成手写，避免“改过标题/简介后各平台内容却不更新”。
+    plain = copy.deepcopy(data)
+    plain.pop("platforms", None)
+    plain_chapter = Chapter(
+        key="root",
+        title=str(plain.get("title") or root.name),
+        description=str(plain.get("description") or "").strip(),
+        tags=tags,
+        author=str(plain.get("author") or "").strip(),
+        source_dir=root,
+        raw=plain,
     )
-    composed["zaimanhua"] = {
-        "work_name": composer.zaim_work_name(chapter),
-        "chapter_name": composer.zaim_chapter_name(chapter),
-        "introduction": composer.zaim_introduction(chapter),
-        "cate": str(
-            ((data.get("platforms") or {}).get("zaimanhua") or {}).get("cate") or ""
-        ),
-    }
-    composed["xiaoheihe"] = {
-        "title": composer.xiaoheihe_title(chapter),
-        "description": composer.xiaoheihe_body(chapter),
-    }
+    auto = _compose_platform_content(plain_chapter, plain, tags)
+    for plat, self_ref in PLATFORM_SETTING_FIELDS.items():
+        for key in self_ref:
+            if plat in auto and key in auto[plat]:
+                auto[plat][key] = ""
     return {
         "platforms_content": composed,
+        "platforms_auto": auto,
         "romaji": romaji,
         "language": str(data.get("language") or "Chinese"),
     }
@@ -481,9 +522,17 @@ def _save_comic_meta(
         if not isinstance(existing, dict):
             existing = {}
             data["platforms"] = existing
+        # 与“按漫画信息自动组合”结果一致的平台字段不写：它们不是手写覆盖，
+        # 写进 manga.json 等于把自动内容固化，以后改标题/简介就不跟着变了
+        # （旧版本就是这么写的，所以这里顺手把一致值清掉，等于自愈）
+        try:
+            auto = _book_to_compose(comic_dir, dict(book or {})).get("platforms_auto") or {}
+        except Exception:
+            auto = {}
         for plat, fields in platforms.items():
             if not isinstance(fields, dict):
                 continue
+            auto_fields = auto.get(plat) if isinstance(auto.get(plat), dict) else {}
             store = existing.get(plat)
             if not isinstance(store, dict):
                 store = {}
@@ -491,6 +540,9 @@ def _save_comic_meta(
             touched = False
             for fkey, fval in fields.items():
                 text = str(fval or "").strip()
+                expected = str(auto_fields.get(fkey) or "").strip()
+                if text and expected and text == expected:
+                    text = ""
                 if text:
                     if store.get(fkey) != text:
                         store[fkey] = text

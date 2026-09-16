@@ -421,7 +421,75 @@ createApp({
 
     function markPlatformTouched(plat, field) {
       platformTouched[plat][field] = true;
+      platformEdited[plat][field] = true; // 本次会话里手写过的（提示时不用再提醒用户）
     }
+
+    // 每个平台字段「最后一次纯自动组合出来的值」（忽略 manga.json 里已存的覆盖），
+    // 用来区分“自动内容”和“手写覆盖”，并发现“改信息前留下的旧值”
+    const platformAuto = reactive({});
+    const platformEdited = reactive({});
+    Object.keys(PLATFORM_CONTENT_SCHEMA).forEach((plat) => {
+      platformAuto[plat] = {};
+      platformEdited[plat] = {};
+    });
+
+    // 把一份组合结果合并到页面上的各平台发布内容：
+    // - 留空的字段：直接显示自动组合结果（= 跟随漫画信息，不写盘）
+    // - 与自动结果相同的字段：说明只是以前自动写入的值，跟着信息走（不再当成手写覆盖）
+    // - 与自动结果不同、且没在本次编辑过：按最新信息刷新（避免“改了标题却不更新”）
+    // - 真手写的字段（输入框里改过）：保留，除非 force（按漫画信息重新生成）
+    function mergeComposed(pc, force = false) {
+      Object.keys(pc || {}).forEach((plat) => {
+        const values = pc[plat] || {};
+        if (!platformContent[plat] || !platformAuto[plat]) return;
+        Object.keys(values).forEach((field) => {
+          if (!(field in platformContent[plat])) return;
+          const auto = values[field] || "";
+          platformAuto[plat][field] = auto;
+          if (!auto) return;
+          const cur = platformContent[plat][field];
+          if (force) {
+            platformContent[plat][field] = auto;
+            platformTouched[plat][field] = false;
+            return;
+          }
+          if (!cur) {
+            platformContent[plat][field] = auto;
+            return;
+          }
+          if (cur === auto) {
+            // 内容和自动组合一致：不算手写覆盖，之后跟着漫画信息走
+            platformTouched[plat][field] = false;
+            return;
+          }
+          if (!platformTouched[plat][field]) platformContent[plat][field] = auto;
+        });
+      });
+    }
+
+    // 与当前漫画信息组合结果不一致的字段：可能是“改信息前”留下的旧值，
+    // 也可能是用户手写的覆盖（手写是在文件里、还是刚在页面上改的）
+    function platformDiffRows() {
+      const rows = [];
+      Object.keys(PLATFORM_CONTENT_SCHEMA).forEach((plat) => {
+        const auto = platformAuto[plat] || {};
+        PLATFORM_CONTENT_SCHEMA[plat].forEach((f) => {
+          const cur = String(platformContent[plat][f.key] || "").trim();
+          if (!cur) return;
+          const label = `${PLAT_LABELS[plat] || plat}·${f.label.split("（")[0]}`;
+          if (platformEdited[plat][f.key]) {
+            rows.push({ label, session: true });
+            return;
+          }
+          const expect = String(auto[f.key] || "").trim();
+          if (!expect || cur === expect) return;
+          rows.push({ label, session: false });
+        });
+      });
+      return rows;
+    }
+    const platformDrift = computed(() =>
+      platformDiffRows().filter((r) => !r.session).map((r) => r.label));
 
     // 按当前漫画信息实时组合各平台发布内容（不写盘），并回填留空的罗马音
     async function refreshCompose(forceNonTouched = false) {
@@ -438,21 +506,30 @@ createApp({
           if (romaji[k] && !metaForm[k]) metaForm[k] = romaji[k];
         });
         if (romaji.title_en && !metaForm.title_en) metaForm.title_en = romaji.title_en;
-        const pc = r.platforms_content || {};
-        Object.keys(pc).forEach((plat) => {
-          const values = pc[plat] || {};
-          Object.keys(values).forEach((field) => {
-            // 未手写字段跟随当前漫画信息自动组合；手写/已保存覆盖字段保留
-            if (values[field] && !platformTouched[plat][field]
-                && (forceNonTouched || !platformContent[plat][field])) {
-              platformContent[plat][field] = values[field];
-            }
-          });
-        });
+        // platforms_auto = 不参考已存覆盖、纯按漫画信息算出来的值（后端提供）
+        mergeComposed(r.platforms_auto || r.platforms_content || {}, forceNonTouched);
       } catch (e) {
         // 组合失败不阻塞编辑（可能是漫画目录未加载完整）
       } finally {
         composing = false;
+      }
+    }
+
+    // 一键把各平台发布内容按当前漫画信息重算（会覆盖手写的字段）
+    async function regeneratePlatformContent() {
+      if (!comicDir.value.trim()) { toastMsg("先选择一本漫画"); return; }
+      const rows = platformDiffRows();
+      if (rows.length && !window.confirm(
+        "将按当前「漫画信息」重新生成各平台发布内容，覆盖这些字段里已有的内容：\n\n"
+        + rows.map((r) => "  · " + r.label + (r.session ? "（本次手写）" : "")).join("\n")
+        + "\n\n（生成后再点「保存内容」写入 manga.json）继续吗？"
+      )) return;
+      busy.value = true;
+      try {
+        await refreshCompose(true);
+        toastMsg("已按当前漫画信息重新生成，点「保存内容」写入 manga.json");
+      } finally {
+        busy.value = false;
       }
     }
 
@@ -1200,13 +1277,29 @@ createApp({
 
     // 漫画信息 + 各平台发布内容一次写盘（一键发布/云端定时都用它，
     // 避免朋友在“各平台发布内容”里填的标题/简介没写进 manga.json）
+    // 各平台发布内容只写「手写过」的字段：没手写的留空 = 发布时由 composer
+    // 按漫画信息实时组合。以前把自动组合结果也写进 manga.json，等于把它固化成
+    // 覆盖值，之后再改标题/简介就不会跟着更新了。
+    function platformOverridesPayload() {
+      const out = {};
+      Object.keys(PLATFORM_CONTENT_SCHEMA).forEach((plat) => {
+        out[plat] = {};
+        PLATFORM_CONTENT_SCHEMA[plat].forEach((f) => {
+          out[plat][f.key] = platformTouched[plat][f.key]
+            ? String(platformContent[plat][f.key] == null ? "" : platformContent[plat][f.key])
+            : "";
+        });
+      });
+      return out;
+    }
+
     async function saveContentMeta() {
       await api("/api/meta", {
         method: "POST", json: true,
         body: JSON.stringify({
           dir: comicDir.value.trim(),
           book: metaBook(),
-          platforms: JSON.parse(JSON.stringify(platformContent)),
+          platforms: platformOverridesPayload(),
         }),
       });
     }
@@ -1264,19 +1357,18 @@ createApp({
             book: metaBook(),
           }),
         });
-        // 2) 用最新漫画信息重新组合各平台发布内容并展示
-        //    （未手写字段覆盖为新组合；用户手写的平台覆盖保留）
-        await refreshCompose(true);
-        // 3) 平台栏（含组合结果与手写覆盖）一并写回 manga.json
+        // 2) 各平台发布内容跟随最新漫画信息刷新（手写覆盖保留）
+        await refreshCompose();
+        // 3) 只把手写的平台字段写回 manga.json；其余留给 composer 实时组合
         await api("/api/meta", {
           method: "POST", json: true,
           body: JSON.stringify({
             dir: comicDir.value.trim(),
             book: {},
-            platforms: JSON.parse(JSON.stringify(platformContent)),
+            platforms: platformOverridesPayload(),
           }),
         });
-        toastMsg("内容已保存：漫画信息 + 各平台发布内容已更新");
+        toastMsg("内容已保存：漫画信息已更新；各平台发布内容只保存你手写过的字段（其余自动组合）");
         await loadComic();
       } catch (e) {
         toastMsg("保存失败：" + e.message);
@@ -2412,7 +2504,7 @@ createApp({
       aiForm, aiStatus, aiSave, aiTest, dictOpen,
       PLAT_LABELS, pageUrl, META_EXTRA, META_EXTRA_EXTRA, PLATFORM_CONTENT_SCHEMA, platformContent,
       SOURCE_CHOICES, CATE_OPTIONS,
-      markPlatformTouched,
+      markPlatformTouched, platformDrift, regeneratePlatformContent,
       anyUnconfigured, publishTargetsText, xhSettings,
       quickTargets, quickPlatHint, quickChipTitle, toggleQuickPlatform,
       pubProgress, pubChips, pubPercent, stageLabel,

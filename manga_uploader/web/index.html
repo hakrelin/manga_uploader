@@ -204,6 +204,19 @@ try {
             <div class="meta-sec">
               <details class="pc-fold">
                 <summary class="pc-fold-head">各平台发布内容（默认自动组合，可手改覆盖）</summary>
+                <div class="pc-toolbar">
+                  <button class="btn btn-ghost btn-sm" :disabled="busy"
+                          @click="regeneratePlatformContent"
+                          title="按当前「漫画信息」重算各平台标题/正文等（会覆盖下面手写的内容）">
+                    ↻ 按漫画信息重新生成
+                  </button>
+                  <span class="hint-text">留空 = 每次发布时按漫画信息自动组合；手写过的字段才会写进 manga.json。</span>
+                </div>
+                <p v-if="platformDrift.length" class="pc-drift">
+                  ⚠ 这些字段和当前漫画信息组合出来的内容不一致：{{ platformDrift.join("、") }}。<br>
+                  如果是<b>改信息之前</b>留下的旧值，点上面的「↻ 按漫画信息重新生成」再「保存内容」即可刷新；
+                  是你特意手写的就忽略这条（发布时以手写内容为准）。
+                </p>
                 <div v-for="(schema, plat) in PLATFORM_CONTENT_SCHEMA" :key="plat" class="pc-plat">
                   <div class="pc-plat-head">
                     <span class="plat-dot" :class="'dot-' + plat"></span>{{ PLAT_LABELS[plat] || plat }}
@@ -222,7 +235,8 @@ try {
                     </div>
                   </div>
                 </div>
-                <p class="hint-text">留空 = 按漫画信息自动组合（composer）；填写后以这里为准，随「保存内容」写入 manga.json。</p>
+                <p class="hint-text">留空 = 按漫画信息自动组合（composer）；填写后以这里为准，
+                  随「保存内容」写入 manga.json（没写过的字段不会再被写进文件，所以改标题/简介会一直跟着变）。</p>
               </details>
             </div>
 
@@ -754,7 +768,11 @@ try {
           改动立刻对「一键发布」「云端定时」生效；想长期保留，再点「平台账号」或「设置」页的「保存配置」。</li>
         <li>单张超过 10MB 的图片发布时会自动压缩；预览里显示的是缩略图，不影响上传原图。</li>
         <li>基本信息里的中文标题是各平台标题的主要来源；输入日文标题后可自动回填罗马音（可在账号页配置 AI 接口）。</li>
-        <li>“各平台发布内容”默认按漫画信息自动组合，留空即自动，手写后会以手写内容为准，保存后写回 manga.json。</li>
+        <li>“各平台发布内容”默认按漫画信息自动组合：<b>留空的字段</b>每次发布都会按当前标题/作者/简介实时组合，
+          不会写进 manga.json；<b>你手写过的字段</b>才会被存下来，发布时以它为准。所以改了基本信息后，
+          各平台标题/正文会自动跟着变（手写的那几栏除外）。</li>
+        <li>改了基本信息却发现某些平台栏还是旧内容（多半是早期版本把自动内容也写进了 manga.json）：
+          点那一栏上方的「↻ 按漫画信息重新生成」→ 再点「保存内容」即可清掉旧值；橙色 ⚠ 提示会列出这些字段。</li>
       </ul>
 
       <h3>页面编辑与 staff 页</h3>

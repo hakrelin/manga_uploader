@@ -1558,6 +1558,25 @@ html, body {
   margin-bottom: 10px;
 }
 
+/* 各平台发布内容：工具条与“旧值”提示 */
+.pc-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+  margin: 4px 0 10px;
+}
+.pc-drift {
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--warn);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--warn);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
 /* ============ 浮动日志 ============ */
 
 /* B站专栏文集选择列表 */

@@ -1,3 +1,4 @@
+import json
 import shutil
 import tempfile
 import unittest
@@ -9,7 +10,7 @@ from PIL import Image
 from manga_uploader.comic import load_chapters, platform_meta
 from manga_uploader.comic import page_sequence_warnings
 from manga_uploader.config import load_config, missing_cookies
-from manga_uploader.web import _book_to_compose
+from manga_uploader.web import _book_to_compose, _save_comic_meta
 from manga_uploader.publishers.ehentai import _parse_upload_page
 from manga_uploader.publishers.tieba import _find_first
 from manga_uploader.http_client import _clean_proxy_url, detect_system_proxy
@@ -156,6 +157,76 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(bili["title"], "【茶与金平糖汉化组】魔理沙啊愿你安息")
         self.assertIn("作者：加陽きら", bili["description"])
         self.assertIn("[Chinese]", out["platforms_content"]["ehentai"]["gname_en"])
+
+    def test_book_to_compose_auto_ignores_stored_overrides(self):
+        """platforms_auto = 纯按漫画信息组合（不参考已存的平台覆盖），
+        前端用它区分“自动内容”和“手写覆盖”。"""
+        (self.demo / "manga.json").write_text(
+            json.dumps(
+                {
+                    "title": "新标题",
+                    "author": "新作者",
+                    "description": "新简介",
+                    "group": "新汉化组",
+                    "tags": ["东方", "汉化"],
+                    "platforms": {
+                        "bilibili": {
+                            "title": "【旧汉化组】旧标题",
+                            "description": "作者：旧作者\n简介：旧简介",
+                            "tags": "旧标签",
+                            "list_name": "旧文集",
+                        }
+                    },
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        out = _book_to_compose(str(self.demo), {})
+        # 展示值（platforms_content）仍带已存覆盖
+        self.assertEqual(out["platforms_content"]["bilibili"]["title"], "【旧汉化组】旧标题")
+        # 自动值（platforms_auto）忽略覆盖，按漫画信息重新算
+        auto = out["platforms_auto"]["bilibili"]
+        self.assertEqual(auto["title"], "【新汉化组】新标题")
+        self.assertIn("作者：新作者", auto["description"])
+        self.assertEqual(auto["tags"], "东方, 汉化")
+        # 非“组合出来”的字段（文集、吧名等）不给自动值，前端不会拿它覆盖
+        self.assertEqual(auto["list_name"], "")
+
+    def test_save_comic_meta_drops_auto_equal_values(self):
+        """保存时把“与自动组合一致”的平台字段丢掉：它们不是手写覆盖，
+        写进 manga.json 会固化成旧值（这正是“改了信息却不更新”的根因）。"""
+        path = _save_comic_meta(
+            str(self.demo),
+            {"title": "示例漫画", "author": "作者名"},
+            {
+                "bilibili": {
+                    # 与自动组合一致 → 不写
+                    "title": "示例漫画",
+                    # 手写的正文 → 保留
+                    "description": "这是我自己手写的正文。",
+                }
+            },
+        )
+        data = json.loads(path.read_text(encoding="utf-8"))
+        bili = data["platforms"]["bilibili"]
+        self.assertNotIn("title", bili)
+        self.assertEqual(bili["description"], "这是我自己手写的正文。")
+
+    def test_save_comic_meta_clears_stale_auto_override(self):
+        """老版本写进去的“自动值覆盖”会在下次保存时被清掉（自愈）。"""
+        meta_file = self.demo / "manga.json"
+        data = json.loads(meta_file.read_text(encoding="utf-8"))
+        data["platforms"]["bilibili"] = {"title": "示例漫画"}
+        meta_file.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        out = _book_to_compose(str(self.demo), {"title": "示例漫画"})
+        auto_title = out["platforms_auto"]["bilibili"]["title"]
+        # 存的就是“当时自动组合出来的标题” → 保存时应被清掉
+        path = _save_comic_meta(
+            str(self.demo), {"title": "示例漫画"}, {"bilibili": {"title": auto_title}}
+        )
+        saved = json.loads(path.read_text(encoding="utf-8"))
+        self.assertNotIn("title", saved["platforms"]["bilibili"])
 
     def test_save_config_accepts_frontend_wrapped_payload(self):
         """前端 POST /api/config 发送 {config:{common,platforms}}；
