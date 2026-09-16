@@ -58,6 +58,8 @@ const PLATFORM_CONTENT_SCHEMA = {
   bilibili: [
     { key: "title", label: "标题（默认【汉化组】中文标题）", kind: "text" },
     { key: "description", label: "正文（默认 作者/社团/简介）", kind: "textarea" },
+    { key: "tags", label: "标签（逗号分隔，最多 10 个；留空用漫画顶层标签）", kind: "text" },
+    { key: "list_name", label: "专栏文集（留空=不加入；不存在会自动新建）", kind: "text" },
   ],
   tieba: [
     { key: "forum", label: "目标吧名（多个用逗号分隔，依次串行发布）", kind: "text" },
@@ -978,6 +980,71 @@ createApp({
 
     function pasteCookie(card) {
       modal.value = { kind: "paste", title: "粘贴整段 Cookie · " + card.label, key: card.key, text: "" };
+    }
+
+    // ---------------- B站专栏文集 ----------------
+
+    async function biliListsOpen(card) {
+      const settings = (config.platforms.bilibili || {}).settings || {};
+      modal.value = {
+        kind: "bililists",
+        title: "选择专栏文集 · " + (card ? card.label : "B站"),
+        lists: [], loading: true, error: "", busy: false,
+        newName: "", picked: String(settings.list_name || ""),
+      };
+      try {
+        const r = await api("/api/bilibili/lists", {
+          method: "POST", json: true, body: JSON.stringify({ config: payload() }),
+        });
+        if (!r.ok) throw new Error(r.error || "读取失败");
+        if (modal.value && modal.value.kind === "bililists") modal.value.lists = r.lists || [];
+      } catch (e) {
+        if (modal.value && modal.value.kind === "bililists") {
+          modal.value.error = "读取文集失败：" + e.message;
+        }
+      } finally {
+        if (modal.value && modal.value.kind === "bililists") modal.value.loading = false;
+      }
+    }
+
+    // 文集只记名字：发布时按名字找（找不到自动新建），这样每本漫画也能在
+    // 「各平台发布内容」里单独覆盖，不会被全局 id 顶掉
+    function applyBiliList(name) {
+      const p = config.platforms.bilibili;
+      if (!p) return;
+      if (!p.settings) p.settings = {};
+      p.settings.list_name = name || "";
+    }
+    function pickBiliList(item) {
+      applyBiliList(item.name);
+      toastMsg("文集已设为：" + item.name);
+      modal.value = null;
+    }
+    function clearBiliList() {
+      applyBiliList("");
+      toastMsg("已设为不加入文集");
+      modal.value = null;
+    }
+    async function createBiliList() {
+      const m = modal.value;
+      if (!m || m.kind !== "bililists" || !m.newName) return;
+      m.busy = true;
+      try {
+        const r = await api("/api/bilibili/list-create", {
+          method: "POST", json: true,
+          body: JSON.stringify({ config: payload(), name: m.newName }),
+        });
+        if (!r.ok) throw new Error(r.error || "新建失败");
+        applyBiliList(r.name || m.newName);
+        toastMsg((r.existing ? "已有同名文集，已选用：" : "已新建并选用文集：")
+          + (r.name || m.newName));
+        modal.value = null;
+      } catch (e) {
+        m.error = "新建文集失败：" + e.message;
+        toastMsg("新建文集失败：" + e.message);
+      } finally {
+        if (modal.value && modal.value.kind === "bililists") modal.value.busy = false;
+      }
     }
 
     // ---------------- B站扫码 ----------------
@@ -2352,6 +2419,7 @@ createApp({
       platShort, platStatus, connected, extrasOf, extraLabel, staleAccountsText,
       saveConfig, openAccount, toggleExpand, openLogin,
       checkOne, checkAll, pasteCookie, qrLogin, detectProxy,
+      biliListsOpen, pickBiliList, clearBiliList, createBiliList,
       fieldMapOpen, onSourceChange, pickDir, pickZip, loadComic, onDrop,
       fillRomajiNames, fillRomajiTitle, prefillTouhouSeries,
       previewPlan, previewFull, publish, modalOk,

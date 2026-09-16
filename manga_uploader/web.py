@@ -68,6 +68,8 @@ from .webui import (
     write_quick_meta,
     write_bcover,
     write_staff_rows,
+    bilibili_create_list,
+    bilibili_my_lists,
     bilibili_qr_new,
     bilibili_qr_poll,
 )
@@ -301,7 +303,16 @@ def _chapter_summary(comic_dir: str) -> dict[str, Any]:
     platforms_content: dict[str, dict[str, str]] = {}
     for plat, schema in composer.PLATFORM_SCHEMA.items():
         p = platforms_meta.get(plat) if isinstance(platforms_meta.get(plat), dict) else {}
-        platforms_content[plat] = {f["key"]: str(p.get(f["key"]) or "") for f in schema}
+        fields: dict[str, str] = {}
+        for f in schema:
+            value = p.get(f["key"])
+            # 标签可能被手写成数组，展示成逗号分隔字符串
+            fields[f["key"]] = (
+                ", ".join(str(v) for v in value)
+                if isinstance(value, (list, tuple))
+                else str(value or "")
+            )
+        platforms_content[plat] = fields
     return {
         "meta": meta,
         "platforms_content": platforms_content,
@@ -397,6 +408,11 @@ def _book_to_compose(comic_dir: str, book: dict[str, Any]) -> dict[str, Any]:
             "title": composer.platform_title(chapter, plat),
             "description": composer.platform_body(chapter, plat),
         }
+    # B站专栏专属：标签默认用漫画顶层标签；文集沿用已保存值（需手选/手填）
+    composed["bilibili"]["tags"] = ", ".join(tags)
+    composed["bilibili"]["list_name"] = str(
+        ((data.get("platforms") or {}).get("bilibili") or {}).get("list_name") or ""
+    )
     composed["zaimanhua"] = {
         "work_name": composer.zaim_work_name(chapter),
         "chapter_name": composer.zaim_chapter_name(chapter),
@@ -920,6 +936,10 @@ class WebHandler(BaseHTTPRequestHandler):
             self._api_tail_add()
         elif path == "/api/bcover":
             self._api_bcover()
+        elif path == "/api/bilibili/lists":
+            self._api_bilibili_lists()
+        elif path == "/api/bilibili/list-create":
+            self._api_bilibili_list_create()
         elif path == "/api/apply":
             self._api_apply_edits()
         elif path == "/api/remote-schedule":
@@ -1545,6 +1565,34 @@ class WebHandler(BaseHTTPRequestHandler):
             f"{Path(comic_dir).name}（{chapter_key}，{name}，共 {count} 页）",
         )
         self._json(200, {"ok": True, "added": added, "name": name, "pages": count})
+
+    # ---------- B站专栏文集（列出 / 新建） ----------
+
+    def _api_bilibili_lists(self) -> None:
+        """列出当前 B站 账号的专栏文集（用页面里的 Cookie，只读）。"""
+        data = self._read_json()
+        try:
+            lists = bilibili_my_lists(data.get("config") or {})
+        except Exception as exc:
+            self._json(200, {"ok": False, "lists": [], "error": str(exc)})
+            return
+        self._json(200, {"ok": True, "lists": lists})
+
+    def _api_bilibili_list_create(self) -> None:
+        """新建 B站 专栏文集（同名时复用已有的）。"""
+        data = self._read_json()
+        name = str(data.get("name") or "").strip()
+        try:
+            info = bilibili_create_list(data.get("config") or {}, name)
+        except Exception as exc:
+            self._json(200, {"ok": False, "error": str(exc)})
+            return
+        self.server.state.ring.append(
+            "INFO",
+            f"{'已有同名文集' if info.get('existing') else '已新建 B站 专栏文集'}："
+            f"{info.get('name')}（id={info.get('id')}）",
+        )
+        self._json(200, {"ok": True, **info})
 
     def _api_bcover(self) -> None:
         """GET 读 B站封面设置；POST 保存设置并可上传自定义封面文件。"""

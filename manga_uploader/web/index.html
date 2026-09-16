@@ -382,6 +382,7 @@ try {
             <span class="toolbar-spacer"></span>
             <button class="btn btn-ghost btn-sm" @click="openLogin(card)">打开登录页</button>
             <button v-if="card.qr" class="btn btn-ghost btn-sm" @click="qrLogin(card)">扫码登录</button>
+            <button v-if="card.key === 'bilibili'" class="btn btn-ghost btn-sm" @click="biliListsOpen(card)">选择/新建文集…</button>
             <button v-if="card.field_map" class="btn btn-ghost btn-sm" @click="fieldMapOpen(card.key)">上传表单填写…</button>
             <button class="btn btn-ghost btn-sm" @click="pasteCookie(card)">粘贴整段 Cookie</button>
             <button class="btn btn-ghost btn-sm" :disabled="busy" @click="checkOne(card.key)">检查登录</button>
@@ -771,6 +772,10 @@ try {
       <ul>
         <li>在对应平台已登录的浏览器里复制 Cookie 填入；过期会被检查接口提示，重新复制即可。</li>
         <li>常用参数（B 站发专栏/动态、贴吧每楼图数、小黑盒草稿与图文/文章、再漫画类型等）都在平台卡片里设置，不用手改配置文件。</li>
+        <li>B 站专栏的<b>标签</b>与<b>文集</b>：卡片里可直接填「专栏默认标签 / 专栏文集」，
+          或点「选择/新建文集…」从账号现有文集里挑一个（没有就当场新建）；
+          某一本漫画要单独用别的标签/文集时，在①区「各平台发布内容 → B站」里改。
+          文集名留空 = 不加入文集；填了名字但账号里还没有时，发布前会自动新建。</li>
         <li>e-hentai 建议用 zip 整包上传：打包与站点处理阶段会较慢，属正常现象，等进度条走完即可。</li>
         <li>发布前建议用「全文预览」检查格式与缺页；正式发布后不可撤销，小范围测试可先启用小黑盒“存草稿”。</li>
       </ul>
@@ -847,10 +852,40 @@ try {
           <p class="hint-text">来源选「manga.json/config 字段」时参数填键名（如 title_jpn）；选「固定文本」填文本。</p>
         </div>
       </template>
+
+      <template v-else-if="modal.kind === 'bililists'">
+        <p class="hint-text">点一个文集即可填入「专栏文集」（发布时该文集不存在会自动新建）。
+          这里读的是当前 B站 账号里的专栏文集。</p>
+        <div v-if="modal.loading" class="hint-text"><span class="spin"></span> 正在读取文集…</div>
+        <p v-else-if="modal.error" class="danger-text">{{ modal.error }}</p>
+        <template v-else>
+          <div v-if="modal.lists.length" class="bili-lists">
+            <button v-for="l in modal.lists" :key="l.id" class="bili-list-item"
+                    :class="{ on: modal.picked === l.name }" @click="pickBiliList(l, $event)">
+              <span class="bili-list-name">{{ l.name }}</span>
+              <span class="bili-list-meta">{{ l.articles_count }} 篇 · id {{ l.id }}</span>
+            </button>
+          </div>
+          <p v-else class="hint-text">账号里还没有专栏文集，可以在下面新建一个。</p>
+        </template>
+        <div class="input-row" style="margin-top:12px">
+          <input type="text" class="input" v-model.trim="modal.newName"
+                 placeholder="新建文集名，如：东方" @keyup.enter="createBiliList">
+          <button class="btn" :disabled="modal.busy || !modal.newName" @click="createBiliList">
+            {{ modal.busy ? '处理中…' : '新建并选用' }}
+          </button>
+        </div>
+      </template>
     </div>
     <div class="modal-foot">
-      <button class="btn btn-ghost" @click="modal = null">取消</button>
-      <button class="btn btn-primary" @click="modalOk">确定</button>
+      <template v-if="modal.kind === 'bililists'">
+        <button class="btn btn-ghost" @click="clearBiliList">不加入文集</button>
+        <button class="btn btn-primary" @click="modal = null">关闭</button>
+      </template>
+      <template v-else>
+        <button class="btn btn-ghost" @click="modal = null">取消</button>
+        <button class="btn btn-primary" @click="modalOk">确定</button>
+      </template>
     </div>
   </div>
 </div>

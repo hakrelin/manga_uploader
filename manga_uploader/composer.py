@@ -805,6 +805,8 @@ PLATFORM_SCHEMA: dict[str, list[dict[str, str]]] = {
     "bilibili": [
         {"key": "title", "label": "标题（【汉化组】中文标题）", "kind": "text"},
         {"key": "description", "label": "正文（作者/社团/简介）", "kind": "textarea"},
+        {"key": "tags", "label": "标签（逗号分隔，最多 10 个）", "kind": "text"},
+        {"key": "list_name", "label": "文集名（留空=不加入；不存在会自动新建）", "kind": "text"},
     ],
     "tieba": [
         {"key": "forum", "label": "目标吧名（多个用逗号分隔，依次串行发布）", "kind": "text"},

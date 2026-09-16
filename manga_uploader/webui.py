@@ -99,6 +99,8 @@ PLATFORM_CARDS: list[dict[str, Any]] = [
             "image_delay": {"kind": "number", "label": "每张图随机延时上限(秒，0~60)"},
             "original": {"kind": "select", "label": "原创声明", "options": [("1", "原创"), ("0", "非原创")]},
             "reprint": {"kind": "select", "label": "转载属性", "options": [("0", "原创/未标转载"), ("1", "转载")]},
+            "tags": {"kind": "text", "label": "专栏默认标签（逗号分隔，最多 10 个）"},
+            "list_name": {"kind": "text", "label": "专栏文集（留空=不加入；不存在自动新建）"},
             "topics": {"kind": "text", "label": "图文动态话题（逗号分隔）"},
             "image_category": {"kind": "text", "label": "动态图片分类 daily/draw/cos"},
         },
@@ -230,6 +232,61 @@ EXTRA_OPTIONS: dict[str, Any] = {
 
 def cate_label(value: object) -> str:
     return CATE_LABELS.get(str(value), str(value))
+
+
+# ------------------------------------------------------------ B站专栏文集
+
+def bilibili_publisher(payload: dict[str, Any]):
+    """按页面里传上来的 Cookie 造一个 B站发布器（用于读写专栏文集）。"""
+    from .publishers.bilibili import BilibiliPublisher
+
+    app = build_app(payload)
+    cfg = app.platforms.get("bilibili")
+    if cfg is None:
+        raise RuntimeError("配置里没有 B站（platforms.bilibili）")
+    missing = [name for name in ("SESSDATA", "bili_jct") if not cfg.cookies.get(name)]
+    if missing:
+        raise RuntimeError(
+            "缺少 Cookie：" + "、".join(missing) + "（先到「平台账号」把 B站 Cookie 填好）"
+        )
+    return BilibiliPublisher(cfg, app.common)
+
+
+def bilibili_my_lists(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """列出当前 B站 账号的专栏文集（创作端接口，含未公开），供前端选择。"""
+    rows: list[dict[str, Any]] = []
+    for item in bilibili_publisher(payload)._my_lists():
+        try:
+            list_id = int(item.get("id") or 0)
+        except (TypeError, ValueError):
+            continue
+        if not list_id:
+            continue
+        rows.append(
+            {
+                "id": list_id,
+                "name": str(item.get("name") or ""),
+                "articles_count": int(item.get("articles_count") or 0),
+                "total": int(item.get("total") or 0),
+                "summary": str(item.get("summary") or ""),
+            }
+        )
+    rows.sort(key=lambda row: (-row["articles_count"], row["name"]))
+    return rows
+
+
+def bilibili_create_list(payload: dict[str, Any], name: str) -> dict[str, Any]:
+    """新建专栏文集；同名已存在时直接复用（幂等，避免建出一堆重名文集）。"""
+    name = str(name or "").strip()
+    if not name:
+        raise RuntimeError("文集名不能为空")
+    for item in bilibili_my_lists(payload):
+        if item["name"].strip() == name:
+            return {"id": item["id"], "name": item["name"], "existing": True}
+    list_id = bilibili_publisher(payload)._create_list(name)
+    if not list_id:
+        raise RuntimeError(f"新建文集「{name}」失败：接口没有返回 id")
+    return {"id": list_id, "name": name, "existing": False}
 
 
 # ------------------------------------------------------------ 全文预览排版

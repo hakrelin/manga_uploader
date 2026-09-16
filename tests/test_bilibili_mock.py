@@ -26,6 +26,10 @@ class _Handler(BaseHTTPRequestHandler):
     submit_failures = 0
     # 风控响应里带 v_voucher（要求人机验证）
     submit_voucher = False
+    # 模拟专栏文集：已有文集列表 / 新建文集的下一个 id / 接口是否直接失败
+    my_lists: list = []
+    new_list_id = 900
+    list_error = False
 
     def log_message(self, *args):  # 静默
         pass
@@ -52,6 +56,13 @@ class _Handler(BaseHTTPRequestHandler):
                     "message": "0",
                     "data": {"b_3": "MOCK-BUVID3-INFOC", "b_4": "MOCK-BUVID4"},
                 }
+            )
+        elif self.path.startswith("/list-all"):
+            if self.__class__.list_error:
+                self._send_json({"code": -352, "message": "风控", "ttl": 1})
+                return
+            self._send_json(
+                {"code": 0, "message": "0", "data": {"lists": self.__class__.my_lists}}
             )
         else:
             self._send_json({"code": -404, "message": "not found"}, 404)
@@ -127,11 +138,27 @@ class _Handler(BaseHTTPRequestHandler):
                     "data": {"cvid": self.__class__.article_counter},
                 }
             )
+        elif self.path.startswith("/list-add"):
+            if self.__class__.list_error:
+                self._send_json({"code": -352, "message": "风控", "ttl": 1})
+                return
+            name = parse_qs(body.decode("utf-8")).get("name", [""])[0]
+            self.__class__.new_list_id += 1
+            self._send_json(
+                {
+                    "code": 0,
+                    "message": "0",
+                    "ttl": 1,
+                    "data": {"id": self.__class__.new_list_id, "name": name},
+                }
+            )
         else:
             self._send_json({"code": -400, "message": "bad"}, 400)
 
 
-def _make_chapter(tmp: Path) -> Chapter:
+def _make_chapter(
+    tmp: Path, bili_meta: dict | None = None, tags: list | None = None
+) -> Chapter:
     folder = tmp / "ch01"
     folder.mkdir(parents=True)
     pages = []
@@ -143,10 +170,16 @@ def _make_chapter(tmp: Path) -> Chapter:
         key="ch01",
         title="测试漫画 第01话",
         description="简介",
-        tags=["原创"],
+        tags=["原创"] if tags is None else tags,
         pages=pages,
         source_dir=folder,
-        raw={"platforms": {"bilibili": {"topics": ["测试话题"]}}},
+        raw={
+            "platforms": {
+                "bilibili": {"topics": ["测试话题"]}
+                if bili_meta is None
+                else bili_meta
+            }
+        },
     )
 
 
@@ -166,6 +199,8 @@ class TestBilibiliPublisherMock(unittest.TestCase):
             "draft": bili_mod.ARTICLE_DRAFT_URL,
             "submit": bili_mod.ARTICLE_SUBMIT_URL,
             "spi": bili_mod.FINGER_SPI_URL,
+            "list_all": bili_mod.CREATIVE_LIST_ALL_URL,
+            "list_add": bili_mod.CREATIVE_LIST_ADD_URL,
         }
         bili_mod.DYNAMIC_UPLOAD_IMAGE_URL = base + "/upload-dyn"
         bili_mod.CREATE_DYN_URL = base + "/dyn"
@@ -174,6 +209,8 @@ class TestBilibiliPublisherMock(unittest.TestCase):
         bili_mod.ARTICLE_DRAFT_URL = base + "/draft"
         bili_mod.ARTICLE_SUBMIT_URL = base + "/submit"
         bili_mod.FINGER_SPI_URL = base + "/spi"
+        bili_mod.CREATIVE_LIST_ALL_URL = base + "/list-all"
+        bili_mod.CREATIVE_LIST_ADD_URL = base + "/list-add"
 
     @classmethod
     def tearDownClass(cls):
@@ -188,6 +225,8 @@ class TestBilibiliPublisherMock(unittest.TestCase):
                     "draft": "ARTICLE_DRAFT_URL",
                     "submit": "ARTICLE_SUBMIT_URL",
                     "spi": "FINGER_SPI_URL",
+                    "list_all": "CREATIVE_LIST_ALL_URL",
+                    "list_add": "CREATIVE_LIST_ADD_URL",
                 }[key],
                 value,
             )
@@ -202,6 +241,9 @@ class TestBilibiliPublisherMock(unittest.TestCase):
         _Handler.article_image_failures = 0
         _Handler.submit_failures = 0
         _Handler.submit_voucher = False
+        _Handler.my_lists = []
+        _Handler.new_list_id = 900
+        _Handler.list_error = False
         self.tmp = tempfile.TemporaryDirectory()
 
     def tearDown(self):
@@ -482,6 +524,118 @@ class TestBilibiliPublisherMock(unittest.TestCase):
         chapter = _make_chapter(Path(self.tmp.name))
         with self.assertRaises(Exception):
             publisher.publish(chapter)
+
+    # ---------- 专栏标签 / 文集 ----------
+
+    def test_split_tags_normalizes(self):
+        """标签：混用分隔符、去 # 前缀、去重、单条 20 字、最多 10 个。"""
+        self.assertEqual(
+            BilibiliPublisher.split_tags("东方, 东方 、#汉化；漫画 漫画\n  例大祭"),
+            ["东方", "汉化", "漫画", "例大祭"],
+        )
+        self.assertEqual(BilibiliPublisher.split_tags(None), [])
+        self.assertEqual(BilibiliPublisher.split_tags(" ,,、 "), [])
+        many = BilibiliPublisher.split_tags([f"标签{i}" for i in range(15)])
+        self.assertEqual(len(many), bili_mod.TAG_LIMIT)
+        long_tag = BilibiliPublisher.split_tags(["x" * 40])[0]
+        self.assertEqual(len(long_tag), bili_mod.TAG_MAX_CHARS)
+
+    def test_article_tags_platform_then_comic(self):
+        """标签来源：manga.json platforms.bilibili.tags → config.yaml → 漫画顶层标签。"""
+        chapter = _make_chapter(
+            Path(self.tmp.name), bili_meta={"tags": "汉化, 东方"}
+        )
+        self.assertEqual(
+            self._publisher({"publish_mode": "article"})._article_tags(chapter),
+            ["汉化", "东方"],
+        )
+        from_config = _make_chapter(Path(self.tmp.name) / "b", bili_meta={})
+        self.assertEqual(
+            self._publisher(
+                {"publish_mode": "article", "tags": "配置标签"}
+            )._article_tags(from_config),
+            ["配置标签"],
+        )
+        comic_tags = _make_chapter(
+            Path(self.tmp.name) / "c", bili_meta={}, tags=["顶层标签"]
+        )
+        self.assertEqual(
+            self._publisher({"publish_mode": "article"})._article_tags(comic_tags),
+            ["顶层标签"],
+        )
+
+    def test_article_post_data_carries_tags_and_list_id(self):
+        """草稿/提交 payload：带 tags（逗号分隔）与 list_id。"""
+        chapter = _make_chapter(Path(self.tmp.name))
+        publisher = self._publisher(
+            {"publish_mode": "article", "tags": "汉化,东方", "list_id": 123}
+        )
+        data = publisher._article_post_data(chapter, "<p>x</p>")
+        self.assertEqual(data["tags"], "汉化,东方")
+        self.assertEqual(data["list_id"], "123")
+        # 没填标签时不要塞空 tags（避免把草稿标签清空）
+        bare = self._publisher({"publish_mode": "article"})
+        chapter.raw = {"platforms": {"bilibili": {"tags": ""}}}
+        chapter.tags = []
+        self.assertNotIn("tags", bare._article_post_data(chapter, "<p>x</p>"))
+
+    def test_reuses_existing_list_id_by_name(self):
+        """文集名命中已有文集：直接用它的 id，不再新建。"""
+        _Handler.my_lists = [
+            {"id": 777, "name": "东方", "articles_count": 3},
+            {"id": 778, "name": "主角组", "articles_count": 1},
+        ]
+        chapter = _make_chapter(Path(self.tmp.name))
+        result = self._publisher(
+            {"publish_mode": "article", "list_name": "主角组"}
+        ).publish(chapter)
+        self.assertEqual(result.status, "ok", result.message)
+        drafts = self._last_posts("/draft")
+        data = parse_qs(drafts[0]["body"].decode("utf-8"))
+        self.assertEqual(data["list_id"][0], "778")
+        self.assertEqual(self._last_posts("/list-add"), [])
+
+    def test_creates_list_when_name_missing(self):
+        """文集名没找到：自动新建，并把新 id 写进草稿。"""
+        _Handler.my_lists = [{"id": 777, "name": "东方"}]
+        chapter = _make_chapter(Path(self.tmp.name))
+        result = self._publisher(
+            {"publish_mode": "article", "list_name": "东方新刊"}
+        ).publish(chapter)
+        self.assertEqual(result.status, "ok", result.message)
+        created = self._last_posts("/list-add")
+        self.assertEqual(len(created), 1)
+        self.assertEqual(
+            parse_qs(created[0]["body"].decode("utf-8"))["name"][0], "东方新刊"
+        )
+        data = parse_qs(self._last_posts("/draft")[0]["body"].decode("utf-8"))
+        self.assertEqual(data["list_id"][0], str(_Handler.new_list_id))
+
+    def test_list_api_failure_does_not_block_publish(self):
+        """文集接口被风控/网络失败：只记日志，专栏照发（list_id=0）。"""
+        _Handler.list_error = True
+        chapter = _make_chapter(Path(self.tmp.name))
+        result = self._publisher(
+            {"publish_mode": "article", "list_name": "东方"}
+        ).publish(chapter)
+        self.assertEqual(result.status, "ok", result.message)
+        data = parse_qs(self._last_posts("/draft")[0]["body"].decode("utf-8"))
+        self.assertEqual(data["list_id"][0], "0")
+
+    def test_preview_and_plan_show_tags_and_list(self):
+        chapter = _make_chapter(Path(self.tmp.name), bili_meta={})
+        publisher = self._publisher(
+            {"publish_mode": "article", "tags": "汉化,东方", "list_name": "东方"}
+        )
+        plan = "\n".join(publisher.plan(chapter))
+        self.assertIn("标签：汉化、东方", plan)
+        self.assertIn("文集：东方（不存在时自动新建）", plan)
+        preview = "\n".join(publisher.full_preview(chapter))
+        self.assertIn("标签：汉化、东方", preview)
+        self.assertIn("文集：东方（不存在时自动新建）", preview)
+        # 不加入文集时文案明确
+        bare = self._publisher({"publish_mode": "article"})
+        self.assertIn("（不加入文集）", "\n".join(bare.plan(chapter)))
 
 
 if __name__ == "__main__":

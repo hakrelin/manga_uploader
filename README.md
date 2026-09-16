@@ -246,7 +246,9 @@ Cookie 会过期（B站 SESSDATA 常见数月），`check` 会提示失效，重
 - **小黑盒卡片 / 工作台“预览与发布”**：「先存草稿」开关、「发布形式」下拉
   （自动 / 强制图文 / 强制文章）、图文分界页数、文章单帖上限、关联社区
   （默认 431327,477625）、关联话题（默认 东方project,东方同人）、站外转载来源。
-- **B站**：发布方式（专栏/图文动态）、单篇最多图、原创/转载声明、话题、分类。
+- **B站**：发布方式（专栏/图文动态）、单篇最多图、原创/转载声明、专栏标签、
+  专栏文集（卡片里点“选择/新建文集…”直接从账号现有文集里挑，没有就当场新建）、
+  图文动态话题与分类。
 - **贴吧**：目标吧名（多个用逗号分隔，发布时依次串行发到每个吧）、每楼最多图、
   图片上传间隔、每吧间隔；卡片上点“检查登录”会显示当前账号昵称。
 - **e-hentai**：上传方式（整包 zip / 逐张）、上传后自动发布、附加标签；
@@ -265,6 +267,16 @@ Cookie 会过期（B站 SESSDATA 常见数月），`check` 会提示失效，重
 3. `POST /x/article/creative/article/submit` 正式发布，输出
    `https://www.bilibili.com/read/cv{aid}`；
 4. 单篇最多 `max_article_pages`（默认 100）张，超出按顺序自动拆多篇。
+
+**标签与文集**（同一份 payload，草稿与正式提交都会带上）：
+
+- `tags`：逗号分隔，最多 10 个 / 单个 20 字（超出的自动截断，避免整个提交被拒）。
+  取值优先级：manga.json → `platforms.bilibili.tags` → `config.yaml` 的
+  `platforms.bilibili.settings.tags` → 漫画顶层的“标签”。
+- 文集：`platforms.bilibili.list_id`（数字，直接用）或 `list_name`（名字，
+  发布时先查 `GET /x/article/creative/list/all`，命中就复用、没有就
+  `POST /x/article/creative/list/add` 新建）。文集接口失败（网络/风控）只记
+  一条 warning，专栏照发，只是这次不加入文集。
 
 发帖前会先补全 B站风控依赖的会话 Cookie（`buvid3`/`buvid4`/`b_nut`/`DedeUserID`），
 并对所有接口带上浏览器风格的 `Referer`/`Origin`；正式提交（第 3 步）若被风控返回

@@ -9,6 +9,12 @@
    拿回 data.aid；
 3. 再正式提交：POST /x/article/creative/article/submit（带 aid）。
 
+专栏支持“标签”（tags，最多 10 个）与“文集”（list_id，把同一系列的专栏归到一起）：
+- 标签：POST 时带 tags=标签1,标签2（草稿/提交同一个 payload）；
+- 文集：draft/submit 里带 list_id；只填了文集名时，程序会自动在
+  GET /x/article/creative/list/all 里找同名文集，没有就 POST
+  /x/article/creative/list/add 新建一个（可在设置里改）。
+
 单张正文图片限制 jpg/png、≤5MB；单篇专栏图片数默认上限
 max_article_pages=100，超出自动拆成多篇专栏。
 
@@ -24,6 +30,7 @@ import json
 import math
 import mimetypes
 import random
+import re
 import time
 from urllib.parse import quote
 
@@ -62,6 +69,14 @@ def _int_setting(value, default, *, lo=1, hi=ATTEMPTS_MAX) -> int:
     return int(_float_setting(value, default, lo=lo, hi=hi))
 
 
+def _int_or_zero(value) -> int:
+    """宽松转 int：转不了就当 0（配置里填错不该让发布挂掉）。"""
+    try:
+        return int(str(value).strip() or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 NAV_URL = "https://api.bilibili.com/x/web-interface/nav"
 # 设备指纹接口（无需登录）：返回 b_3/b_4，对应 Cookie buvid3/buvid4。
 # B站 web 风控会参考这两个值，只有 SESSDATA/bili_jct 的裸请求容易被 -352 拦下。
@@ -75,6 +90,9 @@ CREATE_DYN_URL = "https://api.bilibili.com/x/dynamic/feed/create/dyn"
 ARTICLE_UPCOVER_URL = "https://api.bilibili.com/x/article/creative/article/upcover"
 ARTICLE_DRAFT_URL = "https://api.bilibili.com/x/article/creative/draft/addupdate"
 ARTICLE_SUBMIT_URL = "https://api.bilibili.com/x/article/creative/article/submit"
+# 专栏文集（创作端，登录后可用）：列出我的文集 / 新建文集
+CREATIVE_LIST_ALL_URL = "https://api.bilibili.com/x/article/creative/list/all"
+CREATIVE_LIST_ADD_URL = "https://api.bilibili.com/x/article/creative/list/add"
 
 ARTICLE_REFERER = "https://member.bilibili.com/platform/upload/text"
 ARTICLE_EDIT_REFERER = "https://member.bilibili.com/platform/upload/text/edit"
@@ -87,6 +105,9 @@ DEVICE_COOKIES = ("buvid3", "buvid4", "b_nut", "DedeUserID")
 # 单张正文图片限制 5MB，允许 jpg/png
 ARTICLE_MAX_BYTES = 5 * 1024 * 1024
 ARTICLE_ALLOWED_EXTS = {".jpg", ".jpeg", ".png"}
+# 专栏标签上限：B站限制 10 个 / 单个 20 字（超出截断，避免整个提交被拒）
+TAG_LIMIT = 10
+TAG_MAX_CHARS = 20
 
 
 class BilibiliRiskControlError(PublisherError):
@@ -101,6 +122,11 @@ class BilibiliRiskControlError(PublisherError):
 class BilibiliPublisher(BasePublisher):
     key = "bilibili"
     display_name = "B站"
+
+    def __init__(self, cfg, common, output_dir=None):
+        super().__init__(cfg, common, output_dir)
+        # 文集名 → id（0 表示查过但没拿到，避免每篇专栏重复请求）
+        self._list_cache: dict[str, int] = {}
 
     @property
     def max_pages_per_post(self) -> int:
@@ -139,6 +165,138 @@ class BilibiliPublisher(BasePublisher):
     def _body_text(self, chapter: Chapter) -> str:
         """B站正文：作者/社团/简介 组合（平台 meta.description 为整段覆盖）。"""
         return composer.platform_body(chapter, self.key)
+
+    # ---------- 专栏标签 / 文集 ----------
+
+    @staticmethod
+    def split_tags(value) -> list[str]:
+        """把标签设置规整成B站能用的标签列表。
+
+        - 支持列表，或「逗号 / 顿号 / 分号 / 空白」分隔的字符串（可带 # 话题写法）；
+        - 去重（保持顺序）、丢掉空项；
+        - 单个标签截断到 TAG_MAX_CHARS 字，最多 TAG_LIMIT 个（B站专栏的限制）。
+        """
+        if value is None:
+            return []
+        if isinstance(value, (list, tuple, set)):
+            items = [str(v) for v in value]
+        else:
+            items = re.split(r"[,，、;；\s]+", str(value))
+        out: list[str] = []
+        for item in items:
+            tag = str(item).strip().lstrip("#＃").strip()
+            if not tag:
+                continue
+            if len(tag) > TAG_MAX_CHARS:
+                tag = tag[:TAG_MAX_CHARS]
+            if tag not in out:
+                out.append(tag)
+            if len(out) >= TAG_LIMIT:
+                break
+        return out
+
+    def _article_tags(self, chapter: Chapter) -> list[str]:
+        """专栏标签：manga.json platforms.bilibili.tags 优先，其次 config.yaml；
+        两处都没填时退回漫画顶层标签（漫画信息里的“标签”）。"""
+        meta = self._meta(chapter)
+        if meta.get("tags") is not None:
+            return self.split_tags(meta.get("tags"))
+        configured = self.cfg.get("tags")
+        if configured:
+            return self.split_tags(configured)
+        return self.split_tags(getattr(chapter, "tags", None))
+
+    def _my_lists(self) -> list[dict]:
+        """当前登录账号的专栏文集（创作端接口，含未公开的）。"""
+        try:
+            resp = self.http.get(
+                CREATIVE_LIST_ALL_URL, headers=self._api_headers(ARTICLE_EDIT_REFERER)
+            )
+        except Exception as exc:
+            raise PublisherError(
+                f"连不上B站（网络/代理问题）：{exc}。可先用浏览器打开 bilibili.com 确认网络"
+            )
+        try:
+            payload = resp.json()
+        except ValueError:
+            raise PublisherError(f"B站 文集列表接口未返回 JSON：{resp.text[:200]}")
+        if payload.get("code") != 0:
+            raise PublisherError(
+                f"B站 读取文集列表失败：code={payload.get('code')} {payload.get('message')}"
+            )
+        data = payload.get("data")
+        lists = data.get("lists") if isinstance(data, dict) else None
+        return [item for item in (lists or []) if isinstance(item, dict)]
+
+    def _create_list(self, name: str) -> int:
+        """新建专栏文集并返回 id（同名查重在调用方做）。"""
+        try:
+            resp = self.http.post(
+                CREATIVE_LIST_ADD_URL,
+                data={"name": name, "summary": "", "csrf": self.csrf},
+                headers=self._api_headers(ARTICLE_EDIT_REFERER),
+            )
+        except Exception as exc:
+            raise PublisherError(
+                f"连不上B站（网络/代理问题）：{exc}。可先用浏览器打开 bilibili.com 确认网络"
+            )
+        try:
+            payload = resp.json()
+        except ValueError:
+            raise PublisherError(f"B站 新建文集接口未返回 JSON：{resp.text[:200]}")
+        if payload.get("code") != 0:
+            raise PublisherError(
+                f"B站 新建文集“{name}”失败：code={payload.get('code')} {payload.get('message')}"
+            )
+        data = payload.get("data")
+        raw = data.get("id") if isinstance(data, dict) else data
+        try:
+            return int(raw or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    def _resolve_list_id(self, chapter: Chapter) -> int:
+        """把「文集 id」或「文集名」解析成 list_id；只填了名字时自动查找 / 新建。
+
+        文集属于锦上添花：接口失败（网络 / 风控）只记日志并返回 0（不加入文集），
+        不阻断整篇专栏的发布。
+        """
+        meta = self._meta(chapter)
+        explicit = _int_or_zero(meta.get("list_id"))
+        if explicit > 0:
+            return explicit
+        name = str(meta.get("list_name") or "").strip()
+        if not name:
+            # 漫画里没写就用 config.yaml 里的全局设置
+            explicit = _int_or_zero(self.cfg.get("list_id"))
+            if explicit > 0:
+                return explicit
+            name = str(self.cfg.get("list_name") or "").strip()
+        if not name:
+            return 0
+        cached = self._list_cache.get(name)
+        if cached is not None:
+            return cached
+        try:
+            for item in self._my_lists():
+                if str(item.get("name") or "").strip() == name:
+                    list_id = int(item.get("id") or 0)
+                    if list_id:
+                        self._list_cache[name] = list_id
+                        self.log.info("B站 文集命中已有文集：%s（id=%s）", name, list_id)
+                        return list_id
+            list_id = self._create_list(name)
+            if list_id:
+                self._list_cache[name] = list_id
+                self.log.info("B站 已新建文集：%s（id=%s）", name, list_id)
+                return list_id
+            self.log.warning("B站 新建文集“%s”没有返回 id，本次不加入文集", name)
+        except PublisherError as exc:
+            self.log.warning("B站 文集处理失败（本次不加入文集）：%s", exc)
+        except Exception as exc:  # pragma: no cover - 文集失败不影响发布
+            self.log.warning("B站 文集处理异常（本次不加入文集）：%s", exc)
+        self._list_cache[name] = 0
+        return 0
 
     # ---------- 公共 ----------
 
@@ -309,6 +467,11 @@ class BilibiliPublisher(BasePublisher):
                 f"提交参数：tid={tid}（封面模板） category={category} "
                 f"original={original} reprint={reprint}"
             )
+            tags = self._article_tags(chapter)
+            lines.append(
+                "标签：" + ("、".join(tags) if tags else "（无，可在“各平台发布内容”里填）")
+            )
+            lines.append(f"文集：{self._list_text(chapter)}")
             pages = len(chapter.pages)
             posts = max(1, -(-pages // self.article_max_pages))
             if posts > 1:
@@ -362,6 +525,9 @@ class BilibiliPublisher(BasePublisher):
         ]
         if posts > 1:
             rows.append(f"单篇上限 {self.article_max_pages} 张，将拆成 {posts} 篇专栏")
+        tags = self._article_tags(chapter)
+        rows.append("标签：" + ("、".join(tags) if tags else "（无）"))
+        rows.append(f"文集：{self._list_text(chapter)}")
         rows.append(
             f"正文：先存草稿再正式发布；每张图压缩至 5MB 内（允许 jpg/png）"
         )
@@ -375,6 +541,18 @@ class BilibiliPublisher(BasePublisher):
         attr = "原创" if original and not reprint else ("转载" if reprint else "非原创")
         rows.append(f"作品属性：{attr}（original={original}，reprint={reprint}）")
         return rows
+
+    def _list_text(self, chapter: Chapter) -> str:
+        """文集说明文案（用于计划 / 预览，不触发查重与新建的写操作）。"""
+        meta = self._meta(chapter)
+        list_id = _int_or_zero(meta.get("list_id"))
+        name = str(meta.get("list_name") or "").strip()
+        if not name and list_id <= 0:
+            list_id = _int_or_zero(self.cfg.get("list_id"))
+            name = str(self.cfg.get("list_name") or "").strip()
+        if name:
+            return f"{name}（不存在时自动新建）"
+        return f"id={list_id}" if list_id > 0 else "（不加入文集）"
 
     def _upload_article_image(self, page) -> str:
         mime = mimetypes.guess_type(page.path.name)[0] or "image/jpeg"
@@ -502,11 +680,14 @@ class BilibiliPublisher(BasePublisher):
         reprint = int(self._setting(chapter, "reprint", 0) or 0)
         category = int(self._setting(chapter, "category", 0) or 0)
         tid = int(self._setting(chapter, "tid", 4) or 4)
+        tags = self._article_tags(chapter)
+        list_id = self._resolve_list_id(chapter)
         data = {
             "title": self._title(chapter)[:64],
             "content": content,
             "category": str(category),
-            "list_id": 0,
+            # 文集 id（0 = 不加入文集）
+            "list_id": str(max(0, list_id)),
             "tid": str(tid),
             "reprint": str(reprint),
             "original": str(original),
@@ -514,6 +695,9 @@ class BilibiliPublisher(BasePublisher):
             "spoiler": 0,
             "csrf": self.csrf,
         }
+        if tags:
+            # 标签：逗号分隔（实测 draft/submit 都认这个写法，最多 10 个）
+            data["tags"] = ",".join(tags)
         if cover_url:
             # 封面缩略图用正文第一张图（origin_image_urls 与 image_urls 需同时给出）
             data["origin_image_urls"] = cover_url
@@ -712,6 +896,11 @@ class BilibiliPublisher(BasePublisher):
                     content = self._article_content(chapter, urls)
                     data = self._article_post_data(
                         chapter, content, cover_url=cover_url or urls[0]
+                    )
+                    self.log.info(
+                        "专栏参数：标签=%s 文集=%s",
+                        data.get("tags") or "（无）",
+                        data.get("list_id") or "0",
                     )
                     self.log.info(
                         "保存专栏草稿 %d/%d：%s", index, len(groups), data["title"]
