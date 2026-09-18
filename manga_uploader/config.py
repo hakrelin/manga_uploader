@@ -97,6 +97,10 @@ DEFAULT_SETTINGS: dict[str, dict[str, Any]] = {
         "publish_after_upload": True,  # 上传文件后自动执行 Publish Gallery（False=只建草稿）
         # zip = 打包单归档上传（推荐，站点稳定接受）；files = 逐张多文件（旧路径）
         "upload_mode": "zip",
+        # 单次上传上限（MB）：站点前面的 Cloudflare 超 ~100MB 会回 413；
+        # 归档超过它、且 zip_split_uploads 开着时，自动分卷上传到同一画廊（不压图）
+        "zip_max_mb": 90.0,
+        "zip_split_uploads": True,
     },
     "xiaoheihe": {
         # 发布形式：auto 自动选择（≤30 页图文 / >30 页文章）；

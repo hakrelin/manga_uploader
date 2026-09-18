@@ -76,6 +76,7 @@ class _Handler(BaseHTTPRequestHandler):
     page_html = UPLOAD_HTML
     redirect_url = ""
     progress_calls = 0
+    progress_cookies: list = []
     upload_delay = 0.0
 
     def log_message(self, *args):
@@ -105,6 +106,8 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        # 真实站点会下发 PHPSESSID；上传进度就是按这个会话记的
+        self.send_header("Set-Cookie", "PHPSESSID=mock-session; path=/")
         self.end_headers()
         self.wfile.write(body)
 
@@ -115,6 +118,7 @@ class _Handler(BaseHTTPRequestHandler):
             # 站点自带的上传进度接口：模拟返回 42% 与 done
             payload = {"progress": "<p>Uploading 42%</p>"}
             self.__class__.progress_calls += 1
+            self.__class__.progress_cookies.append(self.headers.get("Cookie", ""))
             if self.__class__.progress_calls > 1:
                 payload["done"] = 1
             out = json.dumps(payload).encode("utf-8")
@@ -231,6 +235,7 @@ class TestEhentaiPublisherMock(unittest.TestCase):
         _Handler.page_html = UPLOAD_HTML
         _Handler.redirect_url = ""
         _Handler.progress_calls = 0
+        _Handler.progress_cookies = []
         _Handler.upload_delay = 0.0
         self.tmp = tempfile.TemporaryDirectory()
 
@@ -430,6 +435,11 @@ class TestEhentaiPublisherMock(unittest.TestCase):
             result = publisher.publish(_make_chapter(Path(self.tmp.name)))
         self.assertEqual(result.status, "ok", result.message)
         self.assertGreaterEqual(_Handler.progress_calls, 1, "没有轮询站点进度接口")
+        # 轮询必须带上上传页下发的会话 Cookie（真实站点靠它区分“这个上传”的进度）
+        self.assertTrue(
+            any("PHPSESSID=mock-session" in c for c in _Handler.progress_cookies),
+            f"进度轮询没带会话 Cookie：{_Handler.progress_cookies}",
+        )
         site = [c for c in calls if "站点上传进度" in c["message"]]
         self.assertTrue(site, f"没有把站点进度转成事件：{calls}")
         self.assertEqual(site[-1]["done"], 42)

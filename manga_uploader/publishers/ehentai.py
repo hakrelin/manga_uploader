@@ -364,10 +364,20 @@ class EhentaiPublisher(BasePublisher):
         """后台线程：轮询站点自己的上传进度接口，转成前端进度事件。
 
         用独立的 HttpClient（新 session）：上传请求正占着主 session，
-        同一个 session 被两个线程同时用会互相影响。
+        同一个 session 被两个线程同时用会互相影响。但**必须带上主 session 的
+        Cookie**（尤其上传页下发的 PHPSESSID）：站点进度是按 PHP 会话记的，
+        少了它只能拿到兜底的「Processing...」，看不到「Uploading: 42%」。
         """
+        try:
+            session_cookies = {
+                c.name: c.value for c in self.http.session.cookies if c.value
+            }
+        except Exception:  # pragma: no cover
+            session_cookies = {}
+        cookies = dict(self.cfg.cookies or {})
+        cookies.update(session_cookies)
         client = HttpClient(
-            cookies=self.cfg.cookies,
+            cookies=cookies,
             timeout=15.0,
             retries=0,
             log_prefix="ehentai-progress",
@@ -890,7 +900,7 @@ class EhentaiPublisher(BasePublisher):
                           f"正在逐张上传 {len(pages)} 个文件（可能较慢，请耐心等待）")
             for index, page_item in enumerate(pages, 1):
                 mime = mimetypes.guess_type(page_item.path.name)[0] or "application/octet-stream"
-                handle = open(page_item.path, "rb")
+                handle = open(page_path(page_item), "rb")
                 handles.append(handle)
                 files.append(
                     (

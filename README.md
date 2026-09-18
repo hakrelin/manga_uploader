@@ -341,7 +341,11 @@ Cookie 会过期（B站 SESSDATA 常见数月），`check` 会提示失效，重
    避免站点前面 Cloudflare 的 `413 Payload Too Large`（关掉 `zip_split_uploads` 就退回单包）；
 4. 上传进度**读的是站点自己的进度接口**（上传页里的 `apiuid`/`apikey` + 表单里的
    `PHP_SESSION_UPLOAD_PROGRESS`，POST `/api {"method":"uploadprogress",…}`，约每秒一次），
-   把 `progress` 文案与百分比转成前端进度事件，显示「站点上传进度：…%」；
+   把返回的 `progress` 文案转成前端进度事件，传输阶段会显示站点的
+   「站点上传进度：Uploading: 42%」，之后是「Processing...」。
+   ⚠ 这个进度是**按 PHP 会话**记的：轮询请求必须带上上传页下发的 `PHPSESSID`
+   （程序已自动从当前会话复制 Cookie），否则只会拿到兜底的 `Processing...`；
+   站点提示单次建议不超过 500MB，超过会自动分卷（见上一条）；
 5. 站点先返回“草稿画廊”管理页，程序识别成功后按 `publish_after_upload`
    自动执行 Publish Gallery（设为 false 则只建草稿，由你在 My Uploads 发布）。
 
