@@ -31,10 +31,14 @@ class BasePublisher(ABC):
         self.output_dir = Path(output_dir) if output_dir else Path(common.output_dir)
         dump_dir = self.output_dir / "debug"
         # 平台级代理覆盖：config 里 platforms.<key>.settings 可单独指定
-        # proxy_url / use_system_proxy，未配置时沿用 common 的全局设置
-        proxy_url = self.cfg.get("proxy_url", common.proxy_url)
-        use_system_proxy = bool(
-            self.cfg.get("use_system_proxy", common.use_system_proxy)
+        # proxy_url / use_system_proxy：
+        # - proxy_url 留空（或没配）= 沿用 common 的全局代理（界面上的“留空=跟随全局”）
+        # - use_system_proxy 显式填 true/false 才覆盖全局；没配就跟着全局
+        platform_proxy = str(self.cfg.get("proxy_url") or "").strip()
+        platform_system = self.cfg.get("use_system_proxy")
+        proxy_url = platform_proxy or common.proxy_url
+        use_system_proxy = (
+            bool(common.use_system_proxy) if platform_system is None else bool(platform_system)
         )
         self.http = HttpClient(
             cookies=cfg.cookies,

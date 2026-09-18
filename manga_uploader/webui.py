@@ -213,6 +213,26 @@ PLATFORM_CARDS: list[dict[str, Any]] = [
     },
 ]
 
+# 每个平台卡片都带一组「此平台代理」设置：留空/不勾选就沿用「设置 → 网络」里的全局代理
+PROXY_CONTROLS: dict[str, dict[str, Any]] = {
+    "use_system_proxy": {
+        "kind": "switch",
+        "label": "此平台使用系统代理",
+        "onLabel": "使用系统代理",
+    },
+    "proxy_url": {
+        "kind": "text",
+        "label": "此平台代理 URL（留空 = 沿用全局设置）",
+        "placeholder": "如 http://127.0.0.1:7890",
+        "proxy": True,  # 前端据此渲染「检测系统代理」按钮
+    },
+}
+
+for _card in PLATFORM_CARDS:
+    _controls = _card.setdefault("controls", {})
+    _controls.update({k: dict(v) for k, v in PROXY_CONTROLS.items()})
+
+
 EXTRA_OPTIONS: dict[str, Any] = {
     "cate": ("1", "2", "3", "4"),
     "cate_label": None,

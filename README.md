@@ -255,6 +255,13 @@ Cookie 会过期（B站 SESSDATA 常见数月），`check` 会提示失效，重
   上传表单字段映射点卡片内“上传表单填写…”。
 - **再漫画**：单章最多图、传图失败重试次数。
 
+**每个平台都能单独配代理**（平台账号页 → 展开平台卡片 → 底部）：
+「此平台使用系统代理」开关 + 「此平台代理 URL」（旁边有「检测系统代理」按钮可直接填入）。
+语义是**留空 / 不勾 = 沿用**「设置 → 网络」里的全局代理，所以典型用法是
+「全局直连 + 只给 e-hentai 勾系统代理或填 `http://127.0.0.1:7890`」，
+国内站（B站/贴吧/再漫画/小黑盒）保持直连，避免被风控。
+保存后写到 `platforms.<平台>.settings.use_system_proxy / proxy_url`。
+
 ## 各平台发布逻辑
 
 ### 各平台发布内容（标题/正文的“自动 vs 手写”）
@@ -429,9 +436,10 @@ Cookie 会过期（B站 SESSDATA 常见数月），`check` 会提示失效，重
 - **e-hentai 报 `ConnectTimeoutError` / `Connection to upload.e-hentai.org timed out`**：
   不是账号问题，是本机连不上该站点。按上面的「e-hentai」小节给该平台配代理后再发；
   国内站继续直连即可。
-- 国内站报网络错误而开了系统代理：GUI「设置」里取消勾选系统代理，或把
-  `use_system_proxy` 设为 false；也可在 `platforms.<平台>.settings` 单独配置
-  `use_system_proxy: false` 和 `proxy_url: ""` 让该平台直连。
+- 国内站报网络错误而开了系统代理：在「平台账号 → 该平台卡片」底部关掉
+  「此平台使用系统代理」（该平台就直连，其他平台照旧），或取消全局系统代理；
+  手改 config 时对应 `platforms.<平台>.settings.use_system_proxy` /
+  `proxy_url`（**留空 = 沿用全局**，填了才覆盖）。
 
 ## 项目结构
 

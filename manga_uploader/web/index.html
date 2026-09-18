@@ -435,12 +435,22 @@ try {
                 <span class="switch-track"></span>
                 <span class="switch-label">{{ item.onLabel || '开启' }}</span>
               </label>
+              <div v-else-if="item.kind === 'text' && item.proxy" class="input-row">
+                <input type="text" class="input"
+                  v-model="config.platforms[card.key].settings[itemKey]"
+                  :placeholder="item.placeholder || ''">
+                <button class="btn btn-ghost btn-sm" :disabled="busy"
+                        title="读取本机系统代理并填到这里"
+                        @click="detectProxy(card.key)">检测系统代理</button>
+              </div>
               <input v-else type="text" class="input"
                 v-model="config.platforms[card.key].settings[itemKey]"
                 :placeholder="item.placeholder || ''">
             </div>
           </div>
 
+          <p class="hint-text">「此平台代理」只影响这一个平台：<b>留空 = 沿用</b>「设置 → 网络」里的全局代理与系统代理开关；
+            国内平台（B站/贴吧/再漫画/小黑盒）建议直连，只有 e-hentai 这类海外站才需要代理。</p>
           <p class="hint-text">{{ card.hint }}</p>
           <div v-if="statuses[card.key] && statuses[card.key].length" class="check-status">
             <span v-for="s in statuses[card.key]" :key="s.message" :class="s.ok ? 'ok' : 'bad'">{{ s.ok ? '✓' : '✗' }} {{ s.message }}</span>
@@ -575,7 +585,7 @@ try {
               <label class="field-label">手动代理 URL <span class="field-hint">如 http://127.0.0.1:7890（留空则直连）</span></label>
               <div class="input-row">
                 <input type="text" v-model="config.common.proxy_url" class="input" placeholder="http://127.0.0.1:7890">
-                <button class="btn btn-ghost" @click="detectProxy">检测系统代理</button>
+                <button class="btn btn-ghost" @click="detectProxy()">检测系统代理</button>
               </div>
             </div>
           </div>
@@ -801,6 +811,10 @@ try {
       <h3>网络与设置</h3>
       <ul>
         <li>e-hentai 等海外站连不上时，在「设置」里勾选使用系统代理或填手动代理；国内平台请勿走海外代理，容易触发风控。</li>
+        <li>只想让某一个平台走代理：在「平台账号」展开该平台卡片，底部有
+          「此平台使用系统代理」开关和「此平台代理 URL」（带「检测系统代理」按钮）。
+          <b>留空 / 不勾 = 沿用</b>「设置 → 网络」里的全局代理，所以可以做到
+          「全局直连、只给 e-hentai 配代理」，国内平台保持直连更安全。</li>
         <li>上传失败时，程序会把原始响应存到 output/debug（如文件名含 ehentai-upload-page 的 html），可直接把文件发出来排查。</li>
         <li>如果同时开了多个服务实例（例如 8970 与 8971），请关掉旧实例只留最新一个，避免新版页面配旧版后端。</li>
       </ul>

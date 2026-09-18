@@ -10,9 +10,12 @@ from PIL import Image
 from manga_uploader.comic import load_chapters, platform_meta
 from manga_uploader.comic import page_sequence_warnings
 from manga_uploader.config import load_config, missing_cookies
+from manga_uploader.config import CommonConfig, PlatformConfig
 from manga_uploader.web import _book_to_compose, _save_comic_meta
 from manga_uploader.publishers.ehentai import _parse_upload_page
+from manga_uploader.publishers.bilibili import BilibiliPublisher
 from manga_uploader.publishers.tieba import _find_first
+from manga_uploader import http_client
 from manga_uploader.http_client import _clean_proxy_url, detect_system_proxy
 from manga_uploader.util import prepare_page
 from manga_uploader import __version__, build_stamp, git_revision
@@ -508,6 +511,59 @@ class TestRunnerAccounts(unittest.TestCase):
 
         runner.make_publisher = _boom  # type: ignore[assignment]
         self.assertEqual(runner.accounts(["tieba"]), {})
+
+
+class TestPerPlatformProxy(unittest.TestCase):
+    """平台卡片里的「此平台代理」：留空/不填 = 沿用全局设置。"""
+
+    def _publisher(self, settings: dict, common: CommonConfig):
+        cfg = PlatformConfig(
+            name="bilibili",
+            cookies={"SESSDATA": "s", "bili_jct": "c"},
+            settings=settings,
+        )
+        return BilibiliPublisher(cfg, common)
+
+    def test_platform_proxy_url_overrides_global(self):
+        common = CommonConfig(proxy_url="http://127.0.0.1:1111")
+        pub = self._publisher({"proxy_url": "http://127.0.0.1:2222"}, common)
+        proxies = pub.http.session.proxies
+        self.assertEqual(proxies.get("http"), "http://127.0.0.1:2222")
+        self.assertEqual(proxies.get("https"), "http://127.0.0.1:2222")
+
+    def test_empty_platform_proxy_follows_global(self):
+        """界面留空会存成空串：必须当成“跟随全局”，不能把全局代理顶掉。"""
+        common = CommonConfig(proxy_url="http://127.0.0.1:1111")
+        pub = self._publisher({"proxy_url": ""}, common)
+        self.assertEqual(pub.http.session.proxies.get("https"), "http://127.0.0.1:1111")
+        # 连键都没有（老配置）也一样跟随
+        pub2 = self._publisher({}, common)
+        self.assertEqual(pub2.http.session.proxies.get("https"), "http://127.0.0.1:1111")
+
+    def test_platform_system_proxy_switch_overrides_global(self):
+        """平台开关显式 true/false 才覆盖全局；没配就跟着全局。"""
+        with unittest.mock.patch.object(
+            http_client, "detect_system_proxy", return_value="http://sys-proxy:7890"
+        ):
+            # 全局开、平台显式关 → 直连
+            off = self._publisher({"use_system_proxy": False}, CommonConfig(use_system_proxy=True))
+            self.assertEqual(off.http.session.proxies, {})
+            # 全局关、平台开 → 走系统代理
+            on = self._publisher({"use_system_proxy": True}, CommonConfig(use_system_proxy=False))
+            self.assertEqual(on.http.session.proxies.get("https"), "http://sys-proxy:7890")
+            # 平台没配 → 跟着全局（开）
+            inherit = self._publisher({}, CommonConfig(use_system_proxy=True))
+            self.assertEqual(inherit.http.session.proxies.get("https"), "http://sys-proxy:7890")
+
+    def test_platform_proxy_url_beats_system_proxy(self):
+        with unittest.mock.patch.object(
+            http_client, "detect_system_proxy", return_value="http://sys-proxy:7890"
+        ):
+            pub = self._publisher(
+                {"proxy_url": "http://127.0.0.1:2222", "use_system_proxy": True},
+                CommonConfig(),
+            )
+            self.assertEqual(pub.http.session.proxies.get("https"), "http://127.0.0.1:2222")
 
 
 class TestBuildStamp(unittest.TestCase):

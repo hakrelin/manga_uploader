@@ -1160,15 +1160,25 @@ createApp({
 
     // ---------------- 代理 ----------------
 
-    async function detectProxy() {
+    // 检测系统代理：不带平台 key = 填「设置 → 网络」的全局代理；
+    // 带平台 key = 只填这个平台的 platforms.<平台>.settings.proxy_url
+    async function detectProxy(platformKey) {
       try {
         const r = await api("/api/proxy/detect");
-        if (r.url) {
-          config.common.proxy_url = r.url;
-          toastMsg("已填入检测到的代理：" + r.url);
-        } else {
+        if (!r.url) {
           toastMsg("未检测到系统代理");
+          return;
         }
+        if (platformKey) {
+          const p = config.platforms[platformKey];
+          if (!p) return;
+          if (!p.settings) p.settings = {};
+          p.settings.proxy_url = r.url;
+          toastMsg((PLAT_LABELS[platformKey] || platformKey) + " 的代理已填入：" + r.url);
+          return;
+        }
+        config.common.proxy_url = r.url;
+        toastMsg("已填入检测到的代理：" + r.url);
       } catch (e) {
         toastMsg("检测代理失败：" + e.message);
       }
