@@ -1,4 +1,4 @@
-# 漫画发布器 —— 本地覆盖更新（保留 config.yaml / .venv / .tools / output）
+﻿# 漫画发布器 —— 本地覆盖更新（保留 config.yaml / .venv / .tools / output）
 # 更新前请先关闭正在运行的程序窗口；下载失败可加参数：
 #   .\update.ps1 -Url "https://镜像/.../main.zip"
 param(

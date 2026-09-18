@@ -115,5 +115,33 @@ class ApplyTest(unittest.TestCase):
             )
 
 
+class ScriptEncodingTest(unittest.TestCase):
+    """Windows PowerShell 5.1 靠 BOM 认 UTF-8：脚本缺 BOM 会被按 GBK 解析而报错。"""
+
+    def test_adds_bom_to_scripts_missing_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            plain = root / "update.ps1"
+            plain.write_bytes("# 更新脚本\nRead-Host \"按回车\"\n".encode("utf-8"))
+            already = root / "start-web.ps1"
+            already.write_bytes(b"\xef\xbb\xbf# ok\n")
+            (root / "not-a-script.txt").write_text("x", encoding="utf-8")
+
+            fixed = updater.ensure_script_encodings(root)
+
+            self.assertEqual(fixed, ["update.ps1"])
+            self.assertTrue(plain.read_bytes().startswith(b"\xef\xbb\xbf"))
+            # 已有 BOM 的不重复加
+            self.assertEqual(already.read_bytes().count(b"\xef\xbb\xbf"), 1)
+            # 无关文件不动
+            self.assertFalse(
+                (root / "not-a-script.txt").read_bytes().startswith(b"\xef\xbb\xbf")
+            )
+
+    def test_missing_files_are_ignored(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(updater.ensure_script_encodings(Path(tmp)), [])
+
+
 if __name__ == "__main__":
     unittest.main()

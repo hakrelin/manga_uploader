@@ -252,6 +252,31 @@ def _archive_url(repo_url: str, branch: str) -> str:
     return f"{repo_url.rstrip('/')}/archive/refs/heads/{branch}.zip"
 
 
+# Windows PowerShell 5.1 只有在文件带 UTF-8 BOM 时才按 UTF-8 读取；
+# 少了 BOM，脚本里的中文会被按 GBK 解析，轻则乱码，重则直接“字符串未结束”解析失败
+# （2026-09-18 的 update.ps1 就是这么把自己写坏的）。这里在更新后统一补回来。
+PS_BOM_FILES = ("update.ps1", "start-web.ps1", "start-gui.ps1", "_common.ps1")
+
+
+def ensure_script_encodings(root: Path) -> list[str]:
+    """给缺 UTF-8 BOM 的 PowerShell 脚本补上 BOM；返回实际修补的文件名列表。"""
+    fixed: list[str] = []
+    for name in PS_BOM_FILES:
+        path = root / name
+        if not path.is_file():
+            continue
+        try:
+            data = path.read_bytes()
+            if not data.startswith(b"\xef\xbb\xbf"):
+                path.write_bytes(b"\xef\xbb\xbf" + data)
+                fixed.append(name)
+        except OSError:
+            continue
+    if fixed:
+        info("已修正脚本编码（补 UTF-8 BOM）：" + "、".join(fixed))
+    return fixed
+
+
 def download_zip(url: str, dest: Path, proxy: str = "") -> Path:
     info(f"下载 {url} …")
     req = urllib.request.Request(url, headers={"User-Agent": UA})
@@ -662,6 +687,7 @@ def update_via_git(root: Path) -> None:
         ["git", "rev-parse", "HEAD"], cwd=str(root), capture_output=True, text=True
     )
     save_state(root, commit=head.stdout.strip() or "", files=listed)
+    ensure_script_encodings(root)
     info("git 模式更新完成")
 
 
@@ -749,6 +775,7 @@ def update_via_zip(
         apply_update(root, new_root, old_files, dry_run=dry_run)
 
     if not dry_run:
+        ensure_script_encodings(root)
         commit = remote_commit(repo_url, used_branch)
         save_state(root, commit=commit)
         if install_deps:
