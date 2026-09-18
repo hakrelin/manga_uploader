@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import hashlib
 import html
+import hmac
 import json
 import math
 import mimetypes
@@ -152,6 +153,24 @@ def _nonce() -> str:
     ).hexdigest().upper()
 
 
+# 网页端请求签名用的固定盐（前端源码里的 FM 常量）：评论等接口要求 `_rnd` 参数
+_RND_SALT = "Z7mFG4tQp9Ws2LxB8H"
+
+
+def _rnd(nonce: str, timestamp: int) -> str:
+    """评论接口的 `_rnd` 参数（网页端 vEe 拦截器，2026-09 版实测一致）。
+
+    网页端实现：
+        FM = "Z7mFG4tQp9Ws2LxB8H"
+        msg = FM + nonce + f"{_time}:{nonce}"
+        _rnd = "15:" + HMAC_SHA256(key=FM, msg=msg) 的十六进制
+    少了它，/bbs/app/comment/create 会回「帖子id错误 / 缺失参数」。
+    """
+    message = f"{_RND_SALT}{nonce}{timestamp}:{nonce}".encode("utf-8")
+    digest = hmac.new(_RND_SALT.encode("utf-8"), message, hashlib.sha256).hexdigest()
+    return f"15:{digest}"
+
+
 def _signed_url(
     path: str,
     *,
@@ -182,6 +201,9 @@ def _signed_url(
         for key, value in extra.items():
             if value is not None:
                 params[key] = value
+    # 某些接口（评论/回复）要求 _rnd：调用方传 rnd="15" 时按网页端算法补上
+    if str(params.pop("rnd", "") or "") == "15":
+        params["_rnd"] = _rnd(nonce, ts)
     return f"{API}{path}?{urlencode(params)}"
 
 
@@ -347,6 +369,15 @@ class XiaoheihePublisher(BasePublisher):
         return max(1, value)
 
     @property
+    def view_limit(self) -> int:
+        """可见性：1=所有人可见（默认）、2=仅粉丝、3=仅自己可见。"""
+        try:
+            value = int(self.cfg.get("view_limit", 1) or 1)
+        except (TypeError, ValueError):
+            value = 1
+        return value if value in (1, 2, 3) else 1
+
+    @property
     def user_id(self) -> str:
         return str(self.cfg.cookies.get("heybox_id") or "").strip()
 
@@ -476,8 +507,8 @@ class XiaoheihePublisher(BasePublisher):
         overflow = self.overflow_mode()
         if overflow == "comment" and posts > 1 and self._publish_draft():
             overflow_note = (
-                f"草稿模式发不了评论（站点限制）：超出的 {pages - limit} 页会另存一帖；"
-                "想合并到评论区请关闭「先存草稿」"
+                f"草稿不能评论（站点限制）：本篇超上限，将按「仅自己可见」发布，"
+                f"超出的 {pages - limit} 页进评论区；核对后再到创作中心改公开"
             )
         elif overflow == "comment" and posts > 1:
             overflow_note = (
@@ -520,8 +551,8 @@ class XiaoheihePublisher(BasePublisher):
         limit = self.mode_limit(mode)
         overflow = self.overflow_mode()
         comment_groups = []
-        # 草稿模式发不了评论（站点限制），预览同样按“另发一帖”展示
-        comments_used = overflow == "comment" and not self._publish_draft()
+        # 超上限时用评论区（草稿不能评论，所以这种帖子会按“仅自己可见”发布）
+        comments_used = overflow == "comment"
         if comments_used and len(pages) > limit:
             groups = [list(pages[:limit])]
             comment_groups = chunk_list(list(pages[limit:]), self.comment_max_pages())
@@ -548,6 +579,12 @@ class XiaoheihePublisher(BasePublisher):
                 -1,
                 "图片位置：文章把每张图写成 <p><img data-original=…></p> 放进正文 HTML "
                 "（网页端只渲染第一个 html 块；单独 img 块不会进文章正文）",
+            )
+        if comment_groups and self._publish_draft():
+            lines.insert(
+                -1,
+                "⚠ 草稿不能评论（站点限制）：本篇超上限，将按「仅自己可见」发布（view_limit=3）"
+                "并把余图放进评论区，核对后到创作中心改公开即可",
             )
         for index, group in enumerate(groups, 1):
             lines.append(f"  ── 第 {index} 帖（{len(group)} 张）──")
@@ -591,20 +628,23 @@ class XiaoheihePublisher(BasePublisher):
             mode_label = "文章" if article else "图文"
             groups = chunk_list(pages, limit)
             # 超出单帖上限的图片：默认不再另发一帖，改成发到首帖评论区。
-            # 站点只允许给公开帖子评论：草稿（先存草稿模式）发不了评论，
-            # 这种情况退回旧行为（另存一帖），并在结果里说清楚原因。
+            # 站点限制：只有“已发布”的内容能评论——草稿会回「该内容已被删除」，
+            # 而“仅自己可见”的帖子可以正常评论（已实测）。
+            # 所以「先存草稿」+ 需要评论时，这一帖改成按「仅自己可见」发布。
             overflow_pages: list = []
             overflow_note = ""
+            view_limit = self.view_limit
             if len(pages) > limit and self.overflow_mode() == "comment":
                 if self._publish_draft():
                     overflow_note = (
-                        f"⚠ 草稿模式发不了评论（站点限制）：超出的 {len(pages) - limit} 页改为另存一帖；"
-                        "想让它们进评论区，请把 publish_draft 关掉后再发"
+                        f"⚠ 草稿不能评论（站点限制）：本篇图数超过单帖上限 {limit} 张，"
+                        "已改为按「仅自己可见」发布，超出的图进评论区；"
+                        "确认没问题后到创作中心把可见性改成公开即可"
                     )
                     self.log.warning(overflow_note)
-                else:
-                    overflow_pages = list(pages[limit:])
-                    groups = [list(pages[:limit])]
+                    view_limit = 3  # 3 = 仅自己可见（可评论，且对外不可见）
+                overflow_pages = list(pages[limit:])
+                groups = [list(pages[:limit])]
             description = self._description(chapter)
             title = self._title(chapter)
             topic_ids = self._topic_ids()
@@ -613,6 +653,7 @@ class XiaoheihePublisher(BasePublisher):
             total = len(groups)
             page_done = 0
             head_link_id = ""
+            head_as_draft = False
             for index, group in enumerate(groups, 1):
                 try:
                     self.log.info(
@@ -668,7 +709,7 @@ class XiaoheihePublisher(BasePublisher):
                         "words_count": len(description),
                         "post_card_ids": "",
                         "link_tag": link_tag,
-                        "view_limit": 1,
+                        "view_limit": view_limit,
                         "topic_ids": topic_ids,
                         "original_info": json.dumps(
                             {"original": decl.get("original", 0)}, ensure_ascii=False
@@ -682,8 +723,12 @@ class XiaoheihePublisher(BasePublisher):
                         body["declaration"] = decl["declaration"]
                     if hashtags:
                         body["hashtags"] = hashtags
-                    if self._publish_draft():
+                    # 需要评论区续图时不存草稿：草稿没法评论，按「仅自己可见」正式发布
+                    as_draft = self._publish_draft() and not overflow_pages
+                    if as_draft:
                         body["draft"] = 1
+                    if index == 1:
+                        head_as_draft = as_draft
                     resp = self.http.post(
                         self._signed(POST_URL),
                         data=body,
@@ -710,7 +755,7 @@ class XiaoheihePublisher(BasePublisher):
                         )
                     if index == 1:
                         head_link_id = link_id
-                    if self._publish_draft():
+                    if as_draft:
                         # 草稿只存在于创作中心“草稿箱”，公开帖子链接打不开。
                         # 主动读一次草稿箱确认草稿真的在（而不是“建完即消失”）。
                         try:
@@ -743,7 +788,9 @@ class XiaoheihePublisher(BasePublisher):
                     self.log.info(
                         "小黑盒[%s] %s：%s",
                         mode_label,
-                        "已保存草稿" if self._publish_draft() else "发布成功",
+                        "已保存草稿" if as_draft else (
+                            "已发布（仅自己可见）" if view_limit == 3 else "发布成功"
+                        ),
                         url,
                     )
                     self.progress(
@@ -751,7 +798,9 @@ class XiaoheihePublisher(BasePublisher):
                         index,
                         total,
                         f"第 {index}/{total} 帖"
-                        f"{'已保存草稿' if self._publish_draft() else '已发布'}",
+                        + ("已保存草稿" if as_draft else (
+                            "已发布（仅自己可见）" if view_limit == 3 else "已发布"
+                        )),
                         chapter_key=chapter.key,
                     )
                 except PublisherError as exc:
@@ -794,11 +843,15 @@ class XiaoheihePublisher(BasePublisher):
                 )
             note = (
                 f"已存入小黑盒草稿箱 {len(published)} 条"
-                if self._publish_draft()
+                if head_as_draft
                 else (
                     f"已拆成 {len(published)} 条{mode_label}"
                     if len(published) > 1
-                    else f"已发布{mode_label}"
+                    else (
+                        f"已发布{mode_label}（仅自己可见）"
+                        if view_limit == 3
+                        else f"已发布{mode_label}"
+                    )
                 )
             )
             if comments_posted:
@@ -836,9 +889,13 @@ class XiaoheihePublisher(BasePublisher):
         if urls:
             data["imgs"] = ";".join(urls)
         resp = self.http.post(
-            self._signed(COMMENT_CREATE_URL, {"rnd": "15", "target": "heybox_app"}),
+            # rnd=15 → _signed_url 会按网页端算法补上 _rnd 签名参数
+            self._signed(COMMENT_CREATE_URL, {"rnd": "15"}),
             data=data,
-            headers={"Referer": f"{WEB}/app/bbs/link/{link_id}"},
+            headers={
+                "Referer": f"{WEB}/app/bbs/link/{link_id}",
+                "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+            },
         )
         try:
             payload = resp.json()

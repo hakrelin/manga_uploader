@@ -268,8 +268,9 @@ class XiaoheiheOverflowCommentTest(unittest.TestCase):
         self.assertEqual(len(post_calls), 1)
         self.assertEqual(len(comment_calls), 4)
         # 评论参数对齐网页端：rnd=15 & target=heybox_app，顶层评论 root_id/reply_id 都是 -1
-        self.assertIn("rnd=15", comment_calls[0]["query"])
-        self.assertIn("target=heybox_app", comment_calls[0]["query"])
+        # 评论接口的签名参数：_rnd=15:hmac（少了它服务端回「帖子id错误/缺失参数」）
+        self.assertIn("_rnd=15%3A", comment_calls[0]["query"])
+        self.assertNotIn("rnd=15&", comment_calls[0]["query"])
         first = comment_calls[0]["body"]
         self.assertIn("link_id=100001", first)
         self.assertIn("root_id=-1", first)
@@ -291,15 +292,28 @@ class XiaoheiheOverflowCommentTest(unittest.TestCase):
         self.assertEqual(len(post_calls), 3)   # 5 + 5 + 2
         self.assertEqual(len(comment_calls), 0)
 
-    def test_draft_mode_falls_back_to_extra_post(self):
-        """草稿状态发不了评论（站点限制）：退回“另存一帖”，并在结果里说明。"""
+    def test_draft_mode_publishes_as_self_only_then_comments(self):
+        """草稿不能评论（站点限制）：超上限时改按「仅自己可见」发布，再补评论区。"""
         result = self._run(self._publisher(publish_draft=True), self._chapter(9))
         self.assertEqual(result.status, "ok", result.message)
-        self.assertIn("草稿模式发不了评论", result.message)
+        self.assertIn("仅自己可见", result.message)
         post_calls = [p for p in _XhhHandler.posts if p["path"] == X.POST_URL]
         comment_calls = [p for p in _XhhHandler.posts if p["path"] == X.COMMENT_CREATE_URL]
-        self.assertEqual(len(post_calls), 2)   # 5 + 4（都是草稿）
-        self.assertEqual(len(comment_calls), 0)
+        self.assertEqual(len(post_calls), 1)
+        self.assertEqual(len(comment_calls), 2)
+        # 不是草稿（draft=1），而是 view_limit=3 的正式帖
+        self.assertIn("view_limit=3", post_calls[0]["body"])
+        self.assertNotIn("draft=1", post_calls[0]["body"])
+
+    def test_rnd_matches_captured_request(self):
+        """评论接口的 _rnd 参数与网页端抓包逐字节一致（少了它必然失败）。"""
+        self.assertEqual(
+            X._rnd("D9A6041439A823F2299AA1B62ED92B5A", 1789720373),
+            "15:2b41b192de39cf6ef411addfde0c065a853bfa358d9ce151237b238fb285d65b",
+        )
+        url = X._signed_url(X.COMMENT_CREATE_URL, user_id="1", extra={"rnd": "15"})
+        self.assertIn("_rnd=15%3A", url)
+        self.assertNotIn("&rnd=15", url)
 
     def test_comment_failure_marks_partial(self):
         class _Boom(_XhhHandler):
