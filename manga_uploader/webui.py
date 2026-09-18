@@ -808,8 +808,23 @@ def upsert_staff_page(comic_dir: str | Path, chapter_key: str, data: bytes) -> i
     return len(current)
 
 
-# 内置尾页素材（汉化组尾页/梅子版尾页）
-TAIL_ASSET = Path(__file__).resolve().parent / "data" / "tail_page.jpg"
+# 内置尾页素材目录：换尾页直接替换 data/tail_page.* 即可（png/jpg/webp 都认）
+TAIL_ASSET_DIR = Path(__file__).resolve().parent / "data"
+TAIL_ASSET_NAMES = ("tail_page.png", "tail_page.jpg", "tail_page.jpeg", "tail_page.webp")
+
+
+def tail_asset() -> Optional[Path]:
+    """当前内置尾页文件（找不到返回 None）。"""
+    for name in TAIL_ASSET_NAMES:
+        candidate = TAIL_ASSET_DIR / name
+        if candidate.is_file():
+            return candidate
+    matches = sorted(p for p in TAIL_ASSET_DIR.glob("tail_page.*") if p.is_file())
+    return matches[0] if matches else None
+
+
+# 兼容旧代码/测试里对 TAIL_ASSET 的引用（可能为 None）
+TAIL_ASSET = tail_asset()
 
 
 def add_tail_page(comic_dir: str | Path, chapter_key: str) -> tuple[int, str, bool]:
@@ -817,22 +832,25 @@ def add_tail_page(comic_dir: str | Path, chapter_key: str) -> tuple[int, str, bo
 
     返回 (页数, 尾页文件名, 是否新加)。识别规则：文件名主体以“尾页”结尾。
     """
-    if not TAIL_ASSET.is_file():
-        raise ValueError("缺少内置尾页素材（manga_uploader/data/tail_page.jpg）")
+    asset = tail_asset()
+    if asset is None:
+        raise ValueError(
+            "缺少内置尾页素材（把尾页图片放到 manga_uploader/data/tail_page.png 即可）"
+        )
     chapters = load_chapters(comic_dir, strict=False)
     chapter = next((c for c in chapters if c.key == str(chapter_key or "root")), None)
     if chapter is None:
         raise ValueError(f"找不到章节：{chapter_key}")
     folder = chapter.source_dir
     current = [p.name for p in chapter.pages]
-    target = "尾页" + TAIL_ASSET.suffix.lower()
+    target = "尾页" + asset.suffix.lower()
     existing = next(
         (n for n in current if n == target or Path(n).stem.endswith("尾页")),
         None,
     )
     if existing:
         return len(current), existing, False
-    (folder / target).write_bytes(TAIL_ASSET.read_bytes())
+    (folder / target).write_bytes(asset.read_bytes())
     current.append(target)
     write_page_order(comic_dir, str(chapter_key or "root"), current)
     return len(current), target, True
