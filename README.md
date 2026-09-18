@@ -61,6 +61,12 @@ macOS / Linux 用 `./start.sh`。
 - 安装依赖时会实时刷新一行进度（例如
   `| [######--------]  45%  1.4/3.1MB  已用 00:12  Downloading Pillow-...whl`），
   不会再出现“卡在初始化”看不出在做什么的情况。
+- **下载归档时也有进度条**（`下载中 [####--------] 45% 8.6MB/18.9MB`）；
+  网络中断会自动重试 3 次（1.5s / 3s 退避），4xx（地址/分支不对）直接报错不空转。
+- **GitHub 连不上会自动换镜像**：直连失败后依次试内置镜像
+  （`ghfast.top` / `gh-proxy.com` / `ghproxy.net` / `gh.llkk.cc`），
+  都失败才会报错，并给出「开代理 / `--url` 镜像 / 手动下载覆盖」三条做法；
+  不想用镜像加 `--no-mirror`。
 
 更新前请先关闭正在运行的程序窗口；需要联网从 GitHub 下载归档（约几 MB）。
 
@@ -69,8 +75,8 @@ macOS / Linux 用 `./start.sh`。
 python update.py            # 一键覆盖更新
 python update.py --check    # 只检查远端是否有新版本
 
-# GitHub 连不上时，先开代理再试；仍不行可用镜像：
-python update.py --url https://ghproxy.com/https://github.com/hakrelin/manga_uploader/archive/refs/heads/main.zip
+# GitHub 连不上时：新版会自动试内置镜像；也可以手动指定镜像：
+python update.py --url https://ghfast.top/https://github.com/hakrelin/manga_uploader/archive/refs/heads/main.zip
 ```
 
 > 从 git 克隆（目录里有 `.git`）的机器默认走 `git pull --ff-only`，同样不碰
