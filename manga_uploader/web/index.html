@@ -83,7 +83,7 @@ try {
                 :class="{ on: p.platform === pubProgress.cur.platform }">
             {{ PLAT_LABELS[p.platform] || p.label || p.platform }}
             <template v-if="p.stage"> · {{ stageLabel(p.stage) }}</template>
-            <em v-if="p.total"> {{ p.done }}/{{ p.total }}</em>
+            <em v-if="progressNum(p)"> {{ progressNum(p) }}</em>
           </span>
         </div>
         <div class="pub-bar-row">
@@ -96,7 +96,7 @@ try {
               {{ PLAT_LABELS[pubProgress.cur.platform] || pubProgress.cur.label || pubProgress.cur.platform }} ·
             </template>
             {{ pubProgress.cur.message || stageLabel(pubProgress.cur.stage) || '正在发布…' }}
-            <template v-if="pubProgress.cur.total">（{{ pubProgress.cur.done }}/{{ pubProgress.cur.total }}）</template>
+            <template v-if="progressNum(pubProgress.cur)">（{{ progressNum(pubProgress.cur) }}）</template>
           </span>
         </div>
       </div>
@@ -804,7 +804,12 @@ try {
           或点「选择/新建文集…」从账号现有文集里挑一个（没有就当场新建）；
           某一本漫画要单独用别的标签/文集时，在①区「各平台发布内容 → B站」里改。
           文集名留空 = 不加入文集；填了名字但账号里还没有时，发布前会自动新建。</li>
-        <li>e-hentai 建议用 zip 整包上传：打包与站点处理阶段会较慢，属正常现象，等进度条走完即可。</li>
+        <li>e-hentai 建议用 zip 整包上传：<b>zip 模式不压缩图片</b>（原图直接打包），
+          上传时进度条会按字节显示百分比（如「正在上传 ZIP 归档：12.3 / 84.5 MB（15%）」），
+          之后是站点处理阶段，较慢属正常现象，等进度条走完即可。</li>
+        <li>小黑盒超过单帖上限（图文 30 / 文章 100 张）的部分，默认<b>发到首帖评论区</b>
+          （每条评论最多 9 张，可在平台卡片里改）。注意：站点只允许给公开帖子评论，
+          「先存草稿」模式下超出的部分仍会另存一帖，结果里会写明原因。</li>
         <li>发布前建议用「全文预览」检查格式与缺页；正式发布后不可撤销，小范围测试可先启用小黑盒“存草稿”。</li>
       </ul>
 

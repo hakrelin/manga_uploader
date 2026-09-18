@@ -122,6 +122,7 @@ const STAGE_LABELS = {
   article: "发布专栏",
   dynamic: "发布动态",
   post: "发布帖子",
+  comment: "评论区续图",
 };
 
 const ARCHIVE_RE = /\.(zip|cbz|7z|rar)$/i;
@@ -714,10 +715,26 @@ createApp({
       return STAGE_LABELS[stage] || stage || "";
     }
 
+    // 进度数值文案：字节型进度（大文件上传）显示成 MB，其余显示成计数
+    function progressNum(p) {
+      if (!p) return "";
+      const done = Number(p.done) || 0;
+      const total = Number(p.total) || 0;
+      if (!total) return "";
+      if (p.unit === "bytes") {
+        return `${fmtMb(done)} / ${fmtMb(total)}`;
+      }
+      return `${done}/${total}`;
+    }
+    function fmtMb(bytes) {
+      const mb = (Number(bytes) || 0) / 1048576;
+      return (mb >= 100 ? mb.toFixed(0) : mb.toFixed(1)) + " MB";
+    }
+
     function startPublishUi() {
       running.value = true;
       pubProgress.active = true;
-      pubProgress.cur = { platform: "", label: "", stage: "", done: 0, total: 0, message: "" };
+      pubProgress.cur = { platform: "", label: "", stage: "", done: 0, total: 0, unit: "", message: "" };
       pubProgress.overall.done = 0;
       pubProgress.overall.total = 0;
       Object.keys(pubProgress.platforms).forEach((k) => delete pubProgress.platforms[k]);
@@ -745,6 +762,7 @@ createApp({
           stage: p.stage || "",
           done: Number(p.done) || 0,
           total: Number(p.total) || 0,
+          unit: p.unit || "",
           message: p.message || "",
         };
         if (p.stage === "overall") {
@@ -2518,6 +2536,7 @@ createApp({
       anyUnconfigured, publishTargetsText, xhSettings,
       quickTargets, quickPlatHint, quickChipTitle, toggleQuickPlatform,
       pubProgress, pubChips, pubPercent, stageLabel,
+      progressNum, fmtMb,
       platShort, platStatus, connected, extrasOf, extraLabel, staleAccountsText,
       saveConfig, openAccount, toggleExpand, openLogin,
       checkOne, checkAll, pasteCookie, qrLogin, detectProxy,

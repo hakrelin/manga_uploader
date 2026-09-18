@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
+import json
 import pathlib
 import tempfile
+import threading
 import unittest
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
+from unittest import mock
+
+from PIL import Image
 
 from manga_uploader.config import DEFAULT_SETTINGS, CommonConfig, PlatformConfig
 from manga_uploader.models import Chapter
@@ -140,6 +147,184 @@ class XiaoheiheFixTest(unittest.TestCase):
         self.assertIn("x=1&amp;y=2", tag)
         self.assertIn('data-width="640"', tag)
         self.assertIn('data-height="960"', tag)
+
+
+class _XhhHandler(BaseHTTPRequestHandler):
+    """只回帖子/评论创建接口的假小黑盒服务端。"""
+
+    posts: list = []
+    link_counter = 0
+    comment_counter = 0
+
+    def log_message(self, *args):
+        pass
+
+    def _json(self, payload: dict) -> None:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_POST(self) -> None:
+        length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(length).decode("utf-8", "replace")
+        path = self.path.split("?")[0]
+        self.__class__.posts.append({"path": path, "query": self.path, "body": body})
+        if path == X.POST_URL:
+            self.__class__.link_counter += 1
+            self._json({"status": "ok", "msg": "", "link_id": 100000 + self.__class__.link_counter})
+        elif path == X.COMMENT_CREATE_URL:
+            self.__class__.comment_counter += 1
+            self._json(
+                {
+                    "status": "ok",
+                    "msg": "",
+                    "result": {"comment": [{"commentid": 900000 + self.__class__.comment_counter}]},
+                }
+            )
+        else:
+            self._json({"status": "failed", "msg": f"unknown path {path}"})
+
+
+class XiaoheiheOverflowCommentTest(unittest.TestCase):
+    """超过单帖上限的图不再另发一帖，而是发到首帖评论区。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.server = HTTPServer(("127.0.0.1", 0), _XhhHandler)
+        cls.port = cls.server.server_address[1]
+        threading.Thread(target=cls.server.serve_forever, daemon=True).start()
+        cls._orig_api = X.API
+        X.API = f"http://127.0.0.1:{cls.port}"
+
+    @classmethod
+    def tearDownClass(cls):
+        X.API = cls._orig_api
+        cls.server.shutdown()
+
+    def setUp(self):
+        _XhhHandler.posts = []
+        _XhhHandler.link_counter = 0
+        _XhhHandler.comment_counter = 0
+        self.tmp = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _chapter(self, count: int) -> Chapter:
+        folder = Path(self.tmp.name) / "ch01"
+        folder.mkdir(parents=True, exist_ok=True)
+        pages = []
+        for i in range(1, count + 1):
+            page = folder / f"{i:03d}.png"
+            Image.new("RGB", (40, 60), (i, 60, 90)).save(page)
+            pages.append(page)
+        return Chapter(
+            key="ch01",
+            title="评论续图测试",
+            description="简介",
+            tags=[],
+            pages=pages,
+            source_dir=folder,
+            raw={"title": "评论续图测试"},
+        )
+
+    def _publisher(self, **settings):
+        base = {
+            "publish_mode": "article",
+            "publish_draft": False,
+            "article_max_pages": 5,
+            "comment_max_pages": 2,
+            "topic_ids": "",
+            "hashtags": "",
+        }
+        base.update(settings)
+        return X.XiaoheihePublisher(
+            PlatformConfig(name="xiaoheihe", cookies={"cookie": "pkey=A"}, settings=base),
+            CommonConfig(output_dir=str(Path(self.tmp.name) / "out")),
+        )
+
+    def _run(self, publisher, chapter):
+        uploaded = {"n": 0}
+
+        def fake_upload(page):
+            uploaded["n"] += 1
+            return X._UploadedPage(f"https://img.example.com/{Path(page.path).name}", 40, 60)
+
+        with mock.patch.object(X.XiaoheihePublisher, "_upload_page", side_effect=fake_upload):
+            return publisher.publish(chapter)
+
+    def test_overflow_pages_go_to_comments(self):
+        # 12 页、单帖上限 5、每条评论 2 张 → 1 帖（5）+ 评论区 4 条（2/2/2/1）
+        result = self._run(self._publisher(), self._chapter(12))
+        self.assertEqual(result.status, "ok", result.message)
+        self.assertIn("评论区", result.message)
+        self.assertEqual(result.details.get("comments"), 4)
+
+        post_calls = [p for p in _XhhHandler.posts if p["path"] == X.POST_URL]
+        comment_calls = [p for p in _XhhHandler.posts if p["path"] == X.COMMENT_CREATE_URL]
+        self.assertEqual(len(post_calls), 1)
+        self.assertEqual(len(comment_calls), 4)
+        # 评论参数对齐网页端：rnd=15 & target=heybox_app，顶层评论 root_id/reply_id 都是 -1
+        self.assertIn("rnd=15", comment_calls[0]["query"])
+        self.assertIn("target=heybox_app", comment_calls[0]["query"])
+        first = comment_calls[0]["body"]
+        self.assertIn("link_id=100001", first)
+        self.assertIn("root_id=-1", first)
+        self.assertIn("reply_id=-1", first)
+        # imgs 用分号连接；第 2 条评论对应第 8–9 页
+        self.assertEqual(first.count("img.example.com"), 2)
+        self.assertIn("%3B", first)  # 分号被 urlencode（两条图之间）
+        self.assertIn("006", comment_calls[0]["body"] + comment_calls[0]["query"])
+        self.assertIn("008", comment_calls[1]["body"] + comment_calls[1]["query"])
+        self.assertIn("009", comment_calls[1]["body"] + comment_calls[1]["query"])
+        # 最后一条只带剩下 1 张
+        self.assertEqual(comment_calls[-1]["body"].count("img.example.com"), 1)
+
+    def test_overflow_mode_post_keeps_old_behaviour(self):
+        result = self._run(self._publisher(overflow_mode="post"), self._chapter(12))
+        self.assertEqual(result.status, "ok", result.message)
+        post_calls = [p for p in _XhhHandler.posts if p["path"] == X.POST_URL]
+        comment_calls = [p for p in _XhhHandler.posts if p["path"] == X.COMMENT_CREATE_URL]
+        self.assertEqual(len(post_calls), 3)   # 5 + 5 + 2
+        self.assertEqual(len(comment_calls), 0)
+
+    def test_draft_mode_falls_back_to_extra_post(self):
+        """草稿状态发不了评论（站点限制）：退回“另存一帖”，并在结果里说明。"""
+        result = self._run(self._publisher(publish_draft=True), self._chapter(9))
+        self.assertEqual(result.status, "ok", result.message)
+        self.assertIn("草稿模式发不了评论", result.message)
+        post_calls = [p for p in _XhhHandler.posts if p["path"] == X.POST_URL]
+        comment_calls = [p for p in _XhhHandler.posts if p["path"] == X.COMMENT_CREATE_URL]
+        self.assertEqual(len(post_calls), 2)   # 5 + 4（都是草稿）
+        self.assertEqual(len(comment_calls), 0)
+
+    def test_comment_failure_marks_partial(self):
+        class _Boom(_XhhHandler):
+            def do_POST(self):  # noqa: N802
+                path = self.path.split("?")[0]
+                if path == X.COMMENT_CREATE_URL:
+                    length = int(self.headers.get("Content-Length", 0))
+                    self.rfile.read(length)
+                    self.__class__.posts.append({"path": path, "query": self.path, "body": ""})
+                    self._json({"status": "failed", "msg": "帖子不存在"})
+                    return
+                super().do_POST()
+
+        server = HTTPServer(("127.0.0.1", 0), _Boom)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        orig = X.API
+        X.API = f"http://127.0.0.1:{server.server_address[1]}"
+        try:
+            result = self._run(self._publisher(), self._chapter(9))
+        finally:
+            X.API = orig
+            server.shutdown()
+        self.assertEqual(result.status, "partial")
+        self.assertIn("评论区", result.message)
+        self.assertIn("帖子不存在", result.message)
 
 
 if __name__ == "__main__":

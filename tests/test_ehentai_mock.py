@@ -104,7 +104,9 @@ class _Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(length)
-        self.__class__.posts.append({"path": self.path, "body": body})
+        self.__class__.posts.append(
+            {"path": self.path, "body": body, "headers": dict(self.headers)}
+        )
         out = DRAFT_HTML.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -264,6 +266,113 @@ class TestEhentaiPublisherMock(unittest.TestCase):
         # 归档内按页序固定三位命名（001.png … 005.png），字典序与自然序一致
         self.assertIn(b"001.png", body)
         self.assertIn(b"005.png", body)
+
+    def _zip_from_last_post(self) -> bytes:
+        """从 mock 收到的 multipart body 里取出 zip 原始字节。"""
+        import io
+        import zipfile
+
+        post = _Handler.posts[-1]
+        body = post["body"]
+        boundary = post["headers"]["Content-Type"].split("boundary=")[1].strip()
+        marker = b"\r\n--" + boundary.encode()
+        start = body.index(b"PK\x03\x04")
+        end = body.rindex(marker)
+        return body[start:end]
+
+    def test_zip_upload_sends_originals_without_compression(self):
+        """E 站归档不限单图大小：zip 模式必须直接打包原始文件，不做压缩/缩放。"""
+        cfg = PlatformConfig(
+            name="ehentai",
+            cookies={"ipb_member_id": "1", "ipb_pass_hash": "h"},
+            settings={"category_label": "Manga", "language_label": "Chinese"},
+        )
+        # 故意把压缩参数调成“会明显改图”：真压缩了就不可能和原文件逐字节相同
+        common = CommonConfig(
+            output_dir=str(Path(self.tmp.name) / "out"),
+            max_bytes_mb=0.001,
+            max_width=64,
+            quality=20,
+        )
+        publisher = EhentaiPublisher(cfg, common)
+        chapter = _make_chapter(Path(self.tmp.name))
+        result = publisher.publish(chapter)
+        self.assertEqual(result.status, "ok", result.message)
+
+        import io
+        import zipfile
+
+        blob = self._zip_from_last_post()
+        with zipfile.ZipFile(io.BytesIO(blob)) as zf:
+            self.assertEqual(
+                zf.namelist(),
+                ["001.png", "002.png", "003.png", "004.png", "005.png"],
+            )
+            for index, source in enumerate(chapter.pages, 1):
+                self.assertEqual(
+                    zf.read(f"{index:03d}.png"),
+                    Path(source).read_bytes(),
+                    f"{index:03d}.png 应与源文件完全一致（说明没被压缩）",
+                )
+
+    def test_zip_upload_reports_byte_progress(self):
+        """zip 上传要按字节回报进度（前端显示百分比），最后一条 done == total。"""
+        cfg = PlatformConfig(
+            name="ehentai",
+            cookies={"ipb_member_id": "1", "ipb_pass_hash": "h"},
+            settings={"category_label": "Manga", "language_label": "Chinese"},
+        )
+        publisher = EhentaiPublisher(
+            cfg, CommonConfig(output_dir=str(Path(self.tmp.name) / "out"))
+        )
+        calls: list[dict] = []
+
+        def fake_progress(stage, done, total, message="", *, chapter_key="", unit=""):
+            calls.append(
+                {"stage": stage, "done": done, "total": total, "message": message, "unit": unit}
+            )
+
+        with mock.patch.object(publisher, "progress", side_effect=fake_progress):
+            result = publisher.publish(_make_chapter(Path(self.tmp.name)))
+        self.assertEqual(result.status, "ok", result.message)
+        uploads = [c for c in calls if c["stage"] == "upload" and c["unit"] == "bytes"]
+        self.assertTrue(uploads, "没有按字节回报上传进度")
+        self.assertEqual(uploads[-1]["done"], uploads[-1]["total"])
+        self.assertGreater(uploads[-1]["total"], 0)
+        self.assertIn("%", uploads[-1]["message"])
+        self.assertEqual(
+            [c["done"] for c in uploads], sorted(c["done"] for c in uploads)
+        )
+
+    def test_archive_pages_keep_originals_but_convert_webp(self):
+        """常见格式直接用原图；站点不吃的 webp 才回退到转换管线。"""
+        cfg = PlatformConfig(
+            name="ehentai",
+            cookies={"ipb_member_id": "1", "ipb_pass_hash": "h"},
+            settings={"category_label": "Manga"},
+        )
+        publisher = EhentaiPublisher(
+            cfg, CommonConfig(output_dir=str(Path(self.tmp.name) / "out"))
+        )
+        chapter = _make_chapter(Path(self.tmp.name))
+        self.assertEqual(publisher._archive_pages(chapter), chapter.pages)
+
+        webp = Path(self.tmp.name) / "webp"
+        webp.mkdir()
+        bad = webp / "001.webp"
+        Image.new("RGB", (100, 100), (10, 20, 30)).save(bad, format="WEBP")
+        chapter2 = Chapter(
+            key="webp",
+            title="webp 测试",
+            description="",
+            tags=[],
+            pages=[bad],
+            source_dir=webp,
+            raw={},
+        )
+        converted = publisher._archive_pages(chapter2)
+        self.assertTrue(converted, "webp 应走转换管线")
+        self.assertTrue(all(Path(p.path).suffix.lower() in (".jpg", ".jpeg", ".png") for p in converted))
 
     def test_preview_names_match_upload_names(self):
         cfg = PlatformConfig(

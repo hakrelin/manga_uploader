@@ -30,6 +30,14 @@ from .base import BasePublisher, PublisherError
 UPLOAD_PAGE_URL = "https://upload.e-hentai.org/managegallery?act=new"
 CHECK_PAGE_URL = "https://e-hentai.org/home.php"
 
+# 归档（zip）里站点能直接吃下的图片格式；其它格式（如 webp）才需要转换
+ARCHIVE_OK_EXTS = {".jpg", ".jpeg", ".png", ".gif"}
+
+
+def page_path(page) -> Path:
+    """统一取页面文件路径：PreparedPage 有 .path，原始页就是 Path/str。"""
+    return Path(getattr(page, "path", page))
+
 
 # e-hentai 是境外站点：upload.e-hentai.org 在国内直连基本必然超时。
 # 报错时把“怎么办”直接写进提示，省得用户对着 ConnectTimeoutError 猜。
@@ -229,21 +237,39 @@ class EhentaiPublisher(BasePublisher):
         """预览与实际打包共用的上传文件名（顺序与打包完全一致）。"""
         mode = self._upload_mode()
 
-        def _page_path(page) -> Path:
-            if hasattr(page, "path"):
-                return Path(page.path)
-            return Path(page)
-
         if mode in ("files", "individual"):
             return [
-                f"{index:04d}_{_page_path(p).name}" for index, p in enumerate(pages, 1)
+                f"{index:04d}_{page_path(p).name}" for index, p in enumerate(pages, 1)
             ]
         # 固定至少 3 位：001…999、1000…，字典序与自然序一致（防百页以上错序）
         width = max(3, len(str(len(pages))))
         return [
-            f"{index:0{width}d}{_page_path(p).suffix.lower()}"
+            f"{index:0{width}d}{page_path(p).suffix.lower()}"
             for index, p in enumerate(pages, 1)
         ]
+
+    def _archive_pages(self, chapter: Chapter) -> list:
+        """zip 上传用的页面：**直接用原始文件，不压缩**。
+
+        e-hentai 对归档（zip）里的单图没有大小限制，压缩只会拖慢速度、掉画质；
+        只有站点不认识的后缀（如 webp）才回退到统一压缩管线转成 jpg/png。
+        """
+        pages = list(chapter.pages)
+        odd = sorted(
+            {
+                page_path(p).suffix.lower()
+                for p in pages
+                if page_path(p).suffix.lower() not in ARCHIVE_OK_EXTS
+            }
+        )
+        if not odd:
+            return pages
+        self.log.warning(
+            "归档里含站点不支持的格式（%s）：这些页会先转成 jpg/png 再打包",
+            "、".join(odd),
+        )
+        # 明确限定成站点接受的格式，让 webp 之类真正被转成 jpg/png
+        return self.prepare_pages(chapter, allowed_exts=set(ARCHIVE_OK_EXTS), max_bytes=0)
 
     def full_preview(self, chapter: Chapter) -> list[str]:
         """e-hentai 全文预览：列出将写入 zip/上传的文件名（与实际上传一致）。"""
@@ -264,17 +290,19 @@ class EhentaiPublisher(BasePublisher):
         lines.append(f"标签：{tags}")
         if mode in ("files", "individual"):
             lines.append(f"上传 {len(chapter.pages)} 张图片（逐张）")
+            size_note = "上传时自动压缩至 10MB 内"
         else:
             lines.append(
                 f"打包为 ZIP 归档（{len(chapter.pages)} 页），归档内文件名如下，"
                 "E 站将按归档内文件名生成页码："
             )
+            size_note = "原图直接打包，不压缩"
         names = self._upload_names(chapter.pages)
         for index, page in enumerate(chapter.pages, 1):
             lines.append(
                 f"  [{index:>3}] {names[index - 1]}"
                 f"（源文件 {page.name}，{human_size(page.stat().st_size)}；"
-                "上传时自动压缩至 10MB 内）"
+                f"{size_note}）"
             )
         warnings = page_sequence_warnings(chapter.pages)
         if warnings:
@@ -587,7 +615,12 @@ class EhentaiPublisher(BasePublisher):
             file_name = file_fields[0] if file_fields else "sfile[]"
 
             data = self._fill(form, chapter)
-            pages = self.prepare_pages(chapter, max_bytes=0)
+            # zip 模式直接用原始文件（站点对归档没有单图大小限制，不必压缩）；
+            # files 模式仍走压缩管线（站点对单张有大小限制）
+            if self._upload_mode() in ("files", "individual"):
+                pages = self.prepare_pages(chapter, max_bytes=0)
+            else:
+                pages = self._archive_pages(chapter)
             action = urljoin(UPLOAD_PAGE_URL, form.action or UPLOAD_PAGE_URL)
             resp = self._upload_files(action, data, file_name, pages)
             return self._interpret_response(resp, chapter, len(pages))
@@ -662,30 +695,48 @@ class EhentaiPublisher(BasePublisher):
             with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
                 for page_item, arcname in zip(pages, names):
                     # 站点按归档内文件名生成页码，只保留页序名（对齐人工 zip 上传的 01.png）
-                    zf.write(page_item.path, arcname=arcname)
+                    zf.write(page_path(page_item), arcname=arcname)
+            zip_mb = os.path.getsize(zip_path) / 1048576
+            raw_mb = sum(page_path(p).stat().st_size for p in pages) / 1048576
             self.progress(
                 "zip",
                 len(pages),
                 len(pages),
-                f"ZIP 打包完成（{os.path.getsize(zip_path) / 1048576:.1f} MB）",
+                f"ZIP 打包完成（原始图片 {raw_mb:.1f} MB → 归档 {zip_mb:.1f} MB，未压缩图片）",
             )
-            self.progress(
-                "upload",
-                0,
-                0,
-                "正在上传 ZIP 归档到 e-hentai（这一步比较慢，请耐心等待，不要关闭页面）",
-            )
-            self.log.info("POST 上传 zip（%d 页，%s）到 %s", len(pages), zip_path, action)
-            with open(zip_path, "rb") as fh:
-                return self.http.post(
-                    action,
-                    data=data,
-                    files=[(file_name, ("gallery.zip", fh, "application/zip"))],
-                    headers={"Referer": UPLOAD_PAGE_URL},
-                    allow_redirects=True,
-                    retry=False,
-                    timeout=float(self.cfg.get("upload_timeout", 600) or 600),
+            # 上传进度：按字节回报（前端会显示百分比与 MB）
+            last = {"pct": -1, "time": 0.0}
+
+            def on_progress(sent: int, total_bytes: int) -> None:
+                pct = int(sent * 100 / total_bytes) if total_bytes else 0
+                now = time.time()
+                # 每 1% 或每 0.5 秒回报一次，别把进度事件刷爆
+                if sent < total_bytes and pct == last["pct"] and now - last["time"] < 0.5:
+                    return
+                last["pct"], last["time"] = pct, now
+                self.progress(
+                    "upload",
+                    sent,
+                    total_bytes,
+                    f"正在上传 ZIP 归档：{sent / 1048576:.1f} / {total_bytes / 1048576:.1f} MB"
+                    f"（{pct}%）",
+                    unit="bytes",
                 )
+
+            self.log.info("POST 上传 zip（%d 页，%s）到 %s", len(pages), zip_path, action)
+            return self.http.post_multipart_stream(
+                action,
+                fields=data,
+                file_field=file_name,
+                file_path=Path(zip_path),
+                filename="gallery.zip",
+                content_type="application/zip",
+                on_progress=on_progress,
+                headers={"Referer": UPLOAD_PAGE_URL},
+                allow_redirects=True,
+                retry=False,
+                timeout=float(self.cfg.get("upload_timeout", 600) or 600),
+            )
         finally:
             try:
                 Path(zip_path).unlink(missing_ok=True)

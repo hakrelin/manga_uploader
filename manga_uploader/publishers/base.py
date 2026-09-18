@@ -60,8 +60,13 @@ class BasePublisher(ABC):
         message: str = "",
         *,
         chapter_key: str = "",
+        unit: str = "",
     ) -> None:
-        """发布进度事件（Web 前端进度条用；CLI 下仅作为日志输出）。"""
+        """发布进度事件（Web 前端进度条用；CLI 下仅作为日志输出）。
+
+        unit 留空表示 done/total 是“张数/帖数”，填 "bytes" 表示字节
+        （前端按 MB 显示，百分比同样按字节算）。
+        """
         try:
             self.log.info(
                 "进度 %s：%s", self.display_name, message or stage,
@@ -72,6 +77,7 @@ class BasePublisher(ABC):
                     "stage": str(stage or ""),
                     "done": max(0, int(done or 0)),
                     "total": max(0, int(total or 0)),
+                    "unit": str(unit or ""),
                     "message": str(message or ""),
                 }},
             )

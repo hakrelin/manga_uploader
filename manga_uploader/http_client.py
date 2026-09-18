@@ -5,8 +5,9 @@ from __future__ import annotations
 import os
 import re
 import time
+import uuid
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import requests
 
@@ -159,6 +160,71 @@ class HttpClient:
 
     def post(self, url: str, **kwargs: Any) -> requests.Response:
         return self.request("POST", url, **kwargs)
+
+    def post_multipart_stream(
+        self,
+        url: str,
+        *,
+        fields: dict[str, Any],
+        file_field: str,
+        file_path: Path,
+        filename: str,
+        content_type: str = "application/octet-stream",
+        on_progress: Optional[Callable[[int, int], None]] = None,
+        chunk_size: int = 256 * 1024,
+        **kwargs: Any,
+    ) -> requests.Response:
+        """上传单个文件（multipart 表单）并在发送过程中回报进度。
+
+        requests 本身不给“上传进度”，而且传大文件（比如 e-hentai 的整包 zip）
+        时前端只能看到一个干等的进度条。这里自己拼 multipart body 并按块发送，
+        边发边回调 on_progress(已发送字节, 总字节)，用来显示百分比。
+
+        注意：body 是一次性的，调用方必须传 retry=False（重试会发不出去）。
+        """
+        path = Path(file_path)
+        boundary = "----mangaUploader" + uuid.uuid4().hex
+        head_parts: list[bytes] = []
+        for key, value in (fields or {}).items():
+            head_parts.append(
+                (
+                    f"--{boundary}\r\n"
+                    f'Content-Disposition: form-data; name="{key}"\r\n\r\n'
+                    f"{value}\r\n"
+                ).encode("utf-8")
+            )
+        head = b"".join(head_parts)
+        file_head = (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="{file_field}"; filename="{filename}"\r\n'
+            f"Content-Type: {content_type}\r\n\r\n"
+        ).encode("utf-8")
+        tail = f"\r\n--{boundary}--\r\n".encode("utf-8")
+        total = len(head) + len(file_head) + path.stat().st_size + len(tail)
+
+        def body() -> Any:
+            sent = len(head) + len(file_head)
+            yield head
+            yield file_head
+            if on_progress:
+                on_progress(min(sent, total), total)
+            with open(path, "rb") as handle:
+                while True:
+                    chunk = handle.read(chunk_size)
+                    if not chunk:
+                        break
+                    sent += len(chunk)
+                    if on_progress:
+                        on_progress(min(sent, total), total)
+                    yield chunk
+            if on_progress:
+                on_progress(total, total)  # 收尾：确保进度能走到 100%
+            yield tail
+
+        headers = dict(kwargs.pop("headers", {}) or {})
+        headers["Content-Type"] = f"multipart/form-data; boundary={boundary}"
+        headers["Content-Length"] = str(total)
+        return self.request("POST", url, data=body(), headers=headers, **kwargs)
 
     def get_json(self, url: str, **kwargs: Any) -> dict:
         resp = self.get(url, **kwargs)

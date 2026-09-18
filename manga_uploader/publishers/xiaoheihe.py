@@ -55,6 +55,7 @@ INFO_URL = "/bbs/app/api/qcloud/cos/upload/info/v2"
 TOKEN_URL = "/bbs/app/api/qcloud/cos/upload/token/v2"
 CALLBACK_URL = "/bbs/app/api/qcloud/cos/upload/callback/v2"
 POST_URL = "/bbs/app/api/link/post"
+COMMENT_CREATE_URL = "/bbs/app/comment/create"
 DELETE_URL = "/bbs/app/link/delete"
 EDIT_INFO_URL = "/bbs/app/link/edit/info"
 TOPIC_SELECT_URL = "/bbs/app/api/post_editor/topic_selection/index"
@@ -72,6 +73,12 @@ DEFAULT_ARTICLE_MAX_PAGES = 100
 DEFAULT_TOPIC_IDS = "431327,477625"
 # 服务端正文上限（/bbs/app/profile/post/limits 实测 30000 字）
 MAX_DESC_CHARS = 30000
+# 单帖达到图片上限后，剩下的图片怎么处理：
+#   comment（默认）= 发到首帖的评论区（同一帖里看完，不刷屏）
+#   post          = 再发一帖（旧行为）
+DEFAULT_OVERFLOW_MODE = "comment"
+# 每条评论最多带几张图（站点没公开上限，实测按 9 张一组最稳）
+DEFAULT_COMMENT_MAX_PAGES = 9
 
 
 # ---------------------------------------------------------------- 签名
@@ -326,6 +333,19 @@ class XiaoheihePublisher(BasePublisher):
     def mode_limit(self, mode: str) -> int:
         return self.article_max_pages if mode == "article" else self.image_text_max_pages
 
+    def overflow_mode(self) -> str:
+        """单帖装不下时：comment=发到评论区（默认），post=再发一帖（旧行为）。"""
+        mode = str(self.cfg.get("overflow_mode") or DEFAULT_OVERFLOW_MODE).strip().lower()
+        return mode if mode in ("comment", "post") else DEFAULT_OVERFLOW_MODE
+
+    def comment_max_pages(self) -> int:
+        """每条评论最多几张图（配置写错就回退默认，不会让发布挂掉）。"""
+        try:
+            value = int(self.cfg.get("comment_max_pages", DEFAULT_COMMENT_MAX_PAGES))
+        except (TypeError, ValueError):
+            value = DEFAULT_COMMENT_MAX_PAGES
+        return max(1, value)
+
     @property
     def user_id(self) -> str:
         return str(self.cfg.cookies.get("heybox_id") or "").strip()
@@ -453,6 +473,21 @@ class XiaoheihePublisher(BasePublisher):
         limit = self.mode_limit(mode)
         posts = max(1, math.ceil(pages / limit)) if pages else 0
         mode_label = "图文" if mode == "image_text" else "文章"
+        overflow = self.overflow_mode()
+        if overflow == "comment" and posts > 1 and self._publish_draft():
+            overflow_note = (
+                f"草稿模式发不了评论（站点限制）：超出的 {pages - limit} 页会另存一帖；"
+                "想合并到评论区请关闭「先存草稿」"
+            )
+        elif overflow == "comment" and posts > 1:
+            overflow_note = (
+                f"超出 {limit} 张的部分发到首帖评论区"
+                f"（每条最多 {self.comment_max_pages()} 张，共 {posts - 1} 条）"
+            )
+        elif posts > 1:
+            overflow_note = f"超出的部分再发一帖（共 {posts} 帖）"
+        else:
+            overflow_note = "一帖装得下，不需要拆"
         decl = self._declaration()
         decl_text = (
             f"转载/已授权/站外 {decl.get('source')}"
@@ -466,6 +501,7 @@ class XiaoheihePublisher(BasePublisher):
             f"关联社区：{self._topic_ids()}",
             f"内容声明：{decl_text}",
             f"共 {pages} 张图，预计拆成 {posts} 条{mode_label}",
+            f"超额处理：{overflow_note}",
             f"正文：{(self._description(chapter)[:80] + '…') if len(self._description(chapter)) > 80 else self._description(chapter)}",
         ]
         if self._publish_draft():
@@ -482,7 +518,15 @@ class XiaoheihePublisher(BasePublisher):
         pages = chapter.pages
         mode = self.mode_for(len(pages))
         limit = self.mode_limit(mode)
-        groups = chunk_list(pages, limit)
+        overflow = self.overflow_mode()
+        comment_groups = []
+        # 草稿模式发不了评论（站点限制），预览同样按“另发一帖”展示
+        comments_used = overflow == "comment" and not self._publish_draft()
+        if comments_used and len(pages) > limit:
+            groups = [list(pages[:limit])]
+            comment_groups = chunk_list(list(pages[limit:]), self.comment_max_pages())
+        else:
+            groups = chunk_list(pages, limit)
         mode_label = "图文 image_text" if mode == "image_text" else "文章 article"
         decl = self._declaration()
         lines = [
@@ -492,7 +536,12 @@ class XiaoheihePublisher(BasePublisher):
             f"关联社区：{self._topic_ids()}",
             f"内容声明：{json.dumps(decl, ensure_ascii=False)}",
             f"正文结构示例：{_content_json(description, [], article=(mode == 'article'))[:180] + '…'}",
-            f"共 {len(pages)} 张图，拆成 {len(groups)} 帖（每帖最多 {limit} 张）：",
+            f"共 {len(pages)} 张图，发 {len(groups)} 帖（每帖最多 {limit} 张）"
+            + (
+                f" + 评论区 {len(comment_groups)} 条（每条最多 {self.comment_max_pages()} 张）："
+                if comment_groups
+                else "："
+            ),
         ]
         if mode == "article":
             lines.insert(
@@ -506,6 +555,17 @@ class XiaoheihePublisher(BasePublisher):
                 lines.append(
                     f"    [{page_index:>3}] {page.name}（{human_size(page.stat().st_size)}）"
                 )
+        if comment_groups:
+            offset = limit
+            for index, group in enumerate(comment_groups, 1):
+                start = offset + 1
+                end = offset + len(group)
+                lines.append(f"  ── 评论区第 {index} 条（第 {start}–{end} 页，{len(group)} 张）──")
+                for page_index, page in enumerate(group, start):
+                    lines.append(
+                        f"    [{page_index:>3}] {page.name}（{human_size(page.stat().st_size)}）"
+                    )
+                offset = end
         warnings = page_sequence_warnings(pages)
         if warnings:
             lines.append("⚠ 检查发现：")
@@ -530,6 +590,21 @@ class XiaoheihePublisher(BasePublisher):
             link_tag = 11 if article else 27
             mode_label = "文章" if article else "图文"
             groups = chunk_list(pages, limit)
+            # 超出单帖上限的图片：默认不再另发一帖，改成发到首帖评论区。
+            # 站点只允许给公开帖子评论：草稿（先存草稿模式）发不了评论，
+            # 这种情况退回旧行为（另存一帖），并在结果里说清楚原因。
+            overflow_pages: list = []
+            overflow_note = ""
+            if len(pages) > limit and self.overflow_mode() == "comment":
+                if self._publish_draft():
+                    overflow_note = (
+                        f"⚠ 草稿模式发不了评论（站点限制）：超出的 {len(pages) - limit} 页改为另存一帖；"
+                        "想让它们进评论区，请把 publish_draft 关掉后再发"
+                    )
+                    self.log.warning(overflow_note)
+                else:
+                    overflow_pages = list(pages[limit:])
+                    groups = [list(pages[:limit])]
             description = self._description(chapter)
             title = self._title(chapter)
             topic_ids = self._topic_ids()
@@ -537,6 +612,7 @@ class XiaoheihePublisher(BasePublisher):
             decl = self._declaration()
             total = len(groups)
             page_done = 0
+            head_link_id = ""
             for index, group in enumerate(groups, 1):
                 try:
                     self.log.info(
@@ -632,6 +708,8 @@ class XiaoheihePublisher(BasePublisher):
                         raise PublisherError(
                             f"小黑盒 发布响应缺少 link_id：{payload}"
                         )
+                    if index == 1:
+                        head_link_id = link_id
                     if self._publish_draft():
                         # 草稿只存在于创作中心“草稿箱”，公开帖子链接打不开。
                         # 主动读一次草稿箱确认草稿真的在（而不是“建完即消失”）。
@@ -685,16 +763,34 @@ class XiaoheihePublisher(BasePublisher):
                     errors.append(f"第 {index} 帖失败：{exc}")
                     continue
 
+            # 首帖发好以后，把超出的图片按“每条最多 comment_max_pages 张”发到评论区
+            comments_posted = 0
+            if overflow_pages and head_link_id:
+                self.log.info(
+                    "超出单帖上限的 %d 页改发首帖评论区（每条最多 %d 张）",
+                    len(overflow_pages),
+                    self.comment_max_pages(),
+                )
+                comments_posted = self._post_overflow_comments(
+                    head_link_id,
+                    overflow_pages,
+                    offset=len(pages) - len(overflow_pages),
+                    chapter=chapter,
+                    errors=errors,
+                )
+
             if errors:
+                prefix = f"{overflow_note}；" if overflow_note else ""
                 return PublishResult.partial(
                     self.key,
                     chapter,
                     url=published[0] if published else "",
-                    message=f"部分失败：{'; '.join(errors)}",
+                    message=f"{prefix}部分失败：{'; '.join(errors)}",
                     urls=published,
                     mode=mode,
                     pages=len(pages),
                     draft=self._publish_draft(),
+                    comments=comments_posted,
                 )
             note = (
                 f"已存入小黑盒草稿箱 {len(published)} 条"
@@ -705,6 +801,10 @@ class XiaoheihePublisher(BasePublisher):
                     else f"已发布{mode_label}"
                 )
             )
+            if comments_posted:
+                note += f"，剩余 {len(overflow_pages)} 页已补到评论区（{comments_posted} 条）"
+            if overflow_note:
+                note = f"{overflow_note}。{note}"
             return PublishResult.ok(
                 self.key,
                 chapter,
@@ -713,9 +813,105 @@ class XiaoheihePublisher(BasePublisher):
                 urls=published,
                 mode=mode,
                 pages=len(pages),
+                comments=comments_posted,
             )
         finally:
             self.cleanup_prepared(chapter)
+
+    # ---------- 评论区续图 ----------
+
+    def _create_comment(self, link_id: str, text: str, urls: list[str]) -> str:
+        """在帖子下发一条（可带图）评论，返回评论 id（拿不到就返回空串）。
+
+        参数与网页端一致：link_id / reply_id / root_id（顶层都是 "-1"）、
+        text 正文，imgs 用分号连接的图片地址（图片同样走站内 COS 图床）。
+        """
+        data = {
+            "is_cy": "0",
+            "link_id": str(link_id),
+            "reply_id": "-1",
+            "root_id": "-1",
+            "text": text,
+        }
+        if urls:
+            data["imgs"] = ";".join(urls)
+        resp = self.http.post(
+            self._signed(COMMENT_CREATE_URL, {"rnd": "15", "target": "heybox_app"}),
+            data=data,
+            headers={"Referer": f"{WEB}/app/bbs/link/{link_id}"},
+        )
+        try:
+            payload = resp.json()
+        except ValueError as exc:
+            raise PublisherError(
+                f"小黑盒 评论接口未返回 JSON：{resp.text[:200]}"
+            ) from exc
+        if payload.get("status") != "ok":
+            raise PublisherError(f"小黑盒 发表评论失败：{_api_error(payload)}")
+        raw = (payload.get("result") or {}).get("comment")
+        items = raw if isinstance(raw, list) else (
+            raw.get("comment") if isinstance(raw, dict) else None
+        )
+        if isinstance(items, list) and items and isinstance(items[0], dict):
+            return str(items[0].get("commentid") or "")
+        return ""
+
+    def _post_overflow_comments(
+        self,
+        link_id: str,
+        pages: list,
+        *,
+        offset: int,
+        chapter: Chapter,
+        errors: list[str],
+    ) -> int:
+        """把超出的页面按每条评论一组发到首帖评论区，返回成功的评论条数。"""
+        chunks = chunk_list(pages, self.comment_max_pages())
+        done = 0
+        posted = 0
+        for index, group in enumerate(chunks, 1):
+            start = offset + done + 1
+            end = offset + done + len(group)
+            try:
+                urls: list[str] = []
+                for _page in group:
+                    self.progress(
+                        "upload",
+                        done,
+                        len(pages),
+                        f"正在上传评论区图片 {done + 1}/{len(pages)}"
+                        f"（第 {index}/{len(chunks)} 条评论）",
+                        chapter_key=chapter.key,
+                    )
+                    urls.append(self._upload_page(_page).url)
+                    done += 1
+                text = f"（续 {index}/{len(chunks)}）第 {start}–{end} 页"
+                comment_id = self._create_comment(link_id, text, urls)
+                posted += 1
+                self.log.info(
+                    "小黑盒 评论区续图 %d/%d：第 %d–%d 页（%d 张，评论 id=%s）",
+                    index,
+                    len(chunks),
+                    start,
+                    end,
+                    len(group),
+                    comment_id or "?",
+                )
+                self.progress(
+                    "comment",
+                    index,
+                    len(chunks),
+                    f"评论区已补第 {start}–{end} 页",
+                    chapter_key=chapter.key,
+                )
+            except Exception as exc:
+                errors.append(f"评论区第 {index} 条（第 {start}–{end} 页）失败：{exc}")
+                self.log.error(
+                    "小黑盒 评论区续图失败（第 %d–%d 页）：%s", start, end, exc
+                )
+            if self.common.interval_seconds:
+                time.sleep(float(self.common.interval_seconds))
+        return posted
 
     # ---------- 图片上传 ----------
 

@@ -333,7 +333,10 @@ Cookie 会过期（B站 SESSDATA 常见数月），`check` 会提示失效，重
 1. 打开 `https://upload.e-hentai.org/managegallery?act=new` 并动态解析上传表单；
 2. 按选项文本匹配分类/语言（`langtag`），汉化默认中文 + `langtype=1`
    （Translated），自动勾选“由专业翻译者翻译”（`langctl`），避免被标机翻；
-3. multipart 上传全部页面（zip 整包或逐张，可在界面切换）；
+3. multipart 上传全部页面（zip 整包或逐张，可在界面切换）。**zip 模式直接用原始
+   图片打包，不做压缩/缩放**（站点对归档里的单图没有大小限制，压缩只会拖慢并掉画质；
+   只有站点不认识的格式如 webp 才会先转成 jpg/png）。逐张模式仍走统一压缩管线；
+   上传过程按字节实时上报进度（前端进度条显示 MB 与百分比）；
 4. 站点先返回“草稿画廊”管理页，程序识别成功后按 `publish_after_upload`
    自动执行 Publish Gallery（设为 false 则只建草稿，由你在 My Uploads 发布）。
 
@@ -363,6 +366,11 @@ Cookie 会过期（B站 SESSDATA 常见数月），`check` 会提示失效，重
      只给 img 块会出现“发布成功但文章里没有图”。
 3. 默认按页数自动选择发布形式：≤30 页 → 图文，>30 页 → 文章
    （文章单帖上限 100 张，超出继续拆篇；也可在界面强制图文或文章）；
+   **超过单帖上限时默认把多出来的图发到首帖评论区**（每条评论最多
+   `comment_max_pages` 张，默认 9），不再另发一帖；想恢复旧行为就把
+   `platforms.xiaoheihe.settings.overflow_mode` 设成 `post`。
+   ⚠ 站点只允许给**公开帖子**评论，所以「先存草稿」模式下超出的部分仍会另存一帖
+   （结果里会写明原因）；要合并到评论区请关掉 `publish_draft` 后再发。
 4. 默认关联社区 东方夜雀食堂 + 东方冰之勇者记，话题 东方project + 东方同人，
    内容声明默认 转载 / 已授权 / 站外来源 bilibili；
 5. `publish_draft` 开启时只保存到网页创作中心草稿箱，核对后再手动发布。

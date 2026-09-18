@@ -209,6 +209,18 @@ PLATFORM_CARDS: list[dict[str, Any]] = [
                 "kind": "number",
                 "label": "文章单帖最大页数",
             },
+            "overflow_mode": {
+                "kind": "select",
+                "label": "超过单帖上限时",
+                "options": [
+                    ("comment", "发到首帖评论区（推荐，需非草稿）"),
+                    ("post", "再发一帖（旧行为）"),
+                ],
+            },
+            "comment_max_pages": {
+                "kind": "number",
+                "label": "每条评论最多图片数（默认 9）",
+            },
         },
     },
 ]
