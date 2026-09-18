@@ -336,8 +336,13 @@ Cookie 会过期（B站 SESSDATA 常见数月），`check` 会提示失效，重
 3. multipart 上传全部页面（zip 整包或逐张，可在界面切换）。**zip 模式直接用原始
    图片打包，不做压缩/缩放**（站点对归档里的单图没有大小限制，压缩只会拖慢并掉画质；
    只有站点不认识的格式如 webp 才会先转成 jpg/png）。逐张模式仍走统一压缩管线；
-   上传过程按字节实时上报进度（前端进度条显示 MB 与百分比）；
-4. 站点先返回“草稿画廊”管理页，程序识别成功后按 `publish_after_upload`
+   **归档超过单次上传上限（`zip_max_mb`，默认 90MB）时自动分卷**：按体积切成多个
+   zip，每卷仍是一次普通的整包上传（`files=`），依次追加到同一个画廊，画质不变，
+   避免站点前面 Cloudflare 的 `413 Payload Too Large`（关掉 `zip_split_uploads` 就退回单包）；
+4. 上传进度**读的是站点自己的进度接口**（上传页里的 `apiuid`/`apikey` + 表单里的
+   `PHP_SESSION_UPLOAD_PROGRESS`，POST `/api {"method":"uploadprogress",…}`，约每秒一次），
+   把 `progress` 文案与百分比转成前端进度事件，显示「站点上传进度：…%」；
+5. 站点先返回“草稿画廊”管理页，程序识别成功后按 `publish_after_upload`
    自动执行 Publish Gallery（设为 false 则只建草稿，由你在 My Uploads 发布）。
 
 上传页常同时有中文/日文等多个标题框，自动匹配容易填错。程序默认只填明确

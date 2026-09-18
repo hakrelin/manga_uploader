@@ -1,5 +1,7 @@
+import json
 import tempfile
 import threading
+import time
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -15,6 +17,9 @@ from manga_uploader.publishers.base import PublisherError
 from manga_uploader.publishers.ehentai import EhentaiPublisher
 
 UPLOAD_HTML = """<!DOCTYPE html><html><body>
+<script type="text/javascript">
+var base_url = "http://127.0.0.1/"; var apiuid = 9431265; var apikey = "a0913654b07c9295ffeb";
+</script>
 <form id="uploadform" method="post" enctype="multipart/form-data" action="/upload">
   <input type="hidden" name="MAX_FILE_SIZE" value="1258291200">
   <input type="hidden" name="PHP_SESSION_UPLOAD_PROGRESS" value="sesstoken123">
@@ -70,6 +75,8 @@ class _Handler(BaseHTTPRequestHandler):
     gets: list = []
     page_html = UPLOAD_HTML
     redirect_url = ""
+    progress_calls = 0
+    upload_delay = 0.0
 
     def log_message(self, *args):
         pass
@@ -104,9 +111,24 @@ class _Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(length)
+        if self.path.startswith("/api"):
+            # 站点自带的上传进度接口：模拟返回 42% 与 done
+            payload = {"progress": "<p>Uploading 42%</p>"}
+            self.__class__.progress_calls += 1
+            if self.__class__.progress_calls > 1:
+                payload["done"] = 1
+            out = json.dumps(payload).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(out)))
+            self.end_headers()
+            self.wfile.write(out)
+            return
         self.__class__.posts.append(
             {"path": self.path, "body": body, "headers": dict(self.headers)}
         )
+        if self.__class__.upload_delay:
+            time.sleep(self.__class__.upload_delay)
         out = DRAFT_HTML.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -193,11 +215,14 @@ class TestEhentaiPublisherMock(unittest.TestCase):
         cls.port = cls.server.server_address[1]
         threading.Thread(target=cls.server.serve_forever, daemon=True).start()
         cls._orig = eh_mod.UPLOAD_PAGE_URL
+        cls._orig_api = eh_mod.UPLOAD_API_URL
         eh_mod.UPLOAD_PAGE_URL = f"http://127.0.0.1:{cls.port}/upload"
+        eh_mod.UPLOAD_API_URL = f"http://127.0.0.1:{cls.port}/api"
 
     @classmethod
     def tearDownClass(cls):
         eh_mod.UPLOAD_PAGE_URL = cls._orig
+        eh_mod.UPLOAD_API_URL = cls._orig_api
         cls.server.shutdown()
 
     def setUp(self):
@@ -205,6 +230,8 @@ class TestEhentaiPublisherMock(unittest.TestCase):
         _Handler.gets = []
         _Handler.page_html = UPLOAD_HTML
         _Handler.redirect_url = ""
+        _Handler.progress_calls = 0
+        _Handler.upload_delay = 0.0
         self.tmp = tempfile.TemporaryDirectory()
 
     def tearDown(self):
@@ -269,10 +296,13 @@ class TestEhentaiPublisherMock(unittest.TestCase):
 
     def _zip_from_last_post(self) -> bytes:
         """从 mock 收到的 multipart body 里取出 zip 原始字节。"""
+        return self._zip_from_post(_Handler.posts[-1])
+
+    def _zip_from_post(self, post: dict) -> bytes:
+        """从 mock 收到的某条 multipart body 里取出 zip 原始字节。"""
         import io
         import zipfile
 
-        post = _Handler.posts[-1]
         body = post["body"]
         boundary = post["headers"]["Content-Type"].split("boundary=")[1].strip()
         marker = b"\r\n--" + boundary.encode()
@@ -315,6 +345,46 @@ class TestEhentaiPublisherMock(unittest.TestCase):
                     f"{index:03d}.png 应与源文件完全一致（说明没被压缩）",
                 )
 
+    def test_zip_splits_into_volumes_when_over_limit(self):
+        """归档超过单次上传上限时自动分卷：每卷一次普通整包上传，追加到同一画廊。"""
+        import io
+        import zipfile
+
+        cfg = PlatformConfig(
+            name="ehentai",
+            cookies={"ipb_member_id": "1", "ipb_pass_hash": "h"},
+            # 每卷上限 1KB：5 张图必然被切成多卷
+            settings={"category_label": "Manga", "zip_max_mb": 0.001},
+        )
+        publisher = EhentaiPublisher(
+            cfg, CommonConfig(output_dir=str(Path(self.tmp.name) / "out"))
+        )
+        result = publisher.publish(_make_chapter(Path(self.tmp.name)))
+        self.assertEqual(result.status, "ok", result.message)
+        uploads = [p for p in _Handler.posts if p["path"].startswith("/upload")]
+        self.assertGreaterEqual(len(uploads), 2, "没有分卷上传")
+        # 各卷合起来正好是 001…005，且顺序不乱（站点按文件名排页）
+        names: list[str] = []
+        for post in uploads:
+            with zipfile.ZipFile(io.BytesIO(self._zip_from_post(post))) as zf:
+                names += zf.namelist()
+        self.assertEqual(names, ["001.png", "002.png", "003.png", "004.png", "005.png"])
+
+    def test_zip_split_can_be_disabled(self):
+        """zip_split_uploads=false 时保持单包（超限就交给站点报 413）。"""
+        cfg = PlatformConfig(
+            name="ehentai",
+            cookies={"ipb_member_id": "1", "ipb_pass_hash": "h"},
+            settings={"category_label": "Manga", "zip_max_mb": 0.001, "zip_split_uploads": False},
+        )
+        publisher = EhentaiPublisher(
+            cfg, CommonConfig(output_dir=str(Path(self.tmp.name) / "out"))
+        )
+        result = publisher.publish(_make_chapter(Path(self.tmp.name)))
+        self.assertEqual(result.status, "ok", result.message)
+        uploads = [p for p in _Handler.posts if p["path"].startswith("/upload")]
+        self.assertEqual(len(uploads), 1)
+
     def test_zip_upload_multipart_is_wellformed(self):
         """回归（用户 09-18 遇到）：流式上传必须发“长度已知的类文件对象”。
 
@@ -338,7 +408,7 @@ class TestEhentaiPublisherMock(unittest.TestCase):
         self.assertTrue(post["body"].rstrip().endswith(b"--"))
 
     def test_zip_upload_reports_byte_progress(self):
-        """zip 上传要按字节回报进度（前端显示百分比），最后一条 done == total。"""
+        """上传时要轮询站点自己的进度接口（/api method=uploadprogress）并转成进度事件。"""
         cfg = PlatformConfig(
             name="ehentai",
             cookies={"ipb_member_id": "1", "ipb_pass_hash": "h"},
@@ -354,17 +424,52 @@ class TestEhentaiPublisherMock(unittest.TestCase):
                 {"stage": stage, "done": done, "total": total, "message": message, "unit": unit}
             )
 
+        # 让上传请求慢一点，进度轮询才有机会跑
+        _Handler.upload_delay = 1.5
         with mock.patch.object(publisher, "progress", side_effect=fake_progress):
             result = publisher.publish(_make_chapter(Path(self.tmp.name)))
         self.assertEqual(result.status, "ok", result.message)
-        uploads = [c for c in calls if c["stage"] == "upload" and c["unit"] == "bytes"]
-        self.assertTrue(uploads, "没有按字节回报上传进度")
-        self.assertEqual(uploads[-1]["done"], uploads[-1]["total"])
-        self.assertGreater(uploads[-1]["total"], 0)
-        self.assertIn("%", uploads[-1]["message"])
-        self.assertEqual(
-            [c["done"] for c in uploads], sorted(c["done"] for c in uploads)
+        self.assertGreaterEqual(_Handler.progress_calls, 1, "没有轮询站点进度接口")
+        site = [c for c in calls if "站点上传进度" in c["message"]]
+        self.assertTrue(site, f"没有把站点进度转成事件：{calls}")
+        self.assertEqual(site[-1]["done"], 42)
+        self.assertEqual(site[-1]["total"], 100)
+
+    def test_progress_numbers_parsing(self):
+        """站点进度文案解析：百分比 / 「12.3 MB / 45.6 MB」都要认。"""
+        self.assertEqual(EhentaiPublisher._progress_numbers("Uploading 42%"), (42, 100, ""))
+        done, total, unit = EhentaiPublisher._progress_numbers("12.5 MB / 50 MB")
+        self.assertEqual(unit, "bytes")
+        self.assertEqual(total, 50 * 1024 ** 2)
+        self.assertEqual(done, int(12.5 * 1024 ** 2))
+        self.assertEqual(EhentaiPublisher._progress_numbers("正在处理，请稍候"), (0, 0, ""))
+        self.assertEqual(eh_mod.strip_tags("<p>Uploading <b>42%</b></p>"), "Uploading 42%")
+
+    def test_archive_pages_never_compress_even_over_limit(self):
+        """体积超上限也不自动压图（掉画质的活交给用户自己决定）。"""
+        cfg = PlatformConfig(
+            name="ehentai",
+            cookies={"ipb_member_id": "1", "ipb_pass_hash": "h"},
+            settings={"category_label": "Manga", "zip_max_mb": 0.001},
         )
+        publisher = EhentaiPublisher(
+            cfg, CommonConfig(output_dir=str(Path(self.tmp.name) / "out"))
+        )
+        chapter = _make_chapter(Path(self.tmp.name))
+        pages = publisher._archive_pages(chapter)
+        # 返回的就是原始文件（不是 PreparedPage），逐字节一致
+        self.assertEqual([Path(p) for p in pages], [Path(p) for p in chapter.pages])
+    def test_archive_pages_keep_originals_within_limit(self):
+        cfg = PlatformConfig(
+            name="ehentai",
+            cookies={"ipb_member_id": "1", "ipb_pass_hash": "h"},
+            settings={"category_label": "Manga", "zip_max_mb": 100},
+        )
+        publisher = EhentaiPublisher(
+            cfg, CommonConfig(output_dir=str(Path(self.tmp.name) / "out"))
+        )
+        chapter = _make_chapter(Path(self.tmp.name))
+        self.assertEqual(publisher._archive_pages(chapter), list(chapter.pages))
 
     def test_archive_pages_keep_originals_but_convert_webp(self):
         """常见格式直接用原图；站点不吃的 webp 才回退到转换管线。"""

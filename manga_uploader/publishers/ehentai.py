@@ -16,27 +16,46 @@ from __future__ import annotations
 import mimetypes
 import os
 import re
+import tempfile
+import threading
 import time
 import zipfile
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urljoin, urlsplit
 
-from ..http_client import HttpError
+from ..http_client import HttpClient, HttpError
 from ..models import Chapter, CheckResult, PublishResult
 from .. import composer
 from .base import BasePublisher, PublisherError
 
 UPLOAD_PAGE_URL = "https://upload.e-hentai.org/managegallery?act=new"
 CHECK_PAGE_URL = "https://e-hentai.org/home.php"
+# 上传进度查询：POST /api {"method":"uploadprogress","apiuid":…,"apikey":…,"progresskey":…}
+# （网页端 update_progress() 用的就是这个接口，返回 {"progress":"<html>", "done":…}）
+UPLOAD_API_URL = "https://upload.e-hentai.org/api"
+PROGRESS_POLL_INTERVAL = 1.0
 
 # 归档（zip）里站点能直接吃下的图片格式；其它格式（如 webp）才需要转换
 ARCHIVE_OK_EXTS = {".jpg", ".jpeg", ".png", ".gif"}
+# upload.e-hentai.org 前面挡着 Cloudflare：单次请求体超过 ~100MB 直接 413
+# （2026-09-18 实测：原始图片打包 300MB+ → `413 Payload Too Large`）。
+# 所以归档按“原始图片合计”估个上限，超了就退回压缩管线再打包。
+DEFAULT_ZIP_MAX_MB = 90.0
 
 
 def page_path(page) -> Path:
     """统一取页面文件路径：PreparedPage 有 .path，原始页就是 Path/str。"""
     return Path(getattr(page, "path", page))
+
+
+_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def strip_tags(text: str) -> str:
+    """去掉站点进度文案里的 HTML 标签，压成一行。"""
+    plain = _TAG_RE.sub(" ", text or "").replace("&nbsp;", " ")
+    return " ".join(plain.split())
 
 
 # e-hentai 是境外站点：upload.e-hentai.org 在国内直连基本必然超时。
@@ -228,10 +247,213 @@ class EhentaiPublisher(BasePublisher):
     key = "ehentai"
     display_name = "e-hentai"
 
+    def __init__(self, cfg, common, output_dir=None):
+        super().__init__(cfg, common, output_dir)
+        # 站点上传进度：apiuid/apikey/progresskey（每次 publish 时从上上传页里取）
+        self._progress_ctx: dict[str, str] = {}
+        self._progress_chapter_key = ""
+        self._progress_volume = ""
+
     def _upload_mode(self) -> str:
         """zip（默认，站点稳定接受归档）或 files（逐张多文件）。"""
         mode = str(self.cfg.get("upload_mode") or "").strip().lower()
         return mode if mode in ("files", "individual") else "zip"
+
+    def zip_max_bytes(self) -> int:
+        """单次上传的归档大小上限（`zip_max_mb`，默认 90MB；填 0 = 不限制）。"""
+        try:
+            mb = float(self.cfg.get("zip_max_mb", DEFAULT_ZIP_MAX_MB))
+        except (TypeError, ValueError):
+            mb = DEFAULT_ZIP_MAX_MB
+        return int(mb * 1024 * 1024) if mb > 0 else 0
+
+    def zip_split_uploads(self) -> bool:
+        """归档超过单次上传上限时是否自动分卷（每卷一次普通上传，画质不变）。"""
+        value = self.cfg.get("zip_split_uploads", True)
+        if isinstance(value, str):
+            return value.strip().lower() not in ("0", "false", "no", "off")
+        return bool(value)
+
+    @staticmethod
+    def _split_pages_by_size(pages: list, limit: int) -> list[list]:
+        """按原始体积把页面切卷（每卷 ≤ limit 字节）；limit=0 表示不切。"""
+        if not limit:
+            return [list(pages)]
+        parts: list[list] = []
+        current: list = []
+        size = 0
+        for page in pages:
+            page_size = page_path(page).stat().st_size
+            if current and size + page_size > limit:
+                parts.append(current)
+                current, size = [], 0
+            current.append(page)
+            size += page_size
+        if current:
+            parts.append(current)
+        return parts
+
+    def _gallery_ref(self, resp) -> str:
+        """从响应里取画廊引用（ulgid=… 优先，其次 gid=…），用于继续追加分卷。"""
+        text = f"{getattr(resp, 'url', '')}\n{getattr(resp, 'text', '')}"
+        for key in ("ulgid", "gid"):
+            match = re.search(rf"managegallery\?[^\"'\s<>]*?{key}=(\d+)", text)
+            if match:
+                return f"{key}={match.group(1)}"
+        for key in ("ulgid", "gid"):
+            match = re.search(rf"[?&]{key}=(\d+)", text)
+            if match:
+                return f"{key}={match.group(1)}"
+        match = re.search(r"upload\.e-hentai\.org/(?:g|gallery)/(\d+)/", text)
+        if match:
+            return f"gid={match.group(1)}"
+        return ""
+
+    def _append_form(self, ref: str, chapter: Chapter) -> tuple[str, dict[str, str]]:
+        """读画廊管理页，拿“追加文件”的表单（action + 字段），供分卷续传使用。"""
+        page = self.http.get(
+            urljoin(UPLOAD_PAGE_URL, f"/managegallery?{ref}"),
+            headers={"Referer": UPLOAD_PAGE_URL},
+        )
+        form = _parse_upload_page(page.text)
+        if not form:
+            raise PublisherError(
+                f"e-hentai 分卷上传：管理页（{ref}）没解析到上传表单，无法继续追加分卷"
+            )
+        # 管理页自带新的 progresskey/apiuid/apikey，进度查询要跟着换
+        self._progress_ctx = self._progress_context(page.text, form)
+        return urljoin(UPLOAD_PAGE_URL, form.action or UPLOAD_PAGE_URL), self._fill(
+            form, chapter
+        )
+
+    # ---------- 站点自带的上传进度 ----------
+
+    def _progress_context(self, page_html: str, form: "_Form") -> dict[str, str]:
+        """进度查询需要的三个值：上传页里的 apiuid/apikey + 表单里的 progresskey。"""
+        field = form.by_name("PHP_SESSION_UPLOAD_PROGRESS")
+        key = str(field.value or "").strip() if field is not None else ""
+        uid = re.search(r"\bapiuid\s*=\s*\"?(\d+)\"?", page_html)
+        apikey = re.search(r"\bapikey\s*=\s*\"([^\"]+)\"", page_html)
+        return {
+            "progresskey": key,
+            "apiuid": uid.group(1) if uid else "",
+            "apikey": apikey.group(1) if apikey else "",
+        }
+
+    @staticmethod
+    def _progress_numbers(text: str) -> tuple[int, int, str]:
+        """从站点进度文案里抠出 (done, total, unit)：支持百分比与「12.3 MB / 45.6 MB」。"""
+        percent = re.search(r"(\d+(?:\.\d+)?)\s*%", text or "")
+        if percent:
+            return int(round(float(percent.group(1)))), 100, ""
+        size = re.search(
+            r"([\d.]+)\s*(B|KB|MB|GB)\s*/\s*([\d.]+)\s*(B|KB|MB|GB)",
+            text or "",
+            re.I,
+        )
+        if size:
+            scale = {"b": 1, "kb": 1024, "mb": 1024 ** 2, "gb": 1024 ** 3}
+            done = float(size.group(1)) * scale[size.group(2).lower()]
+            total = float(size.group(3)) * scale[size.group(4).lower()]
+            return int(done), int(total), "bytes"
+        return 0, 0, ""
+
+    def _poll_upload_progress(
+        self, ctx: dict, stop: threading.Event, chapter_key: str
+    ) -> None:
+        """后台线程：轮询站点自己的上传进度接口，转成前端进度事件。
+
+        用独立的 HttpClient（新 session）：上传请求正占着主 session，
+        同一个 session 被两个线程同时用会互相影响。
+        """
+        client = HttpClient(
+            cookies=self.cfg.cookies,
+            timeout=15.0,
+            retries=0,
+            log_prefix="ehentai-progress",
+            proxy_url=str(self.cfg.get("proxy_url") or self.common.proxy_url or ""),
+            use_system_proxy=bool(
+                self.cfg.get("use_system_proxy", self.common.use_system_proxy)
+            ),
+        )
+        payload = {
+            "method": "uploadprogress",
+            "apiuid": ctx.get("apiuid", ""),
+            "apikey": ctx.get("apikey", ""),
+            "progresskey": ctx.get("progresskey", ""),
+        }
+        try:
+            first = True
+            while not stop.is_set():
+                if not first and stop.wait(PROGRESS_POLL_INTERVAL):
+                    return
+                first = False
+                try:
+                    resp = client.post(
+                        UPLOAD_API_URL,
+                        json=payload,
+                        headers={
+                            "Referer": UPLOAD_PAGE_URL,
+                            "Content-Type": "application/json",
+                        },
+                        retry=False,
+                        timeout=15.0,
+                    )
+                    data = resp.json()
+                except Exception as exc:  # 进度只是锦上添花，失败不打断上传
+                    self.log.debug("读取站点上传进度失败：%s", exc)
+                    continue
+                text = strip_tags(str(data.get("progress") or ""))
+                if text:
+                    done, total, unit = self._progress_numbers(text)
+                    self.progress(
+                        "upload",
+                        done,
+                        total,
+                        f"{self._progress_volume}站点上传进度：{text}",
+                        chapter_key=chapter_key,
+                        unit=unit,
+                    )
+                if data.get("done") is not None:
+                    return
+        finally:
+            try:
+                client.close()
+            except Exception:  # pragma: no cover
+                pass
+
+    def _post_with_progress(
+        self, action: str, *, data: dict, files, volume: tuple[int, int] | None = None
+    ):
+        """整包上传，同时在后台轮询站点自己的上传进度。"""
+        ctx = dict(self._progress_ctx or {})
+        stop = threading.Event()
+        thread = None
+        if volume and volume[1] > 1:
+            self._progress_volume = f"第 {volume[0]}/{volume[1]} 卷 · "
+        else:
+            self._progress_volume = ""
+        if ctx.get("progresskey") and ctx.get("apiuid") and ctx.get("apikey"):
+            thread = threading.Thread(
+                target=self._poll_upload_progress,
+                args=(ctx, stop, self._progress_chapter_key),
+                daemon=True,
+            )
+            thread.start()
+        try:
+            return self.http.post(
+                action,
+                data=data,
+                files=files,
+                headers={"Referer": UPLOAD_PAGE_URL},
+                allow_redirects=True,
+                retry=False,
+                timeout=float(self.cfg.get("upload_timeout", 600) or 600),
+            )
+        finally:
+            stop.set()
+            if thread is not None:
+                thread.join(timeout=2.0)
 
     def _upload_names(self, pages) -> list[str]:
         """预览与实际打包共用的上传文件名（顺序与打包完全一致）。"""
@@ -249,10 +471,11 @@ class EhentaiPublisher(BasePublisher):
         ]
 
     def _archive_pages(self, chapter: Chapter) -> list:
-        """zip 上传用的页面：**直接用原始文件，不压缩**。
+        """zip 上传用的页面：**直接用原始文件，不压缩**（不掉画质）。
 
-        e-hentai 对归档（zip）里的单图没有大小限制，压缩只会拖慢速度、掉画质；
-        只有站点不认识的后缀（如 webp）才回退到统一压缩管线转成 jpg/png。
+        只有站点不认识的后缀（如 webp）才会先转成 jpg/png。
+        整包体积过大时站点前面的 Cloudflare 会回 413，这种情况只提示、不自动压图
+        （压图会掉画质，由用户自己决定是否调整压缩设置）。
         """
         pages = list(chapter.pages)
         odd = sorted(
@@ -269,7 +492,9 @@ class EhentaiPublisher(BasePublisher):
             "、".join(odd),
         )
         # 明确限定成站点接受的格式，让 webp 之类真正被转成 jpg/png
-        return self.prepare_pages(chapter, allowed_exts=set(ARCHIVE_OK_EXTS), max_bytes=0)
+        return self.prepare_pages(
+            chapter, allowed_exts=set(ARCHIVE_OK_EXTS), max_bytes=0
+        )
 
     def full_preview(self, chapter: Chapter) -> list[str]:
         """e-hentai 全文预览：列出将写入 zip/上传的文件名（与实际上传一致）。"""
@@ -296,7 +521,15 @@ class EhentaiPublisher(BasePublisher):
                 f"打包为 ZIP 归档（{len(chapter.pages)} 页），归档内文件名如下，"
                 "E 站将按归档内文件名生成页码："
             )
-            size_note = "原图直接打包，不压缩"
+            raw_mb = sum(page_path(p).stat().st_size for p in chapter.pages) / 1048576
+            limit = self.zip_max_bytes()
+            if limit and raw_mb * 1048576 > limit:
+                size_note = (
+                    f"原始合计 {raw_mb:.1f} MB 超过单次上传上限 {limit / 1048576:.0f} MB"
+                    "（站点 CDN 会 413）→ 这批会先压缩再打包"
+                )
+            else:
+                size_note = f"原图直接打包，不压缩（合计 {raw_mb:.1f} MB）"
         names = self._upload_names(chapter.pages)
         for index, page in enumerate(chapter.pages, 1):
             lines.append(
@@ -615,6 +848,9 @@ class EhentaiPublisher(BasePublisher):
             file_name = file_fields[0] if file_fields else "sfile[]"
 
             data = self._fill(form, chapter)
+            # 站点自带的上传进度：uploadprogress 接口要的 apiuid/apikey/progresskey
+            self._progress_ctx = self._progress_context(page.text, form)
+            self._progress_chapter_key = chapter.key
             # zip 模式直接用原始文件（站点对归档没有单图大小限制，不必压缩）；
             # files 模式仍走压缩管线（站点对单张有大小限制）
             if self._upload_mode() in ("files", "individual"):
@@ -622,7 +858,7 @@ class EhentaiPublisher(BasePublisher):
             else:
                 pages = self._archive_pages(chapter)
             action = urljoin(UPLOAD_PAGE_URL, form.action or UPLOAD_PAGE_URL)
-            resp = self._upload_files(action, data, file_name, pages)
+            resp = self._upload_files(action, data, file_name, pages, chapter)
             return self._interpret_response(resp, chapter, len(pages))
         except HttpError as exc:
             if _is_connect_error(exc):
@@ -639,11 +875,12 @@ class EhentaiPublisher(BasePublisher):
         data: dict[str, str],
         file_name: str,
         pages,
+        chapter: Chapter,
     ):
         """按配置上传：zip（推荐，站点支持归档整包）或逐张多文件（旧行为）。"""
         mode = str(self.cfg.get("upload_mode") or "").strip().lower()
         if mode not in ("files", "individual"):
-            return self._upload_zip(action, data, file_name, pages)
+            return self._upload_zip(action, data, file_name, pages, chapter)
         # files：逐张多文件（兼容站点旧流程与本地测试）
         names = self._upload_names(pages)
         files: list[tuple[str, tuple[str, object, str]]] = []
@@ -662,15 +899,7 @@ class EhentaiPublisher(BasePublisher):
                     )
                 )
             self.log.info("POST 上传 %d 个文件到 %s", len(files), action)
-            return self.http.post(
-                action,
-                data=data,
-                files=files,
-                headers={"Referer": UPLOAD_PAGE_URL},
-                allow_redirects=True,
-                retry=False,
-                timeout=float(self.cfg.get("upload_timeout", 600) or 600),
-            )
+            return self._post_with_progress(action, data=data, files=files)
         finally:
             for handle in handles:
                 handle.close()
@@ -681,67 +910,95 @@ class EhentaiPublisher(BasePublisher):
         data: dict[str, str],
         file_name: str,
         pages,
+        chapter: Chapter,
     ):
-        """把页面打包成单个 ZIP 归档后上传（e-hentai 官方接受 Archive 格式）。
+        """把页面打包成 ZIP 归档后整包上传（e-hentai 官方接受 Archive 格式）。
 
         规则（按 ehwiki）：单层无子目录、文件名全局唯一、Deflate/Store、不加密。
-        """
-        import tempfile
+        图片一律用原始文件，**不压缩**（不掉画质）。
 
+        归档超过单次上传上限（`zip_max_mb`，默认 90MB）时，站点前面的 Cloudflare
+        会回 `413 Payload Too Large`；这时按体积自动分卷，每卷仍是一次普通的整包
+        POST，依次追加到同一个画廊（画质不变，只是分成几个 zip）。
+        """
+        names = self._upload_names(pages)
+        raw_bytes = sum(page_path(p).stat().st_size for p in pages)
+        limit = self.zip_max_bytes()
+        volumes = (
+            self._split_pages_by_size(pages, limit)
+            if (limit and self.zip_split_uploads())
+            else [list(pages)]
+        )
+        total_volumes = len(volumes)
+        if total_volumes > 1:
+            self.log.warning(
+                "图片合计 %.1f MB，超过单次上传上限 %.0f MB（站点 CDN 会回 413）："
+                "自动分成 %d 卷依次上传到同一画廊，原图不压缩",
+                raw_bytes / 1048576,
+                limit / 1048576,
+                total_volumes,
+            )
+        offset = 0
+        resp = None
+        for index, group in enumerate(volumes, 1):
+            part_names = names[offset:offset + len(group)]
+            offset += len(group)
+            zip_path = self._build_zip(group, part_names)
+            try:
+                zip_mb = os.path.getsize(zip_path) / 1048576
+                group_mb = sum(page_path(p).stat().st_size for p in group) / 1048576
+                self.progress(
+                    "zip",
+                    index,
+                    total_volumes,
+                    f"第 {index}/{total_volumes} 卷打包完成"
+                    f"（{len(group)} 页，原始 {group_mb:.1f} MB → 归档 {zip_mb:.1f} MB，未压缩）",
+                )
+                if index > 1:
+                    ref = self._gallery_ref(resp)
+                    if not ref:
+                        raise PublisherError(
+                            "e-hentai 分卷上传：没拿到画廊 id，无法追加后续分卷"
+                        )
+                    action, data = self._append_form(ref, chapter)
+                    self.log.info(
+                        "第 %d/%d 卷追加到 %s（%d 页，%.1f MB）",
+                        index,
+                        total_volumes,
+                        ref,
+                        len(group),
+                        zip_mb,
+                    )
+                else:
+                    self.log.info(
+                        "POST 上传 zip（第 1/%d 卷，%d 页，%s）到 %s",
+                        total_volumes,
+                        len(group),
+                        zip_path,
+                        action,
+                    )
+                with open(zip_path, "rb") as fh:
+                    resp = self._post_with_progress(
+                        action,
+                        data=data,
+                        files=[(file_name, ("gallery.zip", fh, "application/zip"))],
+                        volume=(index, total_volumes),
+                    )
+            finally:
+                try:
+                    Path(zip_path).unlink(missing_ok=True)
+                except OSError:
+                    pass
+        return resp
+
+    def _build_zip(self, pages: list, names: list[str]) -> str:
+        """按“单层无子目录 + 页序文件名”打一个 zip，返回临时文件路径。"""
         fd, zip_path = tempfile.mkstemp(suffix=".zip", prefix="ehentai_")
         os.close(fd)  # zipfile 会用路径重新打开，fd 只占资源
-        try:
-            names = self._upload_names(pages)
-            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-                for page_item, arcname in zip(pages, names):
-                    # 站点按归档内文件名生成页码，只保留页序名（对齐人工 zip 上传的 01.png）
-                    zf.write(page_path(page_item), arcname=arcname)
-            zip_mb = os.path.getsize(zip_path) / 1048576
-            raw_mb = sum(page_path(p).stat().st_size for p in pages) / 1048576
-            self.progress(
-                "zip",
-                len(pages),
-                len(pages),
-                f"ZIP 打包完成（原始图片 {raw_mb:.1f} MB → 归档 {zip_mb:.1f} MB，未压缩图片）",
-            )
-            # 上传进度：按字节回报（前端会显示百分比与 MB）
-            last = {"pct": -1, "time": 0.0}
-
-            def on_progress(sent: int, total_bytes: int) -> None:
-                pct = int(sent * 100 / total_bytes) if total_bytes else 0
-                now = time.time()
-                # 每 1% 或每 0.5 秒回报一次，别把进度事件刷爆
-                if sent < total_bytes and pct == last["pct"] and now - last["time"] < 0.5:
-                    return
-                last["pct"], last["time"] = pct, now
-                self.progress(
-                    "upload",
-                    sent,
-                    total_bytes,
-                    f"正在上传 ZIP 归档：{sent / 1048576:.1f} / {total_bytes / 1048576:.1f} MB"
-                    f"（{pct}%）",
-                    unit="bytes",
-                )
-
-            self.log.info("POST 上传 zip（%d 页，%s）到 %s", len(pages), zip_path, action)
-            return self.http.post_multipart_stream(
-                action,
-                fields=data,
-                file_field=file_name,
-                file_path=Path(zip_path),
-                filename="gallery.zip",
-                content_type="application/zip",
-                on_progress=on_progress,
-                headers={"Referer": UPLOAD_PAGE_URL},
-                allow_redirects=True,
-                retry=False,
-                timeout=float(self.cfg.get("upload_timeout", 600) or 600),
-            )
-        finally:
-            try:
-                Path(zip_path).unlink(missing_ok=True)
-            except OSError:
-                pass
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            for page_item, arcname in zip(pages, names):
+                zf.write(page_path(page_item), arcname=arcname)
+        return zip_path
 
     def _interpret_response(self, resp, chapter: Chapter, page_count: int) -> PublishResult:
         final_url = resp.url

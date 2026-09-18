@@ -149,6 +149,15 @@ PLATFORM_CARDS: list[dict[str, Any]] = [
             },
             "publish_after_upload": {"kind": "switch", "label": "上传后自动发布"},
             "extra_tags": {"kind": "text", "label": "附加标签（逗号分隔）"},
+            "zip_max_mb": {
+                "kind": "number",
+                "label": "单次上传上限 (MB，默认 90，超了自动分卷)",
+            },
+            "zip_split_uploads": {
+                "kind": "switch",
+                "label": "超过上限时自动分卷上传（原图不压缩）",
+                "onLabel": "自动分卷",
+            },
         },
     },
     {
