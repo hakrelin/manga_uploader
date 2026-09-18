@@ -11,8 +11,10 @@
 3. 发文：POST /bbs/app/api/link/post，正文结构与网页编辑器一致：
    - 图文（link_tag=27）：text=[{"type":"text","text":"<p>…</p>"},
      {"type":"img","url":…,"width":…,"height":…}]；
-   - 文章（link_tag=11）：text=[{"type":"html","text":"<p>…</p><img …/>"},
-     {"type":"img","url":…}]。
+   - 文章（link_tag=11）：text=[{"type":"html","text":"<p>…</p><p><img …/></p>"},
+     {"type":"img","url":…}]。文章渲染只认第一个 html 块里的 HTML
+     （网页端 renderArticle 直接取 content[0].text），所以正文图片必须写进
+     html 里；只给 img 块会出现“发布成功但文章里没有图”。
    draft=1 只存草稿（创作中心草稿箱可见），不传即正式发布。
 
 发布形式按页数自动选择：≤30 页发图文，>30 页发文章（文章单帖上限
@@ -30,6 +32,7 @@ platforms.xiaoheihe.cookies.cookie（整段文本），heybox_id 也直接
 from __future__ import annotations
 
 import hashlib
+import html
 import json
 import math
 import mimetypes
@@ -199,19 +202,35 @@ def _text_html(plain: str) -> str:
     return "".join(lines)
 
 
+def _img_html(page) -> str:
+    """文章正文里的图片 HTML：与网页端一致（src + data-original + 宽高）。"""
+    url = html.escape(str(getattr(page, "url", "") or ""), quote=True)
+    width = getattr(page, "width", 0) or 0
+    height = getattr(page, "height", 0) or 0
+    return (
+        f'<img src="{url}" data-original="{url}" '
+        f'data-width="{width}" data-height="{height}" alt="">'
+    )
+
+
 def _content_blocks(description: str, pages: list, *, article: bool) -> list[dict]:
-    """按发布形式组装正文块（图文 text+img / 文章 html+img）。
+    """按发布形式组装正文块（图文 text+img / 文章 html(含图)+img）。
 
     标题与正文组合和 B站一致（见 composer.xiaoheihe_title/body）。
-    图文正文放独立 text 块；文章把正文并入 html 块（与网页编辑器一致）。
+
+    注意文章与图文的区别：网页端渲染文章时只用第一个 html 块里的 HTML
+    （`if (content[0].type === "html") html = content[0].text`），**不会**把后面的
+    img 块拼进正文——所以文章的图片必须写进 html 里（和网页编辑器导出的
+    `<p><img data-original=…></p>` 一样），否则会出现“发布成功但文章里没有图”。
+    后面的 img 块按网页端行为保留（用于图片列表/计数）。
     """
     blocks: list[dict] = []
-    if description.strip():
-        html = _text_html(description)
-        if article:
-            blocks.append({"type": "html", "text": html})
-        else:
-            blocks.append({"type": "text", "text": html})
+    text_html = _text_html(description) if description.strip() else ""
+    if article:
+        body = text_html + "".join(f"<p>{_img_html(page)}</p>" for page in pages)
+        blocks.append({"type": "html", "text": body or "<p></p>"})
+    elif text_html:
+        blocks.append({"type": "text", "text": text_html})
     for page in pages:
         blocks.append(
             {
@@ -475,6 +494,12 @@ class XiaoheihePublisher(BasePublisher):
             f"正文结构示例：{_content_json(description, [], article=(mode == 'article'))[:180] + '…'}",
             f"共 {len(pages)} 张图，拆成 {len(groups)} 帖（每帖最多 {limit} 张）：",
         ]
+        if mode == "article":
+            lines.insert(
+                -1,
+                "图片位置：文章把每张图写成 <p><img data-original=…></p> 放进正文 HTML "
+                "（网页端只渲染第一个 html 块；单独 img 块不会进文章正文）",
+            )
         for index, group in enumerate(groups, 1):
             lines.append(f"  ── 第 {index} 帖（{len(group)} 张）──")
             for page_index, page in enumerate(group, 1):
