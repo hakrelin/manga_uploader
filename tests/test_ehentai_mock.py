@@ -315,6 +315,28 @@ class TestEhentaiPublisherMock(unittest.TestCase):
                     f"{index:03d}.png 应与源文件完全一致（说明没被压缩）",
                 )
 
+    def test_zip_upload_multipart_is_wellformed(self):
+        """回归（用户 09-18 遇到）：流式上传必须发“长度已知的类文件对象”。
+
+        之前用生成器当 body，requests 会加 `Transfer-Encoding: chunked`，
+        urllib3 却按原始字节发送 → 请求体与头不一致，Cloudflare/e-hentai 直接 400。
+        """
+        cfg = PlatformConfig(
+            name="ehentai",
+            cookies={"ipb_member_id": "1", "ipb_pass_hash": "h"},
+            settings={"category_label": "Manga", "language_label": "Chinese"},
+        )
+        publisher = EhentaiPublisher(
+            cfg, CommonConfig(output_dir=str(Path(self.tmp.name) / "out"))
+        )
+        result = publisher.publish(_make_chapter(Path(self.tmp.name)))
+        self.assertEqual(result.status, "ok", result.message)
+        post = _Handler.posts[-1]
+        self.assertNotIn("Transfer-Encoding", post["headers"])
+        self.assertEqual(int(post["headers"]["Content-Length"]), len(post["body"]))
+        self.assertTrue(post["body"].startswith(b"--"))
+        self.assertTrue(post["body"].rstrip().endswith(b"--"))
+
     def test_zip_upload_reports_byte_progress(self):
         """zip 上传要按字节回报进度（前端显示百分比），最后一条 done == total。"""
         cfg = PlatformConfig(

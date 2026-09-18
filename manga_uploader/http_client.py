@@ -18,6 +18,86 @@ class HttpError(RuntimeError):
     pass
 
 
+class _MultipartBody:
+    """multipart 请求体：按 read() 顺序吐 头部 → 文件内容 → 结尾，并回报进度。
+
+    关键点：它实现 read()/__len__，requests 会当成“长度已知的类文件对象”发送
+    （不会加 Transfer-Encoding: chunked；加了会让服务端/Cloudflare 判 400）。
+    """
+
+    def __init__(
+        self,
+        head: bytes,
+        file_path: Path,
+        tail: bytes,
+        on_progress: Optional[Callable[[int, int], None]] = None,
+        chunk_size: int = 256 * 1024,
+    ) -> None:
+        self._head = head
+        self._tail = tail
+        self._path = Path(file_path)
+        self._chunk_size = max(4096, int(chunk_size))
+        self._on_progress = on_progress
+        self._file_size = self._path.stat().st_size
+        self.total = len(head) + self._file_size + len(tail)
+        self._sent = 0
+        self._file = None  # 延迟打开：由第一次 read() 触发
+        self._mode = "head"
+
+    def __len__(self) -> int:
+        return self.total
+
+    def _emit(self, chunk: bytes) -> bytes:
+        self._sent += len(chunk)
+        if self._on_progress:
+            try:
+                self._on_progress(min(self._sent, self.total), self.total)
+            except Exception:  # pragma: no cover - 进度回调不影响上传
+                pass
+        return chunk
+
+    def read(self, size: int = -1) -> bytes:
+        if size is None or size < 0:
+            size = self._chunk_size
+        out = bytearray()
+        while size > 0:
+            if self._mode == "head":
+                take = self._head[:size]
+                self._head = self._head[len(take):]
+                if take:
+                    out += self._emit(take)
+                    size -= len(take)
+                    continue
+                self._mode = "file"
+            if self._mode == "file":
+                if self._file is None:
+                    self._file = open(self._path, "rb")
+                take = self._file.read(min(size, self._chunk_size))
+                if take:
+                    out += self._emit(take)
+                    size -= len(take)
+                    continue
+                self._file.close()
+                self._file = None
+                self._mode = "tail"
+            if self._mode == "tail":
+                take = self._tail[:size]
+                self._tail = self._tail[len(take):]
+                if take:
+                    out += self._emit(take)
+                    size -= len(take)
+                    continue
+                self._mode = "done"
+            if self._mode == "done":
+                break
+        return bytes(out)
+
+    def close(self) -> None:
+        if self._file is not None:
+            self._file.close()
+            self._file = None
+
+
 def _clean_proxy_url(url: str) -> str:
     """把系统代理字符串整理成 http://host:port 形式。"""
     url = (url or "").strip()
@@ -200,31 +280,14 @@ class HttpClient:
             f"Content-Type: {content_type}\r\n\r\n"
         ).encode("utf-8")
         tail = f"\r\n--{boundary}--\r\n".encode("utf-8")
-        total = len(head) + len(file_head) + path.stat().st_size + len(tail)
-
-        def body() -> Any:
-            sent = len(head) + len(file_head)
-            yield head
-            yield file_head
-            if on_progress:
-                on_progress(min(sent, total), total)
-            with open(path, "rb") as handle:
-                while True:
-                    chunk = handle.read(chunk_size)
-                    if not chunk:
-                        break
-                    sent += len(chunk)
-                    if on_progress:
-                        on_progress(min(sent, total), total)
-                    yield chunk
-            if on_progress:
-                on_progress(total, total)  # 收尾：确保进度能走到 100%
-            yield tail
-
+        # 必须是“类文件对象”（实现 read/len），不能是生成器：
+        # requests 对“长度未知的迭代器”会加 Transfer-Encoding: chunked，
+        # 而 urllib3 又按原始字节发送 → 请求体与头不一致，Cloudflare 直接 400。
+        body = _MultipartBody(head + file_head, path, tail, on_progress, chunk_size)
         headers = dict(kwargs.pop("headers", {}) or {})
         headers["Content-Type"] = f"multipart/form-data; boundary={boundary}"
-        headers["Content-Length"] = str(total)
-        return self.request("POST", url, data=body(), headers=headers, **kwargs)
+        headers["Content-Length"] = str(len(body))
+        return self.request("POST", url, data=body, headers=headers, **kwargs)
 
     def get_json(self, url: str, **kwargs: Any) -> dict:
         resp = self.get(url, **kwargs)
