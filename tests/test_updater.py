@@ -3,7 +3,9 @@
 import tempfile
 import unittest
 import zipfile
+import http.client
 from pathlib import Path, PurePosixPath
+from unittest import mock
 
 from manga_uploader import updater
 
@@ -113,6 +115,72 @@ class ApplyTest(unittest.TestCase):
             self.assertEqual(
                 (root / "config.yaml").read_text(encoding="utf-8"), "secret"
             )
+
+
+class DownloadFallbackTest(unittest.TestCase):
+    """GitHub 在国内常被重置连接：要给出人话提示，并自动试内置镜像。"""
+
+    def test_candidates_try_direct_then_mirrors(self):
+        cands = updater.download_candidates(
+            "https://github.com/a/b", ["main", "master"]
+        )
+        self.assertEqual(cands[0], ("main", "https://github.com/a/b/archive/refs/heads/main.zip", "直连"))
+        self.assertEqual(cands[1][0], "main")
+        self.assertTrue(cands[1][1].startswith(updater.MIRROR_PREFIXES[0]))
+        self.assertTrue(cands[1][1].endswith("/https://github.com/a/b/archive/refs/heads/main.zip"))
+        # main 的直连+镜像试完才轮到 master
+        master = [c for c in cands if c[0] == "master"]
+        self.assertEqual(master[0][1], "https://github.com/a/b/archive/refs/heads/master.zip")
+        self.assertGreater(len(cands), len(master))
+
+    def test_candidates_can_skip_mirrors(self):
+        cands = updater.download_candidates(
+            "https://github.com/a/b", ["main"], no_mirror=True
+        )
+        self.assertEqual(len(cands), 1)
+        self.assertEqual(cands[0][2], "直连")
+
+    def test_download_zip_fails_fast_on_4xx(self):
+        """404/403 属于确定性错误：不要傻等 3 轮重试。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "x.zip"
+            calls = {"n": 0}
+
+            def not_found(*_args, **_kwargs):
+                calls["n"] += 1
+                resp = mock.Mock()
+                resp.status_code = 404
+                err = RuntimeError("404 Client Error")
+                err.response = resp  # type: ignore[attr-defined]
+                raise err
+
+            with mock.patch.object(updater, "_download_once", side_effect=not_found), \
+                    mock.patch.object(updater.time, "sleep", lambda *_a: None):
+                with self.assertRaises(updater.UpdaterError) as ctx:
+                    updater.download_zip("https://github.com/a/b/archive.zip", dest)
+            self.assertEqual(calls["n"], 1, "4xx 不应该重试")
+            self.assertIn("HTTP 404", str(ctx.exception))
+
+    def test_download_zip_wraps_connection_reset(self):
+        """远端直接断开（RemoteDisconnected）不能把 traceback 甩给用户。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "x.zip"
+
+            def boom(*_args, **_kwargs):
+                raise http.client.RemoteDisconnected(
+                    "Remote end closed connection without response"
+                )
+
+            with mock.patch.object(updater, "_download_once", side_effect=boom), \
+                    mock.patch.object(updater.time, "sleep", lambda *_a: None):
+                with self.assertRaises(updater.UpdaterError) as ctx:
+                    updater.download_zip("https://github.com/a/b/archive.zip", dest)
+            text = str(ctx.exception)
+            self.assertIn("下载失败", text)
+            self.assertIn("RemoteDisconnected", text)
+            self.assertIn("代理", text)          # 告诉用户怎么办
+            self.assertIn("--url", text)
+            self.assertIn(updater.MIRROR_PREFIXES[0], text)
 
 
 class ScriptEncodingTest(unittest.TestCase):

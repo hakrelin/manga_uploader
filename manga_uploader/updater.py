@@ -257,6 +257,37 @@ def _archive_url(repo_url: str, branch: str) -> str:
 # （2026-09-18 的 update.ps1 就是这么把自己写坏的）。这里在更新后统一补回来。
 PS_BOM_FILES = ("update.ps1", "start-web.ps1", "start-gui.ps1", "_common.ps1")
 
+# GitHub 连不上时的备选镜像前缀（只是把同一个 zip 地址转发一层，内容仍是仓库归档）。
+# 镜像随时可能失效，所以是“逐个尝试、全失败就按原样报错”，不影响正常直连。
+MIRROR_PREFIXES = (
+    "https://ghfast.top/",
+    "https://gh-proxy.com/",
+    "https://ghproxy.net/",
+    "https://gh.llkk.cc/",
+)
+
+
+def mirror_url(url: str, prefix: str = "") -> str:
+    """把 GitHub 直链改成镜像直链（prefix 为空时用第一个内置镜像）。"""
+    base = prefix or MIRROR_PREFIXES[0]
+    return base.rstrip("/") + "/" + url
+
+
+def download_candidates(
+    repo_url: str, branches: list[str], *, no_mirror: bool = False
+) -> list[tuple[str, str, str]]:
+    """候选下载列表 [(分支, 地址, 说明)]：每个分支先直连，再依次试内置镜像。"""
+    out: list[tuple[str, str, str]] = []
+    for branch in branches:
+        direct = _archive_url(repo_url, branch)
+        out.append((branch, direct, "直连"))
+        if no_mirror:
+            continue
+        for prefix in MIRROR_PREFIXES:
+            host = prefix.split("/")[2] if "//" in prefix else prefix
+            out.append((branch, mirror_url(direct, prefix), f"镜像 {host}"))
+    return out
+
 
 def ensure_script_encodings(root: Path) -> list[str]:
     """给缺 UTF-8 BOM 的 PowerShell 脚本补上 BOM；返回实际修补的文件名列表。"""
@@ -278,22 +309,84 @@ def ensure_script_encodings(root: Path) -> list[str]:
 
 
 def download_zip(url: str, dest: Path, proxy: str = "") -> Path:
+    """下载文件；网络异常一律转成 UpdaterError（不乱抛 traceback）。
+
+    GitHub 在国内经常“连接被重置/远端直接断开”（RemoteDisconnected），
+    urllib 只会抛 http.client.RemoteDisconnected —— 用户看到的是大片堆栈，
+    不知道该怎么办。这里统一抓成一句话提示，并自动重试几次。
+    """
     info(f"下载 {url} …")
-    req = urllib.request.Request(url, headers={"User-Agent": UA})
+    attempts = 3
+    last_error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            _download_once(url, dest, proxy)
+        except UpdaterError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - 网络层什么都可能抛
+            last_error = exc
+            status = getattr(getattr(exc, "response", None), "status_code", None) or getattr(
+                exc, "code", None
+            )
+            if isinstance(status, int) and 400 <= status < 500:
+                # 4xx 是确定性错误（分支/仓库名不对、被墙返回 403 等），重试没意义
+                raise UpdaterError(
+                    f"下载失败：HTTP {status}：{url}\n"
+                    "请确认分支/仓库地址是否正确；GitHub 连不上时可加 --url 指定镜像。"
+                ) from exc
+            if attempt < attempts:
+                wait = 1.5 * attempt
+                warn(f"下载中断（{type(exc).__name__}），{wait:.1f} 秒后重试 {attempt + 1}/{attempts}")
+                time.sleep(wait)
+                continue
+            break
+        else:
+            if not dest.is_file() or dest.stat().st_size < 50 * 1024:
+                raise UpdaterError("下载内容异常（文件过小），可能拿到了错误页面，请重试")
+            info(f"下载完成：{dest.stat().st_size / 1024 / 1024:.1f} MB")
+            return dest
+    raise UpdaterError(
+        f"下载失败：{url}\n原因：{type(last_error).__name__}: {last_error}\n"
+        "常见原因是网络连不上 GitHub（连接被重置/超时）。可以：\n"
+        "  · 打开代理软件后重试（程序会自动读取系统代理；也可先设置 HTTPS_PROXY）\n"
+        "  · 加 --url 指定镜像，例如：\n"
+        "    python update.py --url "
+        f"{mirror_url(DEFAULT_REPO + '/archive/refs/heads/' + DEFAULT_BRANCH + '.zip')}"
+    ) from last_error
+
+
+def _download_once(url: str, dest: Path, proxy: str = "") -> None:
+    """单次下载尝试（requests 可用时用它：重试/流式/进度都更稳）。"""
     try:
+        import requests  # 更新器跑在项目 .venv 里，通常能直接 import
+    except Exception:  # pragma: no cover - 裸环境退回 urllib
+        req = urllib.request.Request(url, headers={"User-Agent": UA})
         with _opener(proxy).open(req, timeout=60.0) as resp, open(dest, "wb") as fh:
             shutil.copyfileobj(resp, fh, length=1024 * 256)
-    except urllib.error.HTTPError as exc:
-        raise UpdaterError(
-            f"下载失败 HTTP {exc.code}：{url}\n"
-            "若分支/地址有误请检查；GitHub 连不上时可加 --url 指定镜像。"
-        ) from exc
-    except urllib.error.URLError as exc:
-        raise UpdaterError(f"网络错误：{url}\n原因：{getattr(exc, 'reason', exc)}") from exc
-    if not dest.is_file() or dest.stat().st_size < 50 * 1024:
-        raise UpdaterError("下载内容异常（文件过小），可能拿到了错误页面，请重试")
-    info(f"下载完成：{dest.stat().st_size / 1024 / 1024:.1f} MB")
-    return dest
+        return
+
+    proxies = {"http": proxy, "https": proxy} if proxy else None
+    with requests.get(
+        url,
+        headers={"User-Agent": UA},
+        proxies=proxies,
+        stream=True,
+        timeout=(15.0, 60.0),
+        allow_redirects=True,
+    ) as resp:
+        resp.raise_for_status()
+        total = int(resp.headers.get("Content-Length") or 0)
+        done = 0
+        with open(dest, "wb") as fh:
+            for chunk in resp.iter_content(chunk_size=1024 * 256):
+                if not chunk:
+                    continue
+                fh.write(chunk)
+                done += len(chunk)
+                if total:
+                    _progress_line("下载中", done, total)
+        if total:
+            _progress_line("下载中", total, total, finish=True)
 
 
 def _extract_zip(zip_path: Path, dest: Path) -> Path:
@@ -484,6 +577,22 @@ def _progress_bar(percent: int, width: int = 14) -> str:
     percent = max(0, min(100, percent))
     filled = int(round(percent * width / 100))
     return "#" * filled + "-" * (width - filled)
+
+
+def _progress_line(
+    prefix: str, done: int, total: int, *, finish: bool = False
+) -> None:
+    """在同一行刷新进度（下载用）；非终端环境就直接换行，避免刷屏。"""
+    percent = int(done * 100 / total) if total else 0
+    text = (
+        f"{prefix} [{_progress_bar(percent)}] {percent:3d}%  "
+        f"{_human_bytes(done)}/{_human_bytes(total)}"
+    )
+    if not _is_tty():
+        if finish:
+            print(text)
+        return
+    print("\r" + text + ("\n" if finish else ""), end="", flush=True)
 
 
 def _spin_bar(seconds: float, width: int = 14) -> str:
@@ -727,6 +836,7 @@ def update_via_zip(
     url: str = "",
     dry_run: bool = False,
     install_deps: bool = True,
+    no_mirror: bool = False,
 ) -> None:
     proxy = system_proxy()
     if proxy:
@@ -748,10 +858,15 @@ def update_via_zip(
             used_branch = branch or DEFAULT_BRANCH
         else:
             last_error = ""
-            for candidate in branch_candidates:
-                info(f"尝试远端分支 {candidate} …")
+            # 先直连 GitHub（main → master），都失败再依次试镜像；
+            # 国内“连接被重置/远端断开”很常见，自动兜底省得用户手动找镜像。
+            candidates = download_candidates(
+                repo_url, branch_candidates, no_mirror=no_mirror
+            )
+            for candidate, candidate_url, label in candidates:
+                info(f"尝试远端分支 {candidate}（{label}）…")
                 try:
-                    download_zip(_archive_url(repo_url, candidate), tmp_zip, proxy=proxy)
+                    download_zip(candidate_url, tmp_zip, proxy=proxy)
                     used_branch = candidate
                     break
                 except UpdaterError as exc:
@@ -761,11 +876,13 @@ def update_via_zip(
                     continue
             if not used_branch:
                 raise UpdaterError(
-                    "GitHub 所有候选分支均下载失败。可检查代理，或用 --url 指定镜像地址，"
-                    "例如：\n"
-                    "  python update.py --url "
-                    "https://ghproxy.com/https://github.com/hakrelin/manga_uploader/"
-                    "archive/refs/heads/main.zip"
+                    "直连与内置镜像都下载失败。可以：\n"
+                    "  · 打开代理软件（程序会自动读取系统代理）后重试\n"
+                    "  · 用 --url 指定可用镜像，例如：\n"
+                    "    python update.py --url "
+                    f"{mirror_url(_archive_url(repo_url, DEFAULT_BRANCH))}\n"
+                    "  · 或直接浏览器下载 " + _archive_url(repo_url, DEFAULT_BRANCH)
+                    + " 解压后覆盖本目录（config.yaml 等本机文件保留）"
                 )
 
         new_root = work_dir / "new"
@@ -810,6 +927,11 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--no-deps", action="store_true", help="更新后不自动安装依赖"
     )
+    parser.add_argument(
+        "--no-mirror",
+        action="store_true",
+        help="下载失败时不自动尝试内置镜像（只直连 GitHub）",
+    )
     parser.add_argument("--dry-run", action="store_true", help="只下载并预览，不改本机")
     return parser.parse_args(argv)
 
@@ -845,6 +967,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 url=args.url,
                 dry_run=args.dry_run,
                 install_deps=not args.no_deps,
+                no_mirror=args.no_mirror,
             )
     except UpdaterError as exc:
         fail(str(exc))
