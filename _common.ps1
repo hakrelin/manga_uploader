@@ -396,10 +396,10 @@ function Ensure-PyEnv {
     Write-Host "         首次要下载几十 MB，下面一行进度会实时刷新（已下载量 + 已用时间），慢的时候请别关窗口。" -ForegroundColor DarkGray
     $progMode = Get-PipProgressMode $venvPy
     $pipCommon = @("install", "--progress-bar", $progMode, "--timeout", "60", "-r", "requirements.txt")
-    $code = Invoke-PipInstall -VenvPy $venvPy -PipArgs (@("-i", $PipMirror) + $pipCommon) -Action "安装依赖（清华镜像）" -WorkingDirectory $ProjRoot
+    $code = Invoke-PipInstall -VenvPy $venvPy -PipArgs ($pipCommon + @("-i", $PipMirror)) -Action "安装依赖（清华镜像）" -WorkingDirectory $ProjRoot
     if ($code -ne 0) {
         Write-Host "[提示] 清华镜像拉取失败，改用官方源重试…" -ForegroundColor Yellow
-        $code = Invoke-PipInstall -VenvPy $venvPy -PipArgs (@("-i", $PipOfficial) + $pipCommon) -Action "安装依赖（官方源）" -WorkingDirectory $ProjRoot
+        $code = Invoke-PipInstall -VenvPy $venvPy -PipArgs ($pipCommon + @("-i", $PipOfficial)) -Action "安装依赖（官方源）" -WorkingDirectory $ProjRoot
     }
     if ($code -ne 0 -or -not (Test-Env)) {
         Fail-Custom "[错误] 依赖安装失败，请把上面的输出发给开发者"
