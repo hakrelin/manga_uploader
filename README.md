@@ -238,7 +238,7 @@ Headers 里的 `Cookie:`，按下面表格填入 `config.yaml`（GUI 支持分�
 | B站 | `SESSDATA`、`bili_jct`（建议连 `buvid3`、`buvid4`、`DedeUserID` 一起填） | 发专栏/动态需绑定手机；`bili_jct` 是 CSRF 令牌。缺 `DedeUserID`/`buvid*` 时程序会在发布前自动补全（见下方“B站 -352”） |
 | 贴吧 | `BDUSS` | 发帖权限受账号/吧等级限制 |
 | e-hentai | `ipb_member_id`、`ipb_pass_hash` | 需站方上传资格；通常还需能直连外网 |
-| 再漫画 | `token`（建议 `clientId`） | 登录后取 `token`；投稿入口见平台网页 |
+| 再漫画 | `token`（建议 `clientId`） | 登录后取 `token`（JWT，**有效期只有 30 天**）；整段 Cookie 粘贴也能自动识别 |
 | 小黑盒 | 整段 `Cookie` | 复制请求头 `Cookie` **整段**填入 `cookies.cookie` |
 
 Cookie 会过期（B站 SESSDATA 常见数月），`check` 会提示失效，重新复制即可。
@@ -406,6 +406,24 @@ Cookie 会过期（B站 SESSDATA 常见数月），`check` 会提示失效，重
 
 作品类型 `cate`：1 原创作品 / 2 原创汉化 / 3 个人扫漫 / 4 转载作品；
 同一作品多话使用相同 `name` 即可连载到同一部作品下。
+
+#### ⚠️ token 只有 30 天有效期（“请先登录”多半是它过期了）
+
+`token` 是 JWT，`iat` 与 `exp` 固定相差 30 天。**上传/提交接口会严格校验 `exp`**，
+过期后统一返回 `{"errno":99,"errmsg":"请先登录"}`；但账号接口
+（`account-api` 的 `userInfo`）不校验 `exp`，过期 token 依然返回 `errno: 0`。
+于是现象就是「检查登录没问题 → 一发布就报请先登录」。
+
+程序现在的处理：
+
+1. 发布前本地解出 token 的 `exp`，过期直接报
+   “再漫画登录已过期：token（有效期 30 天）已于 X 到期”，**不再白传一遍图**；
+2. 剩余不足 3 天时在 `check` 里提醒“建议提前更换”；
+3. 万一还是撞上接口的 `errno 99`，直接给出“重新登录复制新 token”的可操作提示
+   （并且不再无意义地重试上传）。
+
+修复方式：重新登录 <https://manhua.zaimanhua.com/>，复制 Cookie 里的新 `token`
+（整段 Cookie 直接粘进去也行，程序会自动挑出 `token=`），保存后重新发布。
 
 ## 多平台图片共享预处理
 

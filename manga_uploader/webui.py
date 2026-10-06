@@ -168,7 +168,10 @@ PLATFORM_CARDS: list[dict[str, Any]] = [
             {"name": "token", "required": True},
             {"name": "clientId", "required": False, "hint": "可选"},
         ],
-        "hint": "登录再漫画后复制 Cookie 里的 token（JWT），可选 clientId。投稿页：manhua.zaimanhua.com/uploadShows",
+        "hint": "登录再漫画后复制 Cookie 里的 token（JWT，整段 Cookie 粘贴也能自动识别），可选 clientId。"
+        "注意：token 有效期只有 30 天，过期后上传接口会返回「请先登录」（而账号接口仍显示已登录，"
+        "所以「检查登录」看着是好的）。重新登录后复制新的 token 保存即可。"
+        "投稿页：manhua.zaimanhua.com/uploadShows",
         "extras": [("cate", "作品类型")],
         "controls": {
             "max_pages_per_upload": {"kind": "number", "label": "单章最多图片数"},

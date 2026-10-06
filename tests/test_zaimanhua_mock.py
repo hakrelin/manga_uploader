@@ -1,8 +1,10 @@
 """再漫画发布器本地模拟测试（不联网）。"""
 
+import base64
 import json
 import tempfile
 import threading
+import time
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -12,11 +14,34 @@ from PIL import Image
 from manga_uploader.config import CommonConfig, PlatformConfig
 from manga_uploader.models import Chapter
 from manga_uploader.publishers import zaimanhua as zmh_mod
-from manga_uploader.publishers.zaimanhua import ZaimanhuaPublisher
+from manga_uploader.publishers.zaimanhua import (
+    LoginExpiredError,
+    ZaimanhuaPublisher,
+    extract_token,
+)
+
+
+def _make_jwt(exp_offset_days: float, uid: int = 12345) -> str:
+    """造一个只有 exp 有意义的三段 JWT（不做签名，代码也不验签）。"""
+    header = base64.urlsafe_b64encode(b'{"alg":"HS256","typ":"JWT"}').decode().rstrip("=")
+    now = time.time()
+    payload = base64.urlsafe_b64encode(
+        json.dumps(
+            {
+                "uid": uid,
+                "sub": "tester",
+                "iat": int(now - 86400),
+                "exp": int(now + exp_offset_days * 86400),
+            }
+        ).encode()
+    ).decode().rstrip("=")
+    return f"{header}.{payload}.sig"
 
 
 class _Handler(BaseHTTPRequestHandler):
     requests_log: list = []
+    img_response: dict = {"errno": 0, "errmsg": "", "data": {"file": "https://mock.cdn/page.png"}}
+    submit_response: dict = {"errno": 0, "errmsg": "", "data": {}}
 
     def log_message(self, *args):  # 静默
         pass
@@ -46,11 +71,9 @@ class _Handler(BaseHTTPRequestHandler):
         body = self.rfile.read(length)
         self.__class__.requests_log.append({"path": self.path, "body": body})
         if self.path.startswith("/img"):
-            self._send_json(
-                {"errno": 0, "errmsg": "", "data": {"file": "https://mock.cdn/page.png"}}
-            )
+            self._send_json(self.__class__.img_response)
         elif self.path.startswith("/submit"):
-            self._send_json({"errno": 0, "errmsg": "", "data": {}})
+            self._send_json(self.__class__.submit_response)
         else:
             self._send_json({"errno": -400, "errmsg": "bad"}, 400)
 
@@ -103,6 +126,12 @@ class TestZaimanhuaPublisherMock(unittest.TestCase):
 
     def setUp(self):
         _Handler.requests_log = []
+        _Handler.img_response = {
+            "errno": 0,
+            "errmsg": "",
+            "data": {"file": "https://mock.cdn/page.png"},
+        }
+        _Handler.submit_response = {"errno": 0, "errmsg": "", "data": {}}
         self.tmp = tempfile.TemporaryDirectory()
 
     def tearDown(self):
@@ -152,6 +181,78 @@ class TestZaimanhuaPublisherMock(unittest.TestCase):
         chapter.raw = {"title": "测试漫画"}  # 不带平台 cate 覆盖，走配置里的 9
         with self.assertRaises(Exception):
             publisher.publish(chapter)
+
+    # ---------------- token 过期（线上真实事故复现） ----------------
+    #
+    # 再漫画的 token 是 JWT，iat/exp 固定 30 天。上传接口严格校验 exp，
+    # 过期后一律返回 errno 99「请先登录」；而账号接口不校验，过期也显示已登录。
+    # 结果就是「检查登录通过 → 发布第一张图就失败」。
+
+    def test_extract_token_accepts_forms(self):
+        jwt = _make_jwt(10)
+        self.assertEqual(extract_token(jwt), jwt)
+        self.assertEqual(extract_token(f' "{jwt}" '), jwt)
+        self.assertEqual(extract_token(f"token={jwt}; clientId=abc"), jwt)
+        self.assertEqual(extract_token(f"clientId=abc; token={jwt}"), jwt)
+        self.assertEqual(extract_token(""), "")
+
+    def test_expired_token_detected_locally(self):
+        publisher = self._publisher(cookies={"token": _make_jwt(-7), "clientId": ""})
+        self.assertTrue(publisher.is_token_expired())
+        self.assertIn("已于", publisher.token_expiry_message())
+        self.assertIn("30 天", publisher.token_expiry_message())
+
+    def test_valid_token_not_expired(self):
+        publisher = self._publisher(cookies={"token": _make_jwt(10), "clientId": ""})
+        self.assertFalse(publisher.is_token_expired())
+        self.assertEqual(publisher.token_expiry_message(), "")
+
+    def test_expiring_soon_warns_but_allows(self):
+        publisher = self._publisher(cookies={"token": _make_jwt(1), "clientId": ""})
+        self.assertFalse(publisher.is_token_expired())
+        self.assertIn("建议提前更换", publisher.token_expiry_message())
+
+    def test_check_reports_expired_token_without_network(self):
+        publisher = self._publisher(cookies={"token": _make_jwt(-7), "clientId": ""})
+        result = publisher.check()
+        self.assertFalse(result.ok)
+        self.assertIn("过期", result.message)
+        self.assertIn("请先登录", result.message)
+        self.assertEqual(_Handler.requests_log, [])
+
+    def test_publish_stops_before_uploading_when_token_expired(self):
+        chapter = _make_chapter(Path(self.tmp.name))
+        publisher = self._publisher(cookies={"token": _make_jwt(-7), "clientId": ""})
+        with self.assertRaises(LoginExpiredError) as ctx:
+            publisher.publish(chapter)
+        self.assertIn("重新登录", str(ctx.exception))
+        # 关键：一张图都不该上传
+        self.assertEqual([r for r in _Handler.requests_log if r["path"].startswith("/img")], [])
+
+    def test_upload_errno99_gives_actionable_hint_and_no_retry(self):
+        _Handler.img_response = {"errno": 99, "errmsg": "请先登录", "data": {}}
+        chapter = _make_chapter(Path(self.tmp.name))
+        publisher = self._publisher(cookies={"token": "not-a-jwt", "clientId": ""})
+        with self.assertRaises(LoginExpiredError) as ctx:
+            publisher.publish(chapter)
+        self.assertIn("登录已失效", str(ctx.exception))
+        self.assertIn("请先登录", str(ctx.exception))
+        imgs = [r for r in _Handler.requests_log if r["path"].startswith("/img")]
+        self.assertEqual(len(imgs), 1, "登录失效不应该反复重试上传同一张图")
+
+    def test_submit_errno99_gives_actionable_hint(self):
+        _Handler.submit_response = {"errno": 99, "errmsg": "请先登录", "data": {}}
+        chapter = _make_chapter(Path(self.tmp.name))
+        publisher = self._publisher(cookies={"token": "not-a-jwt", "clientId": ""})
+        with self.assertRaises(LoginExpiredError) as ctx:
+            publisher.publish(chapter)
+        self.assertIn("登录已失效", str(ctx.exception))
+
+    def test_fresh_token_publishes_normally(self):
+        chapter = _make_chapter(Path(self.tmp.name))
+        publisher = self._publisher(cookies={"token": _make_jwt(20), "clientId": "c-1"})
+        result = publisher.publish(chapter)
+        self.assertEqual(result.status, "ok", result.message)
 
 
 if __name__ == "__main__":
