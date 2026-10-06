@@ -352,7 +352,15 @@ try {
       <header class="page-head">
         <div>
           <h1>平台账号</h1>
-          <p class="page-sub">在各平台已登录的浏览器里复制 Cookie 填入；账号密码登录因验证码限制请用浏览器登录</p>
+          <p class="page-sub">
+            推荐点每个平台的「🌐 浏览器登录」：会自动开一个独立浏览器窗口，你登录完它自己把 Cookie 读回来并保存，
+            不用再手动复制。也可以继续手动粘贴整段 Cookie。
+          </p>
+          <label class="check-row page-sub">
+            <input type="checkbox" :checked="autoBrowserLogin"
+                   @change="setAutoBrowserLogin($event.target.checked)">
+            <span>检查登录时若发现 Cookie 过期/失效，自动打开浏览器登录（再漫画 token 每 30 天到期）</span>
+          </label>
         </div>
         <button class="btn" :disabled="busy" @click="saveConfig">保存配置</button>
       </header>
@@ -395,6 +403,9 @@ try {
             </label>
             <span class="toolbar-spacer"></span>
             <button class="btn btn-ghost btn-sm" @click="openLogin(card)">打开登录页</button>
+            <button v-if="card.browser_login" class="btn btn-ghost btn-sm" @click="browserLogin(card)">
+              🌐 浏览器登录
+            </button>
             <button v-if="card.qr" class="btn btn-ghost btn-sm" @click="qrLogin(card)">扫码登录</button>
             <button v-if="card.key === 'bilibili'" class="btn btn-ghost btn-sm" @click="biliListsOpen(card)">选择/新建文集…</button>
             <button v-if="card.field_map" class="btn btn-ghost btn-sm" @click="fieldMapOpen(card.key)">上传表单填写…</button>
@@ -857,6 +868,25 @@ try {
         </div>
         <p class="hint-text center">{{ modal.qrMsg }}</p>
       </template>
+      <template v-else-if="modal.kind === 'browserlogin'">
+        <p class="hint-text">
+          已用一个<b>独立档案</b>打开系统里的 Chrome/Edge（不影响你平时的浏览器，登录状态会记住）。
+          请在新窗口里登录 <b>{{ modal.label }}</b>，登录成功后会自动读取 Cookie 并保存，不用手动复制。
+        </p>
+        <p v-if="modal.auto && modal.reason" class="hint-text">
+          自动触发原因：{{ modal.reason }}
+        </p>
+        <p v-if="modal.note" class="hint-text">{{ modal.note }}</p>
+        <div class="browser-login-state" :class="'is-' + (modal.state.status || 'idle')">
+          <span class="bl-dot"></span>
+          <span>{{ modal.state.message || '正在启动浏览器…' }}</span>
+        </div>
+        <p v-if="modal.state.saved_path" class="hint-text">已保存到：{{ modal.state.saved_path }}</p>
+        <p class="hint-text">
+          没看到窗口？可能被其他窗口挡住了（标题一般是 Edge/Chrome 的新窗口）。
+          也可以关掉这个弹窗，登录完再点「检查登录」。
+        </p>
+      </template>
       <template v-else-if="modal.kind === 'meta'">
         <p class="hint-text">该来源没有 manga.json，会复制到导入缓存后发布。</p>
         <div class="field">
@@ -920,6 +950,10 @@ try {
     <div class="modal-foot">
       <template v-if="modal.kind === 'bililists'">
         <button class="btn btn-ghost" @click="clearBiliList">不加入文集</button>
+        <button class="btn btn-primary" @click="modal = null">关闭</button>
+      </template>
+      <template v-else-if="modal.kind === 'browserlogin'">
+        <button class="btn btn-ghost" @click="browserLoginStop">停止等待</button>
         <button class="btn btn-primary" @click="modal = null">关闭</button>
       </template>
       <template v-else>

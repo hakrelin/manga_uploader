@@ -72,6 +72,7 @@ from .webui import (
     bilibili_my_lists,
     bilibili_qr_new,
     bilibili_qr_poll,
+    update_platform_cookies,
 )
 from .remote_client import _json_request, schedule_job, validate_schedule_content
 
@@ -142,6 +143,19 @@ class ServerState:
         self.qr_lock = threading.Lock()
         self.qr_session: Any = None
         self.qr_key = ""
+        # 「浏览器登录」状态：后台线程去开浏览器、读 Cookie，前端轮询这个字典
+        self.browser_login_lock = threading.Lock()
+        self.browser_login: dict[str, Any] = {
+            "status": "idle",  # idle/starting/waiting/ok/error/cancelled
+            "platform": "",
+            "message": "",
+            "cookies": {},
+            "saved": False,
+            "started_at": 0.0,
+            "updated_at": 0.0,
+        }
+        self.browser_login_stop = False
+        self.browser_login_thread: Optional[threading.Thread] = None
         self.config_path = config_path
 
 
@@ -735,6 +749,8 @@ class WebHandler(BaseHTTPRequestHandler):
             self._qr_start()
         elif path == "/api/qr/status":
             self._qr_status(parse_qs(parsed.query))
+        elif path == "/api/browser-login/status":
+            self._json(200, {"ok": True, "state": self._browser_login_snapshot()})
         elif path == "/api/pick":
             self._pick_dir((parse_qs(parsed.query).get("kind") or ["dir"])[0])
         elif path == "/api/page":
@@ -822,6 +838,135 @@ class WebHandler(BaseHTTPRequestHandler):
             return
         result = bilibili_qr_poll(session, key)
         self._json(200, result)
+
+    # ---------- 浏览器登录（打开真实浏览器登录并把 Cookie 抓回来） ----------
+
+    def _browser_login_snapshot(self) -> dict[str, Any]:
+        state = self.server.state
+        with state.browser_login_lock:
+            data = dict(state.browser_login)
+        data["cookies"] = dict(data.get("cookies") or {})
+        started = float(data.get("started_at") or 0.0)
+        data["elapsed"] = max(0.0, time.time() - started) if started else 0.0
+        data["running"] = str(data.get("status")) in ("starting", "waiting")
+        return data
+
+    def _browser_login_update(self, **fields: Any) -> None:
+        state = self.server.state
+        with state.browser_login_lock:
+            state.browser_login.update(fields)
+            state.browser_login["updated_at"] = time.time()
+
+    def _api_browser_login_start(self) -> None:
+        from . import browser_login
+
+        data = self._read_json()
+        platform = str(data.get("platform") or "").strip().lower()
+        try:
+            spec = browser_login.spec_for(platform)
+        except browser_login.BrowserLoginError as exc:
+            self._json(400, {"error": str(exc)})
+            return
+        state = self.server.state
+        with state.browser_login_lock:
+            running = str(state.browser_login.get("status")) in ("starting", "waiting")
+        if running:
+            self._json(
+                200,
+                {
+                    "ok": False,
+                    "error": "已经有一个浏览器登录在等待中",
+                    "state": self._browser_login_snapshot(),
+                },
+            )
+            return
+        try:
+            timeout = float(data.get("timeout") or 600.0)
+        except (TypeError, ValueError):
+            timeout = 600.0
+        state.browser_login_stop = False
+        self._browser_login_update(
+            status="starting",
+            platform=platform,
+            message=f"正在启动浏览器打开 {spec.label} 登录页…",
+            cookies={},
+            saved=False,
+            saved_path="",
+            started_at=time.time(),
+        )
+        state.ring.append(
+            "INFO", f"🌐 浏览器登录：正在打开 {spec.label} 登录页（{spec.url}）"
+        )
+        thread = threading.Thread(
+            target=self._browser_login_worker,
+            args=(platform, bool(data.get("save", True)), timeout),
+            name=f"browser-login-{platform}",
+            daemon=True,
+        )
+        state.browser_login_thread = thread
+        thread.start()
+        self._json(200, {"ok": True, "url": spec.url, "state": self._browser_login_snapshot()})
+
+    def _api_browser_login_stop(self) -> None:
+        self.server.state.browser_login_stop = True
+        self._browser_login_update(message="正在取消浏览器登录…")
+        self._json(200, {"ok": True, "state": self._browser_login_snapshot()})
+
+    def _browser_login_worker(self, platform: str, save: bool, timeout: float) -> None:
+        """后台线程：开浏览器 → 等登录 → 读 Cookie → 落盘。"""
+        from . import browser_login
+
+        state = self.server.state
+
+        def on_status(message: str) -> None:
+            self._browser_login_update(status="waiting", message=message)
+
+        try:
+            cookies = browser_login.grab_cookies(
+                platform,
+                timeout=timeout,
+                should_stop=lambda: state.browser_login_stop,
+                on_status=on_status,
+            )
+        except browser_login.BrowserLoginCancelled as exc:
+            self._browser_login_update(status="cancelled", message=str(exc))
+            state.ring.append("INFO", f"🌐 浏览器登录已取消：{exc}")
+            return
+        except browser_login.BrowserLoginError as exc:
+            self._browser_login_update(status="error", message=str(exc))
+            state.ring.append("ERROR", f"🌐 浏览器登录失败：{exc}")
+            return
+        except Exception as exc:  # noqa: BLE001 - 后台线程不能把异常吞成静默
+            self._browser_login_update(status="error", message=f"浏览器登录异常：{exc}")
+            state.ring.append("ERROR", f"🌐 浏览器登录异常：{exc}")
+            return
+
+        saved_path = ""
+        if save:
+            try:
+                saved_path = str(update_platform_cookies(self._config_path(), platform, cookies))
+            except Exception as exc:  # noqa: BLE001
+                self._browser_login_update(
+                    status="ok",
+                    cookies=cookies,
+                    saved=False,
+                    message=f"已拿到 Cookie，但写入 config.yaml 失败：{exc}（可在页面上点「保存配置」）",
+                )
+                state.ring.append("ERROR", f"🌐 浏览器登录：写入 config.yaml 失败：{exc}")
+                return
+        label = browser_login.spec_for(platform).label
+        names = "、".join(sorted(cookies)) or "（空）"
+        message = f"已获取 {label} 的 Cookie：{names}"
+        if saved_path:
+            message += "，并已保存到 config.yaml"
+        self._browser_login_update(
+            status="ok",
+            cookies=cookies,
+            saved=bool(saved_path),
+            saved_path=saved_path,
+            message=message,
+        )
+        state.ring.append("INFO", f"🌐 {message}")
 
     def _api_page(self, query: dict[str, list[str]]) -> None:
         """返回某章节的页图。name（文件名）优先于 index——URL 按文件而不是按页号，
@@ -992,6 +1137,10 @@ class WebHandler(BaseHTTPRequestHandler):
             self._api_bilibili_lists()
         elif path == "/api/bilibili/list-create":
             self._api_bilibili_list_create()
+        elif path == "/api/browser-login/start":
+            self._api_browser_login_start()
+        elif path == "/api/browser-login/stop":
+            self._api_browser_login_stop()
         elif path == "/api/apply":
             self._api_apply_edits()
         elif path == "/api/remote-schedule":

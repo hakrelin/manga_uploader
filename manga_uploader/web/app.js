@@ -195,6 +195,16 @@ createApp({
     const newProfileName = ref("");
     const statuses = reactive({});
     const expanded = reactive({});
+    // 「浏览器登录」：检测到 Cookie 过期时是否自动打开浏览器去登录（可在平台账号页关掉）
+    const autoBrowserLogin = ref(true);
+    try {
+      const savedAuto = localStorage.getItem("mu-auto-browser-login");
+      if (savedAuto !== null) autoBrowserLogin.value = savedAuto !== "0";
+    } catch (e) {}
+    function setAutoBrowserLogin(value) {
+      autoBrowserLogin.value = !!value;
+      try { localStorage.setItem("mu-auto-browser-login", autoBrowserLogin.value ? "1" : "0"); } catch (e) {}
+    }
     // 发布进度条（后端 publish 日志里的 progress 事件驱动）
     const pubProgress = reactive({
       active: false,
@@ -203,6 +213,8 @@ createApp({
       platforms: {},
     });
     let pubDoneTimer = null;
+    // 最近一次发布的目标平台（发布结束后复查登录态，失效就自动开浏览器登录）
+    let lastPublishTargets = [];
 
     const comicDir = ref("");
     // 本地页序改动过的章节（key 集合）：排序纯前端生效，落盘推迟到发布/预览/
@@ -748,6 +760,12 @@ createApp({
       // 短暂保留最终状态，随后收起进度面板
       if (pubDoneTimer) clearTimeout(pubDoneTimer);
       pubDoneTimer = setTimeout(() => { pubProgress.active = false; }, 8000);
+      // 发完复查一次这几个平台：登录态失效的话会自动打开浏览器登录
+      const targets = lastPublishTargets.slice();
+      lastPublishTargets = [];
+      if (targets.length && autoBrowserLogin.value) {
+        setTimeout(() => { runCheck(targets); }, 1000);
+      }
     }
 
     function handleLogEvent(d) {
@@ -1065,7 +1083,22 @@ createApp({
           method: "POST", json: true,
           body: JSON.stringify({ config: payload(), platforms: names || undefined }),
         });
-        (r.results || []).forEach((res) => setStatus(res.platform, res.ok, res.message));
+        const checked = (r.results || []).map((res) => {
+          setStatus(res.platform, res.ok, res.message);
+          return res;
+        });
+        // 登录态失效/缺 Cookie 的平台：自动打开浏览器登录（每个平台最多一次）
+        const tried = new Set();
+        checked.forEach((res) => {
+          if (res.ok || tried.has(res.platform)) return;
+          if (!autoBrowserLogin.value || !browserLoginSupported(res.platform)) return;
+          if (!looksLikeLoginProblem(res.message)) return;
+          tried.add(res.platform);
+          browserLogin(cardOf(res.platform), {
+            auto: true,
+            reason: res.message || "",
+          });
+        });
       } catch (e) {
         toastMsg("检查失败：" + e.message);
       } finally {
@@ -1075,6 +1108,123 @@ createApp({
 
     function pasteCookie(card) {
       modal.value = { kind: "paste", title: "粘贴整段 Cookie · " + card.label, key: card.key, text: "" };
+    }
+
+    // ---------------- 浏览器登录（打开真实浏览器 → 自动抓 Cookie） ----------------
+
+    const LOGIN_PROBLEM_PATTERNS = [
+      /过期/, /请先登录/, /未登录/, /登录失效/, /登录已失效/,
+      /缺少 Cookie/, /Cookie 无效/, /token 无效/,
+    ];
+
+    function cardOf(key) {
+      return (cards.value || []).find((c) => c.key === key) || { key: key, label: key };
+    }
+    function browserLoginSupported(key) {
+      const card = cardOf(key);
+      return !!card.browser_login;
+    }
+    function looksLikeLoginProblem(message) {
+      const text = String(message || "");
+      return LOGIN_PROBLEM_PATTERNS.some((re) => re.test(text));
+    }
+
+    let browserLoginTimer = null;
+    let browserLoginActive = false;
+
+    function stopBrowserLoginPolling() {
+      if (browserLoginTimer) clearInterval(browserLoginTimer);
+      browserLoginTimer = null;
+    }
+
+    function browserLogin(card, opts) {
+      const o = opts || {};
+      if (browserLoginActive) {
+        toastMsg("已经有一个浏览器登录在等待中，先完成它（或到弹窗里点「停止等待」）");
+        return;
+      }
+      const label = card.label || card.key;
+      modal.value = {
+        kind: "browserlogin",
+        key: card.key,
+        title: "🌐 浏览器登录 · " + label,
+        label: label,
+        note: card.browser_login_note || "",
+        auto: !!o.auto,
+        reason: o.reason || "",
+        state: { status: "starting", message: "正在启动浏览器…" },
+      };
+      browserLoginActive = true;
+      toastMsg(
+        (o.auto ? "检测到 " + label + " 登录失效，已" : "已") +
+          "打开浏览器，请在新窗口里登录（登录完成会自动填好 Cookie）"
+      );
+      startBrowserLoginPolling();
+      api("/api/browser-login/start", {
+        method: "POST", json: true,
+        body: JSON.stringify({ platform: card.key, save: true }),
+      })
+        .then((r) => {
+          if (r && r.state && modal.value && modal.value.kind === "browserlogin") {
+            modal.value.state = r.state;
+          }
+          if (r && r.ok === false && r.error) toastMsg(r.error);
+        })
+        .catch((e) => {
+          if (modal.value && modal.value.kind === "browserlogin") {
+            modal.value.state = { status: "error", message: "启动失败：" + e.message };
+          }
+        });
+    }
+
+    function browserLoginStop() {
+      browserLoginActive = false;
+      stopBrowserLoginPolling();
+      api("/api/browser-login/stop", { method: "POST", json: true, body: "{}" }).catch(() => {});
+      modal.value = null;
+    }
+
+    function startBrowserLoginPolling() {
+      stopBrowserLoginPolling();
+      browserLoginTimer = setInterval(async () => {
+        if (!modal.value || modal.value.kind !== "browserlogin") {
+          stopBrowserLoginPolling();
+          browserLoginActive = false;
+          return;
+        }
+        let r;
+        try {
+          r = await api("/api/browser-login/status");
+        } catch (e) {
+          return;
+        }
+        const st = r.state || {};
+        modal.value.state = st;
+        if (st.status === "ok") {
+          stopBrowserLoginPolling();
+          browserLoginActive = false;
+          applyBrowserCookies(modal.value.key, st.cookies || {});
+        } else if (st.status === "error" || st.status === "cancelled") {
+          stopBrowserLoginPolling();
+          browserLoginActive = false;
+        }
+      }, 1500);
+    }
+
+    function applyBrowserCookies(key, cookies) {
+      const p = (config.platforms || {})[key];
+      if (!p) return;
+      p.cookies = p.cookies || {};
+      const names = [];
+      for (const [name, value] of Object.entries(cookies || {})) {
+        const text = String(value == null ? "" : value).trim();
+        if (!text) continue;
+        p.cookies[name] = text;
+        names.push(name);
+      }
+      if (!names.length) return;
+      setStatus(key, true, "已通过浏览器登录自动获取 Cookie（" + names.join("/") + "）");
+      toastMsg("✓ " + (cardOf(key).label || key) + " 已自动填入 " + names.join("/") + "（已保存到 config.yaml）");
     }
 
     // ---------------- B站专栏文集 ----------------
@@ -1610,7 +1760,8 @@ createApp({
 
     async function publish() {
       if (!comicDir.value.trim()) { toastMsg("请先加载漫画目录"); return; }
-      const names = cards.value.filter(connected).map((c) => c.label.split("（")[0]);
+      const targets = cards.value.filter(connected).map((c) => c.key);
+      const names = targets.map((k) => platShort(cardOf(k)));
       if (!names.length) { toastMsg("没有已连接的平台，请先到「平台账号」配置 Cookie"); return; }
       // 先把当前编辑内容落盘，保证发布的标题/正文与预览一致
       try {
@@ -1655,6 +1806,7 @@ createApp({
           });
         }
         running.value = true;
+        lastPublishTargets = targets.slice(); // 发完复查用（登录失效就自动开浏览器登录）
         nav.value = "workbench";
       } catch (e) {
         toastMsg("发布失败：" + e.message);
@@ -2540,6 +2692,7 @@ createApp({
       platShort, platStatus, connected, extrasOf, extraLabel, staleAccountsText,
       saveConfig, openAccount, toggleExpand, openLogin,
       checkOne, checkAll, pasteCookie, qrLogin, detectProxy,
+      browserLogin, browserLoginStop, autoBrowserLogin, setAutoBrowserLogin,
       biliListsOpen, pickBiliList, clearBiliList, createBiliList,
       fieldMapOpen, onSourceChange, pickDir, pickZip, loadComic, onDrop,
       fillRomajiNames, fillRomajiTitle, prefillTouhouSeries,

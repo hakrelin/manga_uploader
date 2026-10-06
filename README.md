@@ -138,10 +138,13 @@ notepad config.yaml
 # 3. 检查登录状态（不发布任何东西）
 python -m manga_uploader check
 
-# 4. 干跑：只看将要发布的计划
+# 4. Cookie 过期了？打开浏览器登录，程序自动把 Cookie 写回 config.yaml
+python -m manga_uploader login zaimanhua
+
+# 5. 干跑：只看将要发布的计划
 python -m manga_uploader publish examples\my_comic --dry-run
 
-# 5. 真发布（发布前会二次确认；加 --yes 跳过）
+# 6. 真发布（发布前会二次确认；加 --yes 跳过）
 python -m manga_uploader publish examples\my_comic
 
 # 常用选项
@@ -152,12 +155,19 @@ python -m manga_uploader publish examples\my_comic --parallel                  #
 
 ## 运行测试
 
-仓库自带 70+ 个不联网的单元/模拟测试，覆盖目录扫描、配置加载、图片预处理与
-自动压缩、多平台共享预处理、代理识别、GUI/Web 配置解析，以及 B站/贴吧/
+仓库自带 240+ 个不联网的单元/模拟测试，覆盖目录扫描、配置加载、图片预处理与
+自动压缩、多平台共享预处理、代理识别、GUI/Web 配置解析、浏览器登录取 Cookie
+（WebSocket/CDP 帧解析、Cookie 匹配、等待与取消），以及 B站/贴吧/
 e-hentai/再漫画/小黑盒发布器的请求链路（含 B站专栏发布与小黑盒签名）：
 
 ```powershell
 python -m unittest discover -s tests -v
+```
+
+需要真实浏览器的端到端测试默认跳过，想跑加环境变量：
+
+```powershell
+$env:MANGA_UPLOADER_LIVE_BROWSER=1; python -m unittest tests.test_browser_login_live -v
 ```
 
 ## 漫画目录约定
@@ -244,6 +254,27 @@ Headers 里的 `Cookie:`，按下面表格填入 `config.yaml`（GUI 支持分�
 Cookie 会过期（B站 SESSDATA 常见数月），`check` 会提示失效，重新复制即可。
 小黑盒比较特殊：粘贴整段 Cookie 时**整段原样保存**（含 HttpOnly 登录态），
 不做字段拆分。B站可用“扫码登录”直接获取（需 `pip install qrcode[pil]`）。
+
+### 🌐 浏览器登录（不用再手动复制 Cookie）
+
+不想翻开发者工具的话，每个平台都能让程序自己把 Cookie 取回来：
+
+- **网页版**：「平台账号」→ 对应平台卡片 → **🌐 浏览器登录**
+- **命令行**：`python -m manga_uploader login zaimanhua`
+  （平台名可换成 `bilibili` / `tieba` / `ehentai` / `zaimanhua` / `xiaoheihe`）
+
+它会用一个**独立档案目录**（默认 `%LOCALAPPDATA%\manga_uploader\browser-profile`，
+不影响你平时的浏览器，登录状态会一直留在里面）启动系统里的 Chrome/Edge，打开登录页；
+你在那个窗口里正常登录（扫码 / 密码 / 短信都行，验证码不需要程序处理），
+程序通过 CDP 轮询浏览器 Cookie，**一登录成功就自动读取并写回 `config.yaml`**。
+
+- 再漫画会额外校验 JWT 的 `exp`：如果浏览器里还是那个**已过期的旧 token**，
+  它会继续等你在窗口里重新登录，不会把过期值填回去。
+- 网页版在「检查登录」时若发现某平台 Cookie 过期 / 失效 / 缺失，会**自动打开浏览器登录**
+  （「平台账号」页顶部有开关可以关掉），不用手动点。
+- 档案目录里记住了上次的调试端口，第二次点会复用已经打开的窗口，不用重复登录。
+- 找不到浏览器 / 调试端口起不来时，用环境变量 `MANGA_UPLOADER_BROWSER` 指向
+  Chrome/Edge 的可执行文件；`MANGA_UPLOADER_BROWSER_HEADLESS=1` 可改成不显示窗口。
 
 ## 界面上的发布设置
 
@@ -424,6 +455,9 @@ Cookie 会过期（B站 SESSDATA 常见数月），`check` 会提示失效，重
 
 修复方式：重新登录 <https://manhua.zaimanhua.com/>，复制 Cookie 里的新 `token`
 （整段 Cookie 直接粘进去也行，程序会自动挑出 `token=`），保存后重新发布。
+更省事的做法：点「平台账号 → 再漫画」里的「🌐 浏览器登录」，或者命令行
+`python -m manga_uploader login zaimanhua` —— 程序会自己开浏览器，登录完自动把新
+token 写好（见上文「🌐 浏览器登录」）。
 
 ## 多平台图片共享预处理
 
@@ -498,6 +532,8 @@ manga_uploader/
 ├─ composer.py        # 标题/正文组合、罗马音/AI 转换
 ├─ config.py          # 配置加载与平台默认值
 ├─ http_client.py     # Cookie/重试/调试转储
+├─ browser_login.py   # 🌐 浏览器登录：开浏览器登录并自动取 Cookie（平台规则）
+├─ cdp.py             # 手写的 CDP / WebSocket 客户端（只依赖标准库）
 ├─ util.py            # 图片预处理（共享缓存）/日志/排序
 ├─ scaffold.py        # 示例目录生成
 ├─ models.py          # 数据模型

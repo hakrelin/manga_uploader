@@ -43,6 +43,16 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     scaffold.add_argument("path", help="要创建的漫画目录")
     scaffold.add_argument("--no-demo-images", action="store_true", help="不生成占位图片")
 
+    login = sub.add_parser(
+        "login", help="打开浏览器登录，自动把 Cookie 保存进 config.yaml"
+    )
+    login.add_argument(
+        "platform", help="平台：bilibili / tieba / ehentai / zaimanhua / xiaoheihe"
+    )
+    login.add_argument("--timeout", type=float, default=600.0, help="等待登录的秒数（默认 600）")
+    login.add_argument("--no-save", action="store_true", help="只打印 Cookie，不写入 config.yaml")
+    login.add_argument("--headless", action="store_true", help="不显示浏览器窗口（调试用）")
+
     return parser.parse_args(argv)
 
 
@@ -97,6 +107,59 @@ def _cmd_scaffold(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_login(args: argparse.Namespace, cfg_path: str | None) -> int:
+    """打开真实浏览器登录，登录完自动把 Cookie 写回 config.yaml。"""
+    from . import browser_login
+    from .webui import update_platform_cookies
+
+    try:
+        spec = browser_login.spec_for(args.platform)
+    except browser_login.BrowserLoginError as exc:
+        print(f"错误：{exc}", file=sys.stderr)
+        return 2
+
+    path = None
+    try:
+        path = load_config(cfg_path).path
+    except ConfigError as exc:
+        print(f"[提示] 读不到配置（{exc}），本次只打印 Cookie、不保存。", file=sys.stderr)
+
+    print(f"【浏览器登录】{spec.label}")
+    print(f"  将要打开：{spec.url}")
+    if spec.note:
+        print(f"  提示：{spec.note}")
+    print("  请在浏览器窗口里登录；登录成功后本程序会自动读取 Cookie，请不要中途关掉窗口。")
+
+    def on_status(message: str) -> None:
+        print(f"  {message}", flush=True)
+
+    try:
+        cookies = browser_login.grab_cookies(
+            args.platform,
+            timeout=args.timeout,
+            headless=args.headless,
+            on_status=on_status,
+        )
+    except browser_login.BrowserLoginError as exc:
+        print(f"失败：{exc}", file=sys.stderr)
+        return 1
+
+    print(f"✓ 已获取 Cookie：{', '.join(sorted(cookies)) or '（空）'}")
+    if args.no_save or path is None:
+        for name, value in cookies.items():
+            print(f"  {name} = {value}")
+        return 0
+    try:
+        saved = update_platform_cookies(path, args.platform, cookies)
+    except Exception as exc:  # noqa: BLE001 - 保存失败也要把 Cookie 打印出来
+        print(f"写入 config.yaml 失败：{exc}", file=sys.stderr)
+        for name, value in cookies.items():
+            print(f"  {name} = {value}")
+        return 1
+    print(f"✓ 已保存到 {saved}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ensure_utf8()
     args = _parse_args(argv)
@@ -126,6 +189,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_publish(args, args.config)
     if args.command == "scaffold":
         return _cmd_scaffold(args)
+    if args.command == "login":
+        return _cmd_login(args, args.config)
     return 1
 
 

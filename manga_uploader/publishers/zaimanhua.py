@@ -48,8 +48,10 @@ LOGIN_EXPIRED_HINT = (
     "再漫画 登录已失效（接口返回 errno 99「请先登录」）：再漫画的 token 有效期只有 "
     f"{TOKEN_TTL_DAYS} 天，过期后上传/提交接口会直接拒绝（账号接口不校验过期，"
     "所以「检查登录」仍会显示正常）。"
-    f"请重新登录 {LOGIN_URL} 后复制 Cookie 里的新 token，"
-    "在「平台账号 → 再漫画」保存后重试。"
+    "解决办法：网页版到「平台账号 → 再漫画」点「🌐 浏览器登录」，"
+    "会自动打开浏览器、登录完自动填好新 token；"
+    f"命令行可用「python -m manga_uploader login zaimanhua」；"
+    f"也可以自己登录 {LOGIN_URL} 复制 Cookie 里的新 token 粘贴保存。"
 )
 
 CATE_LABELS = {
@@ -165,7 +167,8 @@ class ZaimanhuaPublisher(BasePublisher):
             return (
                 f"再漫画登录已过期：token（有效期 {TOKEN_TTL_DAYS} 天）已于 {when} 到期，"
                 "上传/提交接口会直接返回「请先登录」。"
-                f"请重新登录 {LOGIN_URL} 复制新的 token 后重试。"
+                "到「平台账号 → 再漫画」点「🌐 浏览器登录」可自动重新登录并取回新 token"
+                f"（或自己登录 {LOGIN_URL} 复制新的 token）。"
             )
         left_days = (exp - now) / 86400.0
         if left_days < TOKEN_WARN_DAYS:

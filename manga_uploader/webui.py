@@ -27,6 +27,7 @@ from .config import (
     PlatformConfig,
 )
 from .comic import META_FILES, find_meta_file, load_chapters, read_meta
+from .browser_login import LOGIN_SPECS as BROWSER_LOGIN_SPECS
 from .publishers.ehentai import DEFAULT_FIELD_ROWS
 from .publishers.zaimanhua import CATE_LABELS
 from .util import IMAGE_EXTS, is_image, natural_sort_key, sort_images
@@ -170,7 +171,7 @@ PLATFORM_CARDS: list[dict[str, Any]] = [
         ],
         "hint": "登录再漫画后复制 Cookie 里的 token（JWT，整段 Cookie 粘贴也能自动识别），可选 clientId。"
         "注意：token 有效期只有 30 天，过期后上传接口会返回「请先登录」（而账号接口仍显示已登录，"
-        "所以「检查登录」看着是好的）。重新登录后复制新的 token 保存即可。"
+        "所以「检查登录」看着是好的）。点上面的「🌐 浏览器登录」可以自动开浏览器登录并把新 token 填好。"
         "投稿页：manhua.zaimanhua.com/uploadShows",
         "extras": [("cate", "作品类型")],
         "controls": {
@@ -255,6 +256,15 @@ PROXY_CONTROLS: dict[str, dict[str, Any]] = {
 for _card in PLATFORM_CARDS:
     _controls = _card.setdefault("controls", {})
     _controls.update({k: dict(v) for k, v in PROXY_CONTROLS.items()})
+
+for _card in PLATFORM_CARDS:
+    # 支持「浏览器登录」的平台：前端据此显示「🌐 浏览器登录」按钮
+    # （打开真实浏览器 → 用户自己登录 → 自动把 Cookie 读回来）。
+    _spec = BROWSER_LOGIN_SPECS.get(str(_card.get("key")))
+    _card["browser_login"] = _spec is not None
+    if _spec is not None:
+        _card["browser_login_url"] = _spec.url
+        _card["browser_login_note"] = _spec.note
 
 
 EXTRA_OPTIONS: dict[str, Any] = {
@@ -1102,6 +1112,48 @@ def save_config(config_path: str | Path, payload: dict[str, Any]) -> Path:
             "或检查该文件是否被其他程序占用"
         ) from exc
     return path
+
+
+def update_platform_cookies(
+    config_path: str | Path, platform: str, cookies: dict[str, str]
+) -> Path:
+    """只更新某个平台的 Cookie，其余内容原样保留。
+
+    给「浏览器登录自动回填 Cookie」用：不依赖前端表单，直接落盘，
+    这样即使用户没点「保存配置」也不会丢。
+    """
+    import yaml
+
+    path = Path(config_path)
+    raw: dict[str, Any] = {}
+    if path.exists():
+        try:
+            loaded = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            if isinstance(loaded, dict):
+                raw = loaded
+        except (OSError, yaml.YAMLError):
+            raw = {}
+    platforms = raw.setdefault("platforms", {})
+    if not isinstance(platforms, dict):  # pragma: no cover - 配置文件被改坏时兜底
+        platforms = {}
+        raw["platforms"] = platforms
+    entry = platforms.get(platform)
+    if not isinstance(entry, dict):
+        entry = {"enabled": True, "cookies": {}, "settings": {}}
+        platforms[platform] = entry
+    store = entry.get("cookies")
+    if not isinstance(store, dict):
+        store = {}
+        entry["cookies"] = store
+    for key, value in (cookies or {}).items():
+        text = str(value or "").strip()
+        if text:
+            store[str(key)] = text
+    payload = {
+        "common": raw.get("common") or {},
+        "platforms": platforms,
+    }
+    return save_config(path, payload)
 
 
 # ------------------------------------------------------------ 配置切换表（多配置）

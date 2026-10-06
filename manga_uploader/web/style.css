@@ -1436,6 +1436,36 @@ html, body {
 .qr-box img { width: 240px; height: 240px; border-radius: 6px; }
 .qr-wait { color: var(--text-3); font-size: 13px; }
 
+/* 浏览器登录：等待状态条 */
+.browser-login-state {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 0 4px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--panel-2, rgba(127, 127, 127, 0.08));
+  border: 1px solid var(--border, rgba(127, 127, 127, 0.2));
+  font-size: 13px;
+  color: var(--text-2);
+}
+.browser-login-state .bl-dot {
+  width: 9px; height: 9px; border-radius: 50%;
+  background: var(--text-3);
+  flex: 0 0 auto;
+}
+.browser-login-state.is-starting .bl-dot,
+.browser-login-state.is-waiting .bl-dot {
+  background: #e6a23c;
+  animation: bl-pulse 1.2s ease-in-out infinite;
+}
+.browser-login-state.is-ok .bl-dot { background: #67c23a; }
+.browser-login-state.is-error .bl-dot { background: #f56c6c; }
+@keyframes bl-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.8); }
+}
+
 .fm-table { display: flex; flex-direction: column; gap: 6px; }
 .fm-row {
   display: grid;
