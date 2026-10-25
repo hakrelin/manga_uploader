@@ -211,6 +211,58 @@ class TestEhentaiConnectErrors(unittest.TestCase):
         self.assertTrue(eh_mod._is_connect_error(HttpError(_CONNECT_BOOM)))
         self.assertFalse(eh_mod._is_connect_error(PublisherError("Cookie 无效或未登录")))
 
+    def test_tls_eof_with_proxy_reports_actual_route(self):
+        self.cfg.settings.update(proxy_url="http://127.0.0.1:7890", use_system_proxy=True)
+        with mock.patch("manga_uploader.http_client.detect_system_proxy") as detect:
+            publisher = self._publisher()
+        detect.assert_not_called()
+        error = HttpError("SSLError: [SSL: UNEXPECTED_EOF_WHILE_READING]")
+        with mock.patch.object(publisher.http, "get", side_effect=error):
+            result = publisher.check()
+        self.assertFalse(result.ok)
+        self.assertIn("当前请求已配置代理：http://127.0.0.1:7890", result.message)
+        self.assertIn("手填代理 URL 优先", result.message)
+        self.assertIn("TLS 连接被中途关闭", result.message)
+        self.assertIn("不能据此判断 Cookie 失效", result.message)
+        self.assertNotIn("请任选其一", result.message)
+        publisher.http.close()
+
+    def test_tls_eof_without_proxy_reports_route(self):
+        publisher = self._publisher()
+        hint = eh_mod._connect_hint(publisher.http, HttpError("SSLEOFError"))
+        self.assertIn("未配置显式代理", hint)
+        self.assertIn("TLS 连接被中途关闭", hint)
+        publisher.http.close()
+
+    def test_cloudflare_block_gives_node_hint_for_check_and_upload(self):
+        from requests import Response
+        publisher = self._publisher()
+        response = Response()
+        response.status_code = 403
+        response._content = b'<title>Cloudflare</title><h1>Sorry, you have been blocked</h1>'
+        publisher.http.last_request = response
+        with mock.patch.object(publisher.http, "get", side_effect=HttpError("403")):
+            result = publisher.check()
+            self.assertFalse(result.ok)
+            self.assertIn("请使用欧美节点", result.message)
+            with self.assertRaisesRegex(PublisherError, "请使用欧美节点"):
+                publisher.publish(_make_chapter(Path(self.tmp.name)))
+        response._content = b'Permission denied'
+        self.assertEqual(eh_mod._cloudflare_block_hint(publisher.http), "")
+        response.status_code = 200
+        response._content = b'Cloudflare: Sorry, you have been blocked'
+        self.assertEqual(eh_mod._cloudflare_block_hint(publisher.http), "")
+        publisher.http.close()
+
+    def test_proxy_diagnostic_does_not_expose_proxy_credentials(self):
+        publisher = self._publisher()
+        publisher.http.session.proxies["https"] = "http://user:secret@[::1]:7890/?token=private"
+        hint = eh_mod._connect_hint(publisher.http, HttpError(_CONNECT_BOOM))
+        self.assertIn("http://[::1]:7890", hint)
+        for value in ("user", "secret", "private"):
+            self.assertNotIn(value, hint)
+        publisher.http.close()
+
 
 class TestEhentaiPublisherMock(unittest.TestCase):
     @classmethod

@@ -460,7 +460,8 @@ try {
             </div>
           </div>
 
-          <p class="hint-text">「此平台代理」只影响这一个平台：<b>留空 = 沿用</b>「设置 → 网络」里的全局代理与系统代理开关；
+          <p class="hint-text">「此平台代理」只影响这一个平台：URL 留空时沿用全局代理 URL；<b>手填 URL 优先于系统代理开关</b>。
+            平台与全局 URL 都为空时，才按此平台开关检测系统代理。请填写代理软件实际的 HTTP/混合端口，或点击「检测系统代理」。
             国内平台（B站/贴吧/再漫画/小黑盒）建议直连，只有 e-hentai 这类海外站才需要代理。</p>
           <p class="hint-text">{{ card.hint }}</p>
           <div v-if="statuses[card.key] && statuses[card.key].length" class="check-status">

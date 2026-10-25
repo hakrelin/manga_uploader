@@ -69,6 +69,22 @@ CONNECT_HINT = (
     "e-hentai 配代理、国内站保持直连。"
 )
 
+NODE_HINT = "请使用欧美节点上传；香港节点可能触发 Cloudflare 拦截（403）。"
+
+
+def _cloudflare_block_hint(client: HttpClient) -> str:
+    response = client.last_request
+    if response is None or response.status_code != 403:
+        return ""
+    text = response.text.lower()
+    if "cloudflare" not in text or "sorry, you have been blocked" not in text:
+        return ""
+    return (
+        "E 站上传请求被 Cloudflare 拦截（HTTP 403）。" + NODE_HINT
+        + "切换后重新检查登录，再尝试上传。此错误不代表 Cookie 已过期。"
+        "完整响应已尝试保存到输出目录的 debug 文件夹。"
+    )
+
 
 def _is_connect_error(exc: BaseException) -> bool:
     """判断异常是否为“连不上/超时”这类网络不可达（而非站点的业务报错）。"""
@@ -79,6 +95,43 @@ def _is_connect_error(exc: BaseException) -> bool:
         if marker in text:
             return True
     return False
+
+
+def _connect_hint(client: HttpClient, exc: BaseException) -> str:
+    """按本次会话的实际代理给出提示，避免已走代理时仍让用户开启代理。"""
+    proxy = client.session.proxies.get("https", "")
+    if proxy:
+        # 只展示端点，不把代理账号、密码或查询参数放进诊断提示。
+        try:
+            parts = urlsplit(proxy)
+            host = parts.hostname or "未知主机"
+            if ":" in host:
+                host = f"[{host}]"
+            endpoint = f"{parts.scheme}://{host}"
+            if parts.port:
+                endpoint += f":{parts.port}"
+        except ValueError:
+            endpoint = "（地址格式有误）"
+        route = (
+            f"当前请求已配置代理：{endpoint}。"
+            "手填代理 URL 优先于「使用系统代理」开关；"
+            "请核对代理软件的 HTTP/混合端口，或点击「检测系统代理」更新地址。"
+            "若程序运行在服务器/容器里，127.0.0.1 指的是运行程序的环境。"
+        )
+    else:
+        route = "当前请求未配置显式代理（系统 TUN/VPN 仍可能接管流量）。" + CONNECT_HINT
+    detail = str(exc).lower()
+    if "unexpected_eof" in detail or "ssleoferror" in detail:
+        route += (
+            " TLS 连接被中途关闭，不能据此判断 Cookie 失效。"
+            "请在运行程序的电脑上用浏览器打开上传页 "
+            f"{UPLOAD_PAGE_URL}，并在代理软件连接记录里确认 upload.e-hentai.org "
+            "走了预期节点；可临时切换全局代理模式或更换节点后重试。"
+            "浏览器能打开主页不代表上传域名可用，也不代表浏览器和程序走同一代理。"
+        )
+    elif proxy:
+        route += "请检查代理软件是否运行，以及 upload.e-hentai.org 的分流规则和节点连通性。"
+    return route
 
 
 def _is_upload_page_url(url: str) -> bool:
@@ -563,11 +616,14 @@ class EhentaiPublisher(BasePublisher):
         try:
             resp = self.http.get(UPLOAD_PAGE_URL)
         except Exception as exc:
+            blocked = _cloudflare_block_hint(self.http)
+            if blocked:
+                return CheckResult(self.key, False, blocked)
             if _is_connect_error(exc):
                 return CheckResult(
                     self.key,
                     False,
-                    f"网络请求失败（连不上 upload.e-hentai.org）：{exc}\n{CONNECT_HINT}",
+                    f"网络请求失败（连不上 upload.e-hentai.org）：{exc}\n{_connect_hint(self.http, exc)}",
                 )
             return CheckResult(self.key, False, f"网络请求失败：{exc}")
         if not _is_upload_page_url(resp.url):
@@ -871,9 +927,12 @@ class EhentaiPublisher(BasePublisher):
             resp = self._upload_files(action, data, file_name, pages, chapter)
             return self._interpret_response(resp, chapter, len(pages))
         except HttpError as exc:
+            blocked = _cloudflare_block_hint(self.http)
+            if blocked:
+                raise PublisherError(blocked) from exc
             if _is_connect_error(exc):
                 raise PublisherError(
-                    f"e-hentai 请求连不上（连接超时/被拒绝）：{exc}\n{CONNECT_HINT}"
+                    f"e-hentai 网络请求失败：{exc}\n{_connect_hint(self.http, exc)}"
                 ) from exc
             raise
         finally:

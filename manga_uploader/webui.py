@@ -134,7 +134,8 @@ PLATFORM_CARDS: list[dict[str, Any]] = [
             {"name": "ipb_pass_hash", "required": True},
         ],
         "hint": "登录 e-hentai 后复制 Cookie 里的 ipb_member_id 与 ipb_pass_hash。"
-        "上传入口：upload.e-hentai.org/managegallery?act=new；通常需要代理直连。",
+        "上传入口：upload.e-hentai.org/managegallery?act=new。"
+        "请使用欧美节点上传；香港节点可能触发 Cloudflare 拦截（403）。",
         "extras": [
             ("category_label", "默认分类（如 Manga / Doujinshi）"),
             ("language_label", "语言（留空用页面默认 Japanese/No Text，如 Chinese）"),
@@ -238,7 +239,7 @@ PLATFORM_CARDS: list[dict[str, Any]] = [
     },
 ]
 
-# 每个平台卡片都带一组「此平台代理」设置：留空/不勾选就沿用「设置 → 网络」里的全局代理
+# 每个平台卡片都带一组代理设置：URL 留空沿用全局 URL，平台开关覆盖全局开关。
 PROXY_CONTROLS: dict[str, dict[str, Any]] = {
     "use_system_proxy": {
         "kind": "switch",
