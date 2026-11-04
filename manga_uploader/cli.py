@@ -110,7 +110,11 @@ def _cmd_scaffold(args: argparse.Namespace) -> int:
 def _cmd_login(args: argparse.Namespace, cfg_path: str | None) -> int:
     """打开真实浏览器登录，登录完自动把 Cookie 写回 config.yaml。"""
     from . import browser_login
-    from .webui import update_platform_cookies
+    from .webui import (
+        config_profiles_path,
+        sync_cookies_into_active_profile,
+        update_platform_cookies,
+    )
 
     try:
         spec = browser_login.spec_for(args.platform)
@@ -157,6 +161,16 @@ def _cmd_login(args: argparse.Namespace, cfg_path: str | None) -> int:
             print(f"  {name} = {value}")
         return 1
     print(f"✓ 已保存到 {saved}")
+    # 同步进「当前预设」：否则网页端切一次配置，又变回预设里的旧 Cookie
+    try:
+        synced = sync_cookies_into_active_profile(
+            config_profiles_path(saved), args.platform, cookies
+        )
+    except Exception as exc:  # noqa: BLE001 - 预设同步失败不影响 config.yaml 已保存
+        print(f"[提示] 同步配置预设失败：{exc}", file=sys.stderr)
+    else:
+        if synced:
+            print(f"✓ 已同步到配置预设「{synced}」")
     return 0
 
 

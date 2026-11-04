@@ -59,9 +59,12 @@ from .webui import (
     read_staff_rows,
     rename_profile_config,
     save_config,
+    save_config_with_profile,
     save_profile_config,
+    set_active_profile,
     stage_images,
     switch_profile_config,
+    sync_cookies_into_active_profile,
     unwrap_single_dir,
     upsert_staff_page,
     write_page_order,
@@ -740,6 +743,8 @@ class WebHandler(BaseHTTPRequestHandler):
 
             url = detect_system_proxy()
             self._json(200, {"url": url})
+        elif path == "/api/ip":
+            self._api_exit_ip(parse_qs(parsed.query))
         elif path == "/api/ai":
             self._json(200, {"ai": _ai_read(self._config_path())})
         elif path == "/api/dict":
@@ -892,6 +897,7 @@ class WebHandler(BaseHTTPRequestHandler):
             cookies={},
             saved=False,
             saved_path="",
+            saved_profile="",
             started_at=time.time(),
         )
         state.ring.append(
@@ -942,6 +948,7 @@ class WebHandler(BaseHTTPRequestHandler):
             return
 
         saved_path = ""
+        synced_profile = ""
         if save:
             try:
                 saved_path = str(update_platform_cookies(self._config_path(), platform, cookies))
@@ -954,16 +961,26 @@ class WebHandler(BaseHTTPRequestHandler):
                 )
                 state.ring.append("ERROR", f"🌐 浏览器登录：写入 config.yaml 失败：{exc}")
                 return
+            # 预设也要跟着更新：否则切走再切回来又变回旧账号（贴吧发错号的根源之一）
+            try:
+                synced_profile = sync_cookies_into_active_profile(
+                    config_profiles_path(self._config_path()), platform, cookies
+                )
+            except Exception as exc:  # noqa: BLE001
+                state.ring.append("ERROR", f"🌐 浏览器登录：同步配置预设失败：{exc}")
         label = browser_login.spec_for(platform).label
         names = "、".join(sorted(cookies)) or "（空）"
         message = f"已获取 {label} 的 Cookie：{names}"
         if saved_path:
             message += "，并已保存到 config.yaml"
+        if synced_profile:
+            message += f"，同时更新配置预设「{synced_profile}」"
         self._browser_login_update(
             status="ok",
             cookies=cookies,
             saved=bool(saved_path),
             saved_path=saved_path,
+            saved_profile=synced_profile,
             message=message,
         )
         state.ring.append("INFO", f"🌐 {message}")
@@ -1282,7 +1299,11 @@ class WebHandler(BaseHTTPRequestHandler):
             self._json(400, {"error": "空请求体"})
             return
         try:
-            path = save_config(self._config_path(), payload)
+            result = save_config_with_profile(
+                self._config_path(),
+                config_profiles_path(self._config_path()),
+                payload,
+            )
         except Exception as exc:
             self.server.state.ring.append(
                 "ERROR",
@@ -1290,8 +1311,15 @@ class WebHandler(BaseHTTPRequestHandler):
             )
             self._json(500, {"error": f"保存失败：{exc}"})
             return
-        self.server.state.ring.append("INFO", f"已保存配置：{path}")
-        self._json(200, {"ok": True, "path": str(path)})
+        profile = result.get("profile") or ""
+        message = f"已保存配置：{result.get('path')}"
+        if profile:
+            message += f"（同时更新配置预设「{profile}」）"
+        self.server.state.ring.append("INFO", message)
+        self._json(
+            200,
+            {"ok": True, "path": result.get("path"), "profile": profile},
+        )
 
     def _api_config_profiles_get(self) -> None:
         """列出配置预设（只含名称/时间，不含 Cookie 等敏感内容）。"""
@@ -1314,26 +1342,69 @@ class WebHandler(BaseHTTPRequestHandler):
         self._json(200, {"active": data["active"], "profiles": rows})
 
     def _api_config_profiles(self) -> None:
-        """配置预设：save / switch / rename / delete。"""
+        """配置预设：save / apply / preview / switch / rename / delete。"""
         data = self._read_json()
         action = str(data.get("action") or "")
         profiles_path = config_profiles_path(self._config_path())
         try:
             if action == "save":
-                created, _ = save_profile_config(
-                    profiles_path, data.get("name"), data.get("config")
-                )
                 name = normalize_profile_name(data.get("name"))
-                self.server.state.ring.append(
-                    "INFO", f"已保存配置预设：{name}" + ("（新建）" if created else "（覆盖）")
+                created, _ = save_profile_config(
+                    profiles_path, name, data.get("config")
                 )
-                self._json(200, {"ok": True, "created": created})
+                # apply：保存预设的同时把它写进 config.yaml 并设为当前。
+                # 否则保存完页面还是“没保存过”的状态，切走一次就被旧快照盖回去。
+                applied = bool(data.get("apply"))
+                payload = None
+                if applied:
+                    payload = data.get("config") if isinstance(data.get("config"), dict) else {}
+                    try:
+                        save_config(self._config_path(), payload)
+                        set_active_profile(profiles_path, name)
+                    except Exception as exc:  # noqa: BLE001
+                        self.server.state.ring.append(
+                            "ERROR", f"配置预设已保存，但写入 config.yaml 失败：{exc}"
+                        )
+                        self._json(
+                            200,
+                            {
+                                "ok": True,
+                                "created": created,
+                                "applied": False,
+                                "warning": f"预设已保存，但写入 config.yaml 失败：{exc}",
+                            },
+                        )
+                        return
+                self.server.state.ring.append(
+                    "INFO",
+                    f"已保存配置预设：{name}"
+                    + ("（新建）" if created else "（覆盖）")
+                    + ("，并已设为当前" if applied else ""),
+                )
+                self._json(
+                    200,
+                    {
+                        "ok": True,
+                        "created": created,
+                        "applied": applied,
+                        "active": name if applied else None,
+                        "config": payload,
+                    },
+                )
                 return
             if action == "preview":
-                changes = preview_profile_config(
+                preview = preview_profile_config(
                     profiles_path, self._config_path(), data.get("name")
                 )
-                self._json(200, {"ok": True, "changes": changes})
+                self._json(
+                    200,
+                    {
+                        "ok": True,
+                        "changes": preview["sets"],
+                        "clears": preview["clears"],
+                        "drops": preview["drops"],
+                    },
+                )
                 return
             if action == "switch":
                 name = normalize_profile_name(data.get("name"))
@@ -1371,6 +1442,42 @@ class WebHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             self.server.state.ring.append("ERROR", f"配置预设操作失败：{exc}")
             self._json(500, {"error": f"操作失败：{exc}"})
+
+    def _api_exit_ip(self, query: dict[str, list[str]]) -> None:
+        """查某个平台实际走代理后的出口 IP / 地区（用来确认 e-hentai 节点）。"""
+        from .http_client import BLOCKED_UPLOAD_COUNTRIES, lookup_exit_ip
+
+        key = str((query.get("platform") or ["ehentai"])[0] or "ehentai").strip().lower()
+        try:
+            app = build_app(self._load_payload())
+            publisher = Runner(app).make_publisher(key)
+        except Exception as exc:  # noqa: BLE001
+            self._json(400, {"ok": False, "error": f"平台不可用：{exc}"})
+            return
+        try:
+            ip, country = lookup_exit_ip(publisher.http)
+        except Exception as exc:  # noqa: BLE001
+            self._json(
+                200,
+                {
+                    "ok": False,
+                    "error": f"检测失败（连不上 IP 查询服务，或代理不通）：{exc}",
+                },
+            )
+            return
+        note = BLOCKED_UPLOAD_COUNTRIES.get(country or "", "")
+        self._json(
+            200,
+            {
+                "ok": True,
+                "platform": key,
+                "ip": ip,
+                "country": country,
+                "note": note,
+                "blocked": bool(note),
+                "proxy": getattr(publisher, "proxy_note", ""),
+            },
+        )
 
     def _app_from(self, payload: dict[str, Any]) -> AppConfig:
         try:

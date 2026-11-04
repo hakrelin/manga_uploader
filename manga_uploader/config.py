@@ -101,6 +101,15 @@ DEFAULT_SETTINGS: dict[str, dict[str, Any]] = {
         # 归档超过它、且 zip_split_uploads 开着时，自动分卷上传到同一画廊（不压图）
         "zip_max_mb": 90.0,
         "zip_split_uploads": True,
+        # 海外站：默认自动读系统代理（Clash/v2ray 开了系统代理就能直接用，不用填地址）。
+        # 想手填就填 proxy_url（优先于这个开关）；想直连就把它改成 False。
+        "use_system_proxy": True,
+        "proxy_url": "",
+        # 上传前查一次出口 IP：香港节点会被 Cloudflare 拦，先提示换欧美 IP
+        "ip_check": True,
+        # 正式发布这一步站点可能“暂时还不让发”（异步入库/刚建好），重试几次再判失败
+        "publish_attempts": 3,
+        "publish_retry_wait": 3.0,
     },
     "xiaoheihe": {
         # 发布形式：auto 自动选择（≤30 页图文 / >30 页文章）；

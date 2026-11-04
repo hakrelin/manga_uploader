@@ -16,8 +16,12 @@ common:
   output_dir: output   # 报告/调试文件目录
   confirm: true        # 发布前二次确认
   parallel: false      # 多个章节并行发布
-  proxy_url: ""        # 手动代理，如 http://127.0.0.1:7890（留空则直连）
-  use_system_proxy: false  # true 时自动读取 Windows 系统代理；海外站连不上再开
+  # 代理：现在按平台各自决定（见各平台 settings 里的 use_system_proxy / proxy_url）
+  #   · B站/贴吧/小黑盒/再漫画 默认直连
+  #   · e-hentai 默认自动用系统代理（Clash/v2ray 开了系统代理就能直接用）
+  # 下面这两个只是“备用”：系统代理检测不到时，e-hentai 用 proxy_url 兜底。
+  proxy_url: ""            # 备用代理，如 http://127.0.0.1:7890（留空 = 不兜底）
+  use_system_proxy: false  # 已不再按平台生效，保留只为兼容老配置文件
 
   # 罗马音 AI 转换（可选）：填 OpenAI 兼容接口后，“展会/作者/社团/日文标题
   # → 罗马音（AI）”按钮会优先调用大模型自动分词读音；失败自动回退本地引擎。
@@ -47,8 +51,8 @@ platforms:
       image_category: draw      # daily / draw / cos
       max_pages_per_post: 9     # 仅图文动态模式：单条最多 9 张，超出自动拆条
       topics: ["原创漫画"]      # 仅图文动态模式：动态话题，可多个
-      use_system_proxy: false   # 国内站默认直连，不跟随全局代理
-      proxy_url: ""             # 需要时再单独填
+      use_system_proxy: false   # 国内站直连（默认，不用改）
+      proxy_url: ""             # 想单独走代理才填，如 http://127.0.0.1:7890
 
   tieba:
     enabled: true
@@ -76,8 +80,11 @@ platforms:
       publish_after_upload: true       # 上传后自动正式发布；false=只建草稿到 My Uploads
       upload_mode: zip                 # zip=整包归档上传（推荐）；files=逐张多文件（旧路径）
       upload_timeout: 600              # 上传单次超时（秒），大文件走代理较慢时给足时间
-      use_system_proxy: true           # e-hentai 是海外站：可单独走代理
-      proxy_url: "http://127.0.0.1:7897"  # 改成你实际代理端口；不需要就留空
+      use_system_proxy: true           # 海外站：默认自动用系统代理（Clash/v2ray 开了系统代理即可）
+      proxy_url: ""                    # 想指定节点/DIRECT 才填，填了优先于上面的开关
+      ip_check: true                   # 上传前查出口 IP：香港节点会提示换欧美 IP
+      publish_attempts: 3              # 站点没把画廊转成“已发布”时重试几次再判失败
+      publish_retry_wait: 3            # 重试间隔基数（秒）
       # 画廊类型/语言/语言类型/标题/评论等请在
       # “漫画与压缩 → 各平台发布内容”里配置，会写入 manga.json 覆盖自动组合。
 
@@ -116,5 +123,5 @@ platforms:
       chapter_name: ""                  # 章节名，留空用章节标题
       max_pages_per_upload: 500         # 单次提交上限（再漫画固定 500 张）
       upload_attempts: 2                # 单张图片上传失败自动重试次数
-      use_system_proxy: false           # 国内站默认直连，不跟随全局代理
-      proxy_url: ""                     # 需要时再单独填，如 http://127.0.0.1:7897
+      use_system_proxy: false           # 国内站直连（默认，不用改）
+      proxy_url: ""                     # 想单独走代理才填，如 http://127.0.0.1:7890

@@ -102,11 +102,9 @@ class TestConfig(unittest.TestCase):
         self.assertAlmostEqual(cfg.common.max_bytes_mb, 10.0)
         self.assertFalse(cfg.platforms["bilibili"].get("use_system_proxy"))
         self.assertFalse(cfg.platforms["zaimanhua"].get("use_system_proxy"))
-        # e-hentai 单独配置为走代理（海外站）
+        # e-hentai 单独配置为走系统代理（海外站），不再写死某个代理端口
         self.assertTrue(cfg.platforms["ehentai"].get("use_system_proxy"))
-        self.assertEqual(
-            cfg.platforms["ehentai"].get("proxy_url"), "http://127.0.0.1:7897"
-        )
+        self.assertEqual(cfg.platforms["ehentai"].get("proxy_url"), "")
         self.assertFalse(cfg.common.ai_enabled)
         self.assertEqual(cfg.common.ai_timeout, 60.0)
 
@@ -514,7 +512,7 @@ class TestRunnerAccounts(unittest.TestCase):
 
 
 class TestPerPlatformProxy(unittest.TestCase):
-    """平台卡片里的「此平台代理」：留空/不填 = 沿用全局设置。"""
+    """代理规则（简化后）：平台各管各的，国内默认直连、e-hentai 默认系统代理。"""
 
     def _publisher(self, settings: dict, common: CommonConfig):
         cfg = PlatformConfig(
@@ -524,36 +522,38 @@ class TestPerPlatformProxy(unittest.TestCase):
         )
         return BilibiliPublisher(cfg, common)
 
-    def test_platform_proxy_url_overrides_global(self):
-        common = CommonConfig(proxy_url="http://127.0.0.1:1111")
+    def test_platform_proxy_url_is_used(self):
+        common = CommonConfig()
         pub = self._publisher({"proxy_url": "http://127.0.0.1:2222"}, common)
-        proxies = pub.http.session.proxies
-        self.assertEqual(proxies.get("http"), "http://127.0.0.1:2222")
-        self.assertEqual(proxies.get("https"), "http://127.0.0.1:2222")
+        self.assertEqual(pub.http.session.proxies.get("http"), "http://127.0.0.1:2222")
+        self.assertEqual(pub.http.session.proxies.get("https"), "http://127.0.0.1:2222")
+        self.assertEqual(pub.proxy_url, "http://127.0.0.1:2222")
 
-    def test_empty_platform_proxy_follows_global(self):
-        """界面留空会存成空串：必须当成“跟随全局”，不能把全局代理顶掉。"""
-        common = CommonConfig(proxy_url="http://127.0.0.1:1111")
-        pub = self._publisher({"proxy_url": ""}, common)
-        self.assertEqual(pub.http.session.proxies.get("https"), "http://127.0.0.1:1111")
-        # 连键都没有（老配置）也一样跟随
-        pub2 = self._publisher({}, common)
-        self.assertEqual(pub2.http.session.proxies.get("https"), "http://127.0.0.1:1111")
+    def test_domestic_platform_is_direct_even_with_global_proxy(self):
+        """国内平台默认直连：老配置里的全局代理不再偷偷生效。"""
+        common = CommonConfig(proxy_url="http://127.0.0.1:1111", use_system_proxy=True)
+        pub = self._publisher({}, common)
+        self.assertEqual(pub.http.session.proxies, {})
+        self.assertEqual(pub.proxy_url, "")
 
-    def test_platform_system_proxy_switch_overrides_global(self):
-        """平台开关显式 true/false 才覆盖全局；没配就跟着全局。"""
+    def test_system_proxy_switch(self):
         with unittest.mock.patch.object(
             http_client, "detect_system_proxy", return_value="http://sys-proxy:7890"
         ):
-            # 全局开、平台显式关 → 直连
-            off = self._publisher({"use_system_proxy": False}, CommonConfig(use_system_proxy=True))
-            self.assertEqual(off.http.session.proxies, {})
-            # 全局关、平台开 → 走系统代理
-            on = self._publisher({"use_system_proxy": True}, CommonConfig(use_system_proxy=False))
+            on = self._publisher({"use_system_proxy": True}, CommonConfig())
             self.assertEqual(on.http.session.proxies.get("https"), "http://sys-proxy:7890")
-            # 平台没配 → 跟着全局（开）
-            inherit = self._publisher({}, CommonConfig(use_system_proxy=True))
-            self.assertEqual(inherit.http.session.proxies.get("https"), "http://sys-proxy:7890")
+            off = self._publisher({"use_system_proxy": False}, CommonConfig())
+            self.assertEqual(off.http.session.proxies, {})
+
+    def test_system_proxy_falls_back_to_global_url(self):
+        """系统里没开代理时，用老配置里的全局地址兜底（不让人升级后连不上 e 站）。"""
+        with unittest.mock.patch.object(
+            http_client, "detect_system_proxy", return_value=""
+        ):
+            pub = self._publisher(
+                {"use_system_proxy": True}, CommonConfig(proxy_url="http://127.0.0.1:1111")
+            )
+            self.assertEqual(pub.http.session.proxies.get("https"), "http://127.0.0.1:1111")
 
     def test_platform_proxy_url_beats_system_proxy(self):
         with unittest.mock.patch.object(
@@ -564,6 +564,101 @@ class TestPerPlatformProxy(unittest.TestCase):
                 CommonConfig(),
             )
             self.assertEqual(pub.http.session.proxies.get("https"), "http://127.0.0.1:2222")
+
+    def test_defaults_per_platform(self):
+        """默认值就是“能直接用”：国内平台直连，e-hentai 走系统代理。"""
+        from manga_uploader.config import DEFAULT_SETTINGS
+        from manga_uploader.publishers.ehentai import EhentaiPublisher
+
+        def make(key: str, cls):
+            cfg = PlatformConfig(
+                name=key,
+                cookies={"x": "1"},
+                settings=dict(DEFAULT_SETTINGS.get(key, {})),
+            )
+            return cls(cfg, CommonConfig())
+
+        with unittest.mock.patch.object(
+            http_client, "detect_system_proxy", return_value="http://sys-proxy:7890"
+        ):
+            domestic = make("bilibili", BilibiliPublisher)
+            self.assertEqual(domestic.http.session.proxies, {})
+            overseas = make("ehentai", EhentaiPublisher)
+            self.assertEqual(
+                overseas.http.session.proxies.get("https"), "http://sys-proxy:7890"
+            )
+
+
+class TestExitIpCheck(unittest.TestCase):
+    """出口 IP 检测：香港节点先提示换欧美 IP。"""
+
+    def test_lookup_parses_different_field_names(self):
+        from manga_uploader.http_client import lookup_exit_ip
+
+        class Fake:
+            def __init__(self, data):
+                self.data = data
+
+            def get_json(self, url, **_):
+                if self.data is None:
+                    raise RuntimeError("boom")
+                return self.data
+
+        self.assertEqual(lookup_exit_ip(Fake({"ip": "1.1.1.1", "country": "HK"})), ("1.1.1.1", "HK"))
+        self.assertEqual(
+            lookup_exit_ip(Fake({"ip": "2.2.2.2", "country_code": "us"})), ("2.2.2.2", "US")
+        )
+        with self.assertRaises(Exception):
+            lookup_exit_ip(Fake(None))
+
+    def _ehentai(self, settings: dict):
+        """按真实配置构造（默认设置来自 DEFAULT_SETTINGS，不是空 dict）。"""
+        from manga_uploader.config import DEFAULT_SETTINGS
+        from manga_uploader.publishers.ehentai import EhentaiPublisher
+
+        cfg = PlatformConfig(
+            name="ehentai",
+            cookies={"ipb_member_id": "1", "ipb_pass_hash": "h"},
+            settings={**DEFAULT_SETTINGS["ehentai"], "use_system_proxy": False, **settings},
+        )
+        return EhentaiPublisher(cfg, CommonConfig())
+
+    def test_hong_kong_node_is_flagged(self):
+        pub = self._ehentai({})
+        with unittest.mock.patch.object(pub, "exit_ip", return_value=("1.2.3.4", "HK")):
+            note = pub._node_hint()
+        self.assertIn("香港", note)
+        self.assertIn("欧美 IP", note)
+        self.assertEqual(pub._pending_note, note)
+
+    def test_overseas_node_is_silent(self):
+        pub = self._ehentai({})
+        with unittest.mock.patch.object(pub, "exit_ip", return_value=("5.6.7.8", "US")):
+            self.assertEqual(pub._node_hint(), "")
+        self.assertEqual(pub._pending_note, "")
+
+    def test_ip_check_can_be_disabled(self):
+        pub = self._ehentai({"ip_check": False})
+        with unittest.mock.patch.object(pub, "exit_ip", side_effect=AssertionError("不该查")):
+            self.assertEqual(pub._node_hint(), "")
+
+    def test_lookup_failure_does_not_break_upload(self):
+        pub = self._ehentai({})
+        with unittest.mock.patch.object(pub, "exit_ip", side_effect=RuntimeError("断网")):
+            self.assertEqual(pub._node_hint(), "")
+
+    def test_check_reports_hong_kong(self):
+        from manga_uploader.publishers.ehentai import UPLOAD_PAGE_URL
+
+        pub = self._ehentai({})
+        resp = unittest.mock.Mock()
+        resp.url = UPLOAD_PAGE_URL
+        resp.text = '<form action="/manage" enctype="multipart/form-data"><input type="file" name="sfile[]"></form>'
+        with unittest.mock.patch.object(pub.http, "get", return_value=resp), \
+             unittest.mock.patch.object(pub, "exit_ip", return_value=("1.2.3.4", "HK")):
+            result = pub.check()
+        self.assertTrue(result.ok)
+        self.assertIn("欧美 IP", result.message)
 
 
 class TestBuildStamp(unittest.TestCase):

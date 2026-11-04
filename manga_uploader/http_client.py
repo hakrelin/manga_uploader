@@ -56,6 +56,65 @@ def detect_system_proxy() -> str:
     return ""
 
 
+# 出口 IP 查询（判断节点地区用）：各家返回的字段名不一样，逐个兜底
+IP_LOOKUP_URLS = (
+    "https://ipinfo.io/json",
+    "https://api.ip.sb/geoip",
+    "https://ipapi.co/json/",
+)
+
+# e-hentai 上传会被 Cloudflare 拦的地区（实测香港节点容易吃 403）
+BLOCKED_UPLOAD_COUNTRIES = {"HK": "香港"}
+
+
+def resolve_proxy(settings: Any, common: Any = None) -> tuple[str, str]:
+    """决定**某个平台**走什么代理，返回 (代理地址, 一句说明)；地址为空 = 直连。
+
+    规则只有三条，先到先得（没有“留空=跟随全局”那种猜谜）：
+    1. `proxy_url` 填了 → 就用它（手动代理最优先）；
+    2. `use_system_proxy` 为真 → 自动读系统代理；
+       系统里没开代理时，退回 common.proxy_url（老配置里的全局地址）兜底；
+    3. 其余情况直连。
+
+    默认值：国内平台直连，e-hentai 走系统代理（见 config.DEFAULT_SETTINGS）。
+    """
+    settings = settings if isinstance(settings, dict) else {}
+    proxy_url = str(settings.get("proxy_url") or "").strip()
+    if proxy_url:
+        return proxy_url, "手动代理"
+    if bool(settings.get("use_system_proxy")):
+        detected = detect_system_proxy()
+        if detected:
+            return detected, "系统代理"
+        fallback = str(getattr(common, "proxy_url", "") or "").strip() if common else ""
+        if fallback:
+            return fallback, "备用代理（没检测到系统代理）"
+        return "", "直连（没检测到系统代理）"
+    return "", "直连"
+
+
+def lookup_exit_ip(http: "HttpClient") -> tuple[str, str]:
+    """查这个 http 客户端（走它自己配的代理）的出口 IP 与两位国家/地区码。
+
+    返回 (ip, country)，country 形如 "HK" / "JP"；查不到时抛 HttpError。
+    """
+    last_error: Optional[Exception] = None
+    for url in IP_LOOKUP_URLS:
+        try:
+            data = http.get_json(url, retry=False, timeout=10.0)
+        except Exception as exc:  # noqa: BLE001 - 换下一个查询源
+            last_error = exc
+            continue
+        if not isinstance(data, dict):
+            continue
+        ip = str(data.get("ip") or data.get("query") or "").strip()
+        country = str(data.get("country_code") or data.get("country") or "").strip()
+        country = country.upper() if len(country) == 2 else ""
+        if ip or country:
+            return ip, country
+    raise HttpError(f"查不到出口 IP：{last_error}")
+
+
 class HttpClient:
     UA = (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "

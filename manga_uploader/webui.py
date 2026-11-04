@@ -149,7 +149,16 @@ PLATFORM_CARDS: list[dict[str, Any]] = [
                 "label": "上传方式",
                 "options": [("zip", "整包 zip（推荐）"), ("files", "逐张多文件")],
             },
-            "publish_after_upload": {"kind": "switch", "label": "上传后自动发布"},
+            "publish_after_upload": {
+                "kind": "switch",
+                "label": "上传后自动发布",
+                "onLabel": "直接发布",
+                "offLabel": "只建草稿",
+            },
+            "publish_attempts": {
+                "kind": "number",
+                "label": "发布重试次数（站点没转成已发布时）",
+            },
             "extra_tags": {"kind": "text", "label": "附加标签（逗号分隔）"},
             "zip_max_mb": {
                 "kind": "number",
@@ -213,7 +222,9 @@ PLATFORM_CARDS: list[dict[str, Any]] = [
             },
             "publish_draft": {
                 "kind": "switch",
-                "label": "先存草稿（不公开）",
+                "label": "发布方式",
+                "onLabel": "先存草稿",
+                "offLabel": "直接发布",
             },
             "image_text_max_pages": {
                 "kind": "number",
@@ -239,17 +250,19 @@ PLATFORM_CARDS: list[dict[str, Any]] = [
     },
 ]
 
-# 每个平台卡片都带一组代理设置：URL 留空沿用全局 URL，平台开关覆盖全局开关。
+# 每个平台卡片都带一组代理设置（一平台一套，互不影响）：
+#   都不填 = 直连；开开关 = 自动用系统代理；填 URL = 只用这个代理
 PROXY_CONTROLS: dict[str, dict[str, Any]] = {
     "use_system_proxy": {
         "kind": "switch",
-        "label": "此平台使用系统代理",
-        "onLabel": "使用系统代理",
+        "label": "代理",
+        "onLabel": "系统代理",
+        "offLabel": "直连",
     },
     "proxy_url": {
         "kind": "text",
-        "label": "此平台代理 URL（留空 = 沿用全局设置）",
-        "placeholder": "如 http://127.0.0.1:7890",
+        "label": "手动代理 URL（填了就优先用它）",
+        "placeholder": "留空 = 不填，如 http://127.0.0.1:7890",
         "proxy": True,  # 前端据此渲染「检测系统代理」按钮
     },
 }
@@ -1210,33 +1223,82 @@ def normalize_profile_name(name: Any) -> str:
     return text
 
 
+def _now_stamp() -> str:
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _profile_payload(config_payload: Any, *, strict: bool = True) -> dict[str, Any]:
+    """把一份配置规范成预设里存的快照 {common, platforms}。
+
+    平台块统一压成 {enabled, cookies, settings}，避免把前端临时字段写进预设文件。
+    """
+    if not isinstance(config_payload, dict):
+        if strict:
+            raise ConfigError("配置内容为空，无法保存")
+        return {"common": {}, "platforms": {}}
+    platforms: dict[str, Any] = {}
+    raw_platforms = config_payload.get("platforms")
+    if isinstance(raw_platforms, dict):
+        for key, item in raw_platforms.items():
+            if isinstance(item, dict):
+                platforms[str(key)] = _platform_block(item)
+    if strict and not platforms:
+        raise ConfigError("配置内容为空：请先在页面填写平台账号/设置后再保存")
+    common = config_payload.get("common")
+    return {
+        "common": copy.deepcopy(common) if isinstance(common, dict) else {},
+        "platforms": platforms,
+    }
+
+
+# 跟本机走、不跟账号走的通用设置：切换预设时保留 config.yaml 里的现值，
+# 否则切一套没填 AI key 的预设就把 key 清空了。
+_LIVE_COMMON_KEYS = (
+    "ai_enabled",
+    "ai_base_url",
+    "ai_api_key",
+    "ai_model",
+    "ai_prompt",
+    "ai_timeout",
+    "proxy_url",
+    "use_system_proxy",
+)
+
+
 def save_profile_config(
     profiles_path: str | Path, name: Any, config_payload: Any
 ) -> tuple[bool, dict[str, Any]]:
-    """保存/覆盖一个配置预设；返回 (是否新建, 最新数据)。"""
+    """保存/覆盖一个配置预设；返回 (是否新建, 最新数据)。
+
+    存的是**整页快照**（所有平台 + 所有 Cookie）。预设之间完全独立：
+    以后切 A 就是 A，切 B 就是 B，不会互相补值。
+    """
     name = normalize_profile_name(name)
-    if not isinstance(config_payload, dict):
-        raise ConfigError("配置内容为空，无法保存")
-    if not isinstance(config_payload.get("platforms"), dict) or not config_payload.get(
-        "platforms"
-    ):
-        raise ConfigError("配置内容为空：请先在页面填写平台账号/设置后再保存")
+    payload = _profile_payload(config_payload)
     path = Path(profiles_path)
     data = _read_yaml_doc(path)
     profiles = data.get("profiles")
     if not isinstance(profiles, dict):
         profiles = {}
     created = name not in profiles
-    profiles[name] = {
-        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "config": config_payload,
-    }
+    profiles[name] = {"updated_at": _now_stamp(), "config": payload}
     active = data.get("active") if isinstance(data.get("active"), str) else ""
     if active not in profiles:
         active = ""
     result = {"active": active, "profiles": profiles}
     _write_yaml_doc(path, result)
     return created, result
+
+
+def set_active_profile(profiles_path: str | Path, name: Any) -> dict[str, Any]:
+    """只改「当前使用」标记（不写 config.yaml）。"""
+    name = normalize_profile_name(name)
+    data = load_config_profiles(profiles_path)
+    if name not in data["profiles"]:
+        raise ConfigError(f"找不到配置：{name}")
+    data["active"] = name
+    _write_yaml_doc(Path(profiles_path), data)
+    return data
 
 
 def rename_profile_config(
@@ -1281,123 +1343,162 @@ def _platform_block(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def merge_payload_keep_cookies(
-    config_path: str | Path, payload: dict[str, Any]
-) -> dict[str, Any]:
-    """切换预设时，把 config.yaml 里已有而预设没写的平台 / Cookie 补回来。
-
-    预设只是一份“当时的快照”：早期保存的预设可能压根没有别的平台（或该平台的
-    Cookie 还是空的）。直接整块覆盖 config.yaml 会把那些平台的登录态清空——
-    用户反馈的“切一次配置就掉 Cookie”就是这么来的。
-
-    合并规则：
-    - 预设里没有的平台：完整保留 config.yaml 里的那份；
-    - 预设里有该平台、但某个 Cookie 键缺失或为空：用 config.yaml 的值补上；
-    - 预设里非空的 Cookie：以预设为准（切预设仍然能换账号）。
-    """
-    if not isinstance(payload, dict):
-        return payload
-    path = Path(config_path)
-    if not path.is_file():
-        return payload
-    try:
-        import yaml
-
-        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    except Exception:
-        return payload
-    if not isinstance(raw, dict):
-        return payload
-    existing = raw.get("platforms")
-    if not isinstance(existing, dict):
-        return payload
-
-    merged = copy.deepcopy(payload)
-    platforms = merged.get("platforms")
-    if not isinstance(platforms, dict):
-        return merged
-
-    for key, item in existing.items():
-        if not isinstance(item, dict):
-            continue
-        current = _platform_block(item)
-        incoming = platforms.get(key)
-        if not isinstance(incoming, dict):
-            platforms[str(key)] = current
-            continue
-        cookies = incoming.get("cookies")
-        if not isinstance(cookies, dict):
-            cookies = {}
-        for ckey, cvalue in current["cookies"].items():
-            if not str(cookies.get(ckey) or "").strip():
-                cookies[ckey] = cvalue
-        incoming["cookies"] = cookies
-    return merged
 
 
 def preview_profile_config(
     profiles_path: str | Path, config_path: str | Path, name: Any
-) -> dict[str, list[str]]:
-    """切换预设前预览：返回 {平台: [会被替换/写入的 Cookie 名]}（不写盘）。
+) -> dict[str, Any]:
+    """切换预设前预览（不写盘），返回：
 
-    预设是“快照”，里面非空的 Cookie 会覆盖 config.yaml 的现值。别人给的
-    预设里带着别人的 BDUSS/SESSDATA，一切换就会静默换成别人的账号——
-    也就是“填的是我、发出去是他”，所以切换前先把要动的字段摆出来。
+    - sets:   会被**写入/替换**的 Cookie（预设里有值、和 config.yaml 现值不同）
+    - clears: 会被**清空**的 Cookie（config.yaml 里有值、预设里是空的）
+    - drops:  会被**整块移除**的平台（config.yaml 里有 Cookie、预设里没这平台）
+
+    预设是完整快照，切换就是整套替换。换号前先把“会覆盖成谁”和
+    “会清掉什么”都摆出来，避免静默换成别人的账号 / 静默掉登录态。
     """
     name = normalize_profile_name(name)
     data = load_config_profiles(profiles_path)
     if name not in data["profiles"]:
         raise ConfigError(f"找不到配置：{name}")
     entry = data["profiles"][name]
-    payload = entry.get("config")
-    if not isinstance(payload, dict):
+    if not isinstance(entry, dict) or not isinstance(entry.get("config"), dict):
         raise ConfigError(f"配置「{name}」内容损坏，请删除后重新保存")
-    merged = merge_payload_keep_cookies(config_path, payload)
-    # 直接读盘（webui 里没有 load_config，别踩这个坑）
-    try:
-        import yaml
+    payload = _profile_payload(entry.get("config"), strict=False)
+    raw = _read_yaml_doc(Path(config_path))
+    disk_platforms = raw.get("platforms")
+    if not isinstance(disk_platforms, dict):
+        disk_platforms = {}
 
-        raw = yaml.safe_load(Path(config_path).read_text(encoding="utf-8")) or {}
-        current_cookies = {
-            str(key): dict((item or {}).get("cookies") or {})
-            for key, item in (raw.get("platforms") or {}).items()
-            if isinstance(item, dict)
-        }
-    except Exception:
-        current_cookies = {}
-    changes: dict[str, list[str]] = {}
-    for key, cfg in (merged.get("platforms") or {}).items():
-        if not isinstance(cfg, dict):
-            continue
-        now = current_cookies.get(str(key)) or {}
-        names = sorted(
+    preset_names = set(payload["platforms"])
+    drops = sorted(
+        str(key)
+        for key, item in disk_platforms.items()
+        if str(key) not in preset_names
+        and isinstance(item, dict)
+        and any(str(v or "").strip() for v in (item.get("cookies") or {}).values())
+    )
+
+    sets: dict[str, list[str]] = {}
+    clears: dict[str, list[str]] = {}
+    for key, block in payload["platforms"].items():
+        disk_item = disk_platforms.get(key)
+        disk_cookies: dict[str, str] = {}
+        if isinstance(disk_item, dict):
+            disk_cookies = {
+                str(k): str(v) for k, v in (disk_item.get("cookies") or {}).items()
+            }
+        preset_cookies = block["cookies"]
+        written = sorted(
             str(cname)
-            for cname, cvalue in (cfg.get("cookies") or {}).items()
+            for cname, cvalue in preset_cookies.items()
             if str(cvalue or "").strip()
-            and str(cvalue).strip() != str(now.get(cname) or "").strip()
+            and str(cvalue).strip() != str(disk_cookies.get(cname) or "").strip()
         )
-        if names:
-            changes[str(key)] = names
-    return changes
+        if written:
+            sets[key] = written
+        cleared = sorted(
+            str(cname)
+            for cname, cvalue in disk_cookies.items()
+            if str(cvalue or "").strip()
+            and not str(preset_cookies.get(cname) or "").strip()
+        )
+        if cleared:
+            clears[key] = cleared
+    return {"sets": sets, "clears": clears, "drops": drops}
 
 
 def switch_profile_config(
     profiles_path: str | Path, config_path: str | Path, name: Any
 ) -> dict[str, Any]:
-    """把指定预设写入 config.yaml 并标记为当前使用；返回该预设的 common+platforms。"""
+    """把指定预设**整套**写入 config.yaml 并标记为当前使用；返回写入的载荷。
+
+    语义就是替换：预设里有什么，config.yaml 和页面上就是什么。绝不把上一套
+    预设剩下的 Cookie 补进来——那种“补值”会让 A 的 BDUSS 悄悄流进 B，也就是
+    “在『不做主角』改成我的，切到『茶与金平糖』还是它”的根因。
+
+    这里也不反写别的预设：切 A 只写 A 的内容，B 的文件内容一个字都不动。
+    （页面上的改动要靠「保存到当前配置」/「保存配置」落盘，两者都会同步预设。）
+    """
     name = normalize_profile_name(name)
     data = load_config_profiles(profiles_path)
     if name not in data["profiles"]:
         raise ConfigError(f"找不到配置：{name}")
-    entry = data["profiles"][name]
-    payload = entry.get("config")
-    if not isinstance(payload, dict):
+    target = data["profiles"][name]
+    if not isinstance(target, dict) or not isinstance(target.get("config"), dict):
         raise ConfigError(f"配置「{name}」内容损坏，请删除后重新保存")
-    payload = merge_payload_keep_cookies(config_path, payload)
+    payload = _profile_payload(target.get("config"), strict=False)
+
+    live = _read_yaml_doc(Path(config_path))
+    live_common = live.get("common")
+    if not isinstance(live_common, dict):
+        live_common = {}
+    merged_common = dict(payload["common"])
+    for key in _LIVE_COMMON_KEYS:
+        if key in live_common:
+            merged_common[key] = live_common[key]
+    payload = {"common": merged_common, "platforms": payload["platforms"]}
+
     save_config(config_path, payload)
-    data["active"] = name
-    _write_yaml_doc(Path(profiles_path), data)
+    set_active_profile(profiles_path, name)
     return payload
+
+
+def save_config_with_profile(
+    config_path: str | Path, profiles_path: str | Path, payload: dict[str, Any]
+) -> dict[str, Any]:
+    """保存到 config.yaml；若已有「当前预设」，顺手把它更新成同一份内容。
+
+    config.yaml 是发布时真正读取的那份，预设只是存好的快照。只写 config.yaml
+    的话，切走再切回来就会被旧快照盖回去（“改完又变回来了”），所以两边一起更新。
+    返回 {"path": 落盘路径, "profile": 同步到的预设名}。
+    """
+    normalized = _profile_payload(payload, strict=False)
+    body = normalized if normalized["platforms"] else payload
+    path = save_config(config_path, body)
+    data = load_config_profiles(profiles_path)
+    name = data["active"]
+    synced = ""
+    if name and name in data["profiles"]:
+        entry = data["profiles"].get(name)
+        if isinstance(entry, dict):
+            entry["config"] = normalized
+            entry["updated_at"] = _now_stamp()
+            data["profiles"][name] = entry
+            _write_yaml_doc(Path(profiles_path), data)
+            synced = name
+    return {"path": str(path), "profile": synced}
+
+
+def sync_cookies_into_active_profile(
+    profiles_path: str | Path, platform: str, cookies: dict[str, str]
+) -> str:
+    """把「浏览器登录/扫码拿到的 Cookie」同步进当前预设；返回同步到的预设名。
+
+    不同步的话，切走再切回来就会读到预设里的旧 Cookie——“填的是我、发出去是他”。
+    """
+    data = load_config_profiles(profiles_path)
+    name = data["active"]
+    if not name or name not in data["profiles"]:
+        return ""
+    entry = data["profiles"].get(name)
+    if not isinstance(entry, dict):
+        return ""
+    payload = _profile_payload(entry.get("config"), strict=False)
+    block = payload["platforms"].get(platform)
+    if not isinstance(block, dict):
+        block = {"enabled": True, "cookies": {}, "settings": {}}
+        payload["platforms"][platform] = block
+    store = block["cookies"]
+    for key, value in (cookies or {}).items():
+        text = str(value or "").strip()
+        if text:
+            store[str(key)] = text
+    entry["config"] = payload
+    entry["updated_at"] = _now_stamp()
+    data["profiles"][name] = entry
+    _write_yaml_doc(Path(profiles_path), data)
+    return name
 
 
 # ------------------------------------------------------------ B站扫码（分步）

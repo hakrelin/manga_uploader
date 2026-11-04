@@ -188,6 +188,8 @@ createApp({
     const busy = ref(false);
     const cards = ref([]);
     const config = reactive({ common: {}, platforms: {} });
+    // 后端给的平台默认设置快照（只在“预设里没写 settings”时兜底，Cookie 不兜底）
+    const configDefaults = { common: {}, platforms: {} };
     // 配置切换表（config.profiles.yaml 里的多套预设）
     const profiles = ref([]);
     const activeProfile = ref("");
@@ -848,6 +850,7 @@ createApp({
         version.value = st.version || "";
         note.value = st.note || "";
         cards.value = st.cards || [];
+        captureConfigDefaults(st.config);
         applyConfigPayload(st.config);
         running.value = !!st.running;
         if (running.value) pubProgress.active = true; // 页面打开时已有任务在跑：先显示不确定进度
@@ -856,27 +859,46 @@ createApp({
       }
     }
 
+    // 记一份“打开页面时的平台设置”当兜底默认值（切换预设时 settings 缺字段用）
+    function captureConfigDefaults(cfg) {
+      const c = cfg || {};
+      configDefaults.common = Object.assign({}, c.common || {});
+      configDefaults.platforms = {};
+      for (const [k, v] of Object.entries(c.platforms || {})) {
+        if (!v || typeof v !== "object") continue;
+        configDefaults.platforms[k] = { settings: Object.assign({}, v.settings || {}) };
+      }
+    }
+
     // 合并一份配置载荷到页面状态。
-    // 关键点：预设是“快照”，早期保存的预设可能没有别的平台、或该平台 Cookie 为空。
-    // 这里按平台合并（页面里已有、载荷没写的平台/Cookie 一律保留），
-    // 否则切一次预设就会把其它平台的登录态显示成空、随后保存时真的清掉。
+    // 语义：**整套替换**。预设是完整快照，里面没写的平台 / 空 Cookie 一律按空处理。
+    // 以前这里是“合并”（页面里已有的平台/Cookie 保留），结果是切到 B 以后页面
+    // 还挂着 A 的贴吧 BDUSS，随后一保存就把 A 的号写进了 B —— 两套配置互相串号。
     function applyConfigPayload(cfg) {
       const c = cfg || {};
       Object.keys(config.common).forEach((k) => delete config.common[k]);
       Object.assign(config.common, c.common || {});
-      for (const [k, incoming] of Object.entries(c.platforms || {})) {
-        const inc = incoming && typeof incoming === "object" ? incoming : {};
-        const cur = config.platforms[k] || {};
-        const cookies = Object.assign({}, cur.cookies || {});
-        for (const [ck, cv] of Object.entries(inc.cookies || {})) {
-          if (String(cv == null ? "" : cv).trim() || !(ck in cookies)) cookies[ck] = cv;
-        }
-        config.platforms[k] = {
-          enabled: !!inc.enabled,
-          cookies,
-          settings: Object.assign({}, cur.settings || {}, inc.settings || {}),
-        };
-      }
+      const incoming = (c.platforms && typeof c.platforms === "object") ? c.platforms : {};
+      // 平台清单以“所有已知平台 ∪ 载荷里的平台”为准：预设里没有的平台显示成空，
+      // 而不是继续显示上一套的值。settings 的缺失字段用上次加载到的默认值兜底，
+      // Cookie 绝不兜底。
+      const keys = new Set(Object.keys(PLAT_LABELS).concat(Object.keys(incoming)));
+      Object.keys(config.platforms).forEach((k) => delete config.platforms[k]);
+      keys.forEach((k) => {
+        const src = (incoming[k] && typeof incoming[k] === "object") ? incoming[k] : null;
+        const defaults = (configDefaults.platforms[k] || {});
+        config.platforms[k] = src
+          ? {
+              enabled: !!src.enabled,
+              cookies: Object.assign({}, src.cookies || {}),
+              settings: Object.assign({}, defaults.settings || {}, src.settings || {}),
+            }
+          : {
+              enabled: false,
+              cookies: {},
+              settings: Object.assign({}, defaults.settings || {}),
+            };
+      });
     }
 
     // ---------------- 配置切换表 ----------------
@@ -906,15 +928,44 @@ createApp({
       }
       busy.value = true;
       try {
-        await api("/api/config-profiles", {
+        // apply=true：保存预设的同时写进 config.yaml 并设为当前。
+        // 只存预设不生效的话，切走一次就会被别的预设盖回去。
+        const r = await api("/api/config-profiles", {
           method: "POST", json: true,
-          body: JSON.stringify({ action: "save", name: target, config: payload() }),
+          body: JSON.stringify({ action: "save", name: target, config: payload(), apply: true }),
         });
         newProfileName.value = "";
-        toastMsg(`已保存配置预设：${target}`);
+        if (r && r.warning) {
+          toastMsg(r.warning);
+        } else {
+          toastMsg(`已保存并应用配置预设：${target}`);
+        }
         await loadProfiles();
       } catch (e) {
         toastMsg("保存预设失败：" + e.message);
+      } finally {
+        busy.value = false;
+      }
+    }
+
+    // 把页面内容保存进「当前配置」（同名覆盖），并落盘 config.yaml。
+    // 这是改完 Cookie 后最该点的那颗键：两边一起更新，切走再切回来不会变回去。
+    async function saveToActiveProfile() {
+      const target = String(activeProfile.value || "").trim();
+      if (!target) {
+        toastMsg("当前没有选中的配置预设：先在下面填名字点「保存当前为新配置」");
+        return;
+      }
+      busy.value = true;
+      try {
+        await api("/api/config-profiles", {
+          method: "POST", json: true,
+          body: JSON.stringify({ action: "save", name: target, config: payload(), apply: true }),
+        });
+        toastMsg(`已保存到配置「${target}」，config.yaml 同步更新`);
+        await loadProfiles();
+      } catch (e) {
+        toastMsg("保存失败：" + e.message);
       } finally {
         busy.value = false;
       }
@@ -925,22 +976,31 @@ createApp({
       if (!target) return;
       busy.value = true;
       try {
-        // 预设是快照：里面非空的 Cookie 会覆盖当前账号。切换前先把会动的
-        // 字段摆出来，避免“切一下配置，发帖账号就变成别人的”。
-        let changes = {};
+        // 预设是完整快照，切换就是整套替换。先把「会换成谁的号」和
+        // 「会清掉什么」都摆出来，避免静默换号 / 静默丢登录态。
+        let sets = {}, clears = {}, drops = [];
         try {
           const pre = await api("/api/config-profiles", {
             method: "POST", json: true,
             body: JSON.stringify({ action: "preview", name: target }),
           });
-          changes = pre.changes || {};
-        } catch (e) { changes = {}; }
-        const rows = Object.entries(changes)
+          sets = pre.changes || {};
+          clears = pre.clears || {};
+          drops = pre.drops || [];
+        } catch (e) { sets = {}; }
+        const lines = [];
+        const setRows = Object.entries(sets)
           .map(([k, names]) => `  · ${PLAT_LABELS[k] || k}：${names.join("、")}`);
-        if (rows.length && !window.confirm(
-          `配置「${target}」会写入/替换以下登录凭据：\n` + rows.join("\n") +
-          "\n\n注意：① 这些 Cookie 会覆盖 config.yaml 里当前的账号；" +
-          "\n② 页面上还没点“保存配置”的改动会丢失。\n\n确认切换？"
+        const clearRows = Object.entries(clears)
+          .map(([k, names]) => `  · ${PLAT_LABELS[k] || k}：${names.join("、")}`);
+        const dropRows = drops.map((k) => `  · ${PLAT_LABELS[k] || k}：整套平台配置`);
+        if (setRows.length) lines.push("会写入/替换的 Cookie：", ...setRows);
+        if (clearRows.length) lines.push("会被清空的 Cookie：", ...clearRows);
+        if (dropRows.length) lines.push("会被移除的平台：", ...dropRows);
+        if (lines.length && !window.confirm(
+          `切换到配置「${target}」：\n` + lines.join("\n") +
+          "\n\n切换会把该预设整套写进 config.yaml（AI/代理设置保留），" +
+          "\n页面里还没保存的改动会丢失。确认切换？"
         )) {
           return;
         }
@@ -951,9 +1011,10 @@ createApp({
         applyConfigPayload(r.config || {});
         activeProfile.value = r.active || target;
         quickProfile.value = activeProfile.value;
+        await loadProfiles(); // 切走时当前预设已被写回现场，更新时间要刷新
         toastMsg(`已切换到配置：${target}`);
         // 切换后立刻探测“现在到底会用哪个账号”，直接把结果摆给用户
-        const probeKeys = Object.keys(changes).filter((k) => PLAT_LABELS[k]);
+        const probeKeys = Object.keys(sets).filter((k) => PLAT_LABELS[k]);
         if (probeKeys.length) {
           try {
             const acc = await api("/api/accounts", {
@@ -1054,7 +1115,9 @@ createApp({
       busy.value = true;
       try {
         const r = await api("/api/config", { method: "POST", json: true, body: JSON.stringify({ config: payload() }) });
-        toastMsg("已保存配置");
+        const prof = (r && r.profile) ? r.profile : "";
+        toastMsg(prof ? `已保存配置，并同步到配置预设「${prof}」` : "已保存配置");
+        if (prof) await loadProfiles(); // 预设的更新时间会变，刷新列表
       } catch (e) {
         toastMsg("保存失败：" + e.message);
       } finally {
@@ -1203,7 +1266,7 @@ createApp({
         if (st.status === "ok") {
           stopBrowserLoginPolling();
           browserLoginActive = false;
-          applyBrowserCookies(modal.value.key, st.cookies || {});
+          applyBrowserCookies(modal.value.key, st.cookies || {}, st.saved_profile || "");
         } else if (st.status === "error" || st.status === "cancelled") {
           stopBrowserLoginPolling();
           browserLoginActive = false;
@@ -1211,7 +1274,7 @@ createApp({
       }, 1500);
     }
 
-    function applyBrowserCookies(key, cookies) {
+    function applyBrowserCookies(key, cookies, savedProfile) {
       const p = (config.platforms || {})[key];
       if (!p) return;
       p.cookies = p.cookies || {};
@@ -1224,7 +1287,10 @@ createApp({
       }
       if (!names.length) return;
       setStatus(key, true, "已通过浏览器登录自动获取 Cookie（" + names.join("/") + "）");
-      toastMsg("✓ " + (cardOf(key).label || key) + " 已自动填入 " + names.join("/") + "（已保存到 config.yaml）");
+      const where = savedProfile
+        ? `（config.yaml 与配置预设「${savedProfile}」都已更新）`
+        : "（已保存到 config.yaml）";
+      toastMsg("✓ " + (cardOf(key).label || key) + " 已自动填入 " + names.join("/") + where);
     }
 
     // ---------------- B站专栏文集 ----------------
@@ -1328,8 +1394,31 @@ createApp({
 
     // ---------------- 代理 ----------------
 
-    // 检测系统代理：不带平台 key = 填「设置 → 网络」的全局代理；
-    // 带平台 key = 只填这个平台的 platforms.<平台>.settings.proxy_url
+    // 查这个平台实际的出口 IP（走它自己的代理设置），用来确认节点地区
+    async function checkExitIp(card) {
+      const key = card && card.key ? card.key : "ehentai";
+      busy.value = true;
+      try {
+        const r = await api("/api/ip?platform=" + encodeURIComponent(key));
+        if (!r.ok) throw new Error(r.error || "检测失败");
+        const where = r.country ? (r.note || r.country) : "未知地区";
+        const via = r.proxy ? `（${r.proxy}）` : "（直连）";
+        if (r.blocked) {
+          toastMsg(`⚠ 出口 IP ${r.ip || "未知"} 在${where}${via}，请使用欧美 IP 上传`);
+          setStatus(key, false, `出口 IP 在${where}，请换欧美节点`);
+        } else {
+          toastMsg(`出口 IP：${r.ip || "未知"} ${where}${via}`);
+          setStatus(key, true, `出口 IP：${r.ip || "未知"} ${where}`);
+        }
+      } catch (e) {
+        toastMsg("检测出口 IP 失败：" + e.message);
+      } finally {
+        busy.value = false;
+      }
+    }
+
+    // 检测系统代理：带平台 key = 填这个平台的 platforms.<平台>.settings.proxy_url；
+    // 不带 = 填「设置 → 网络」的备用代理
     async function detectProxy(platformKey) {
       try {
         const r = await api("/api/proxy/detect");
@@ -2662,7 +2751,7 @@ createApp({
     return {
       nav, navItems, version, note, running, busy, cards, config, statuses, expanded,
       profiles, activeProfile, quickProfile, newProfileName,
-      loadProfiles, saveProfileAs, switchProfile, renameProfile, deleteProfile,
+      loadProfiles, saveProfileAs, saveToActiveProfile, switchProfile, renameProfile, deleteProfile,
       comicDir, summary, metaForm, dragOver, previewText, previewChapters, previewMode,
       pageEditFile, startInsert, startReplace, startDeletePage, onPageEditPicked,
       pageMenu, openPageMenu, closePageMenu,
@@ -2691,7 +2780,7 @@ createApp({
       progressNum, fmtMb,
       platShort, platStatus, connected, extrasOf, extraLabel, staleAccountsText,
       saveConfig, openAccount, toggleExpand, openLogin,
-      checkOne, checkAll, pasteCookie, qrLogin, detectProxy,
+      checkOne, checkAll, pasteCookie, qrLogin, detectProxy, checkExitIp,
       browserLogin, browserLoginStop, autoBrowserLogin, setAutoBrowserLogin,
       biliListsOpen, pickBiliList, clearBiliList, createBiliList,
       fieldMapOpen, onSourceChange, pickDir, pickZip, loadComic, onDrop,

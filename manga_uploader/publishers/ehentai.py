@@ -306,6 +306,8 @@ class EhentaiPublisher(BasePublisher):
         self._progress_ctx: dict[str, str] = {}
         self._progress_chapter_key = ""
         self._progress_volume = ""
+        # 出口 IP 检测出的提示（香港节点等），发布结束/失败时拼进消息
+        self._pending_note = ""
 
     def _upload_mode(self) -> str:
         """zip（默认，站点稳定接受归档）或 files（逐张多文件）。"""
@@ -434,10 +436,9 @@ class EhentaiPublisher(BasePublisher):
             timeout=15.0,
             retries=0,
             log_prefix="ehentai-progress",
-            proxy_url=str(self.cfg.get("proxy_url") or self.common.proxy_url or ""),
-            use_system_proxy=bool(
-                self.cfg.get("use_system_proxy", self.common.use_system_proxy)
-            ),
+            # 和主会话走同一个代理（平台自己的设置算出来的那条），别再自己猜一遍
+            proxy_url=self.proxy_url,
+            use_system_proxy=False,
         )
         payload = {
             "method": "uploadprogress",
@@ -609,16 +610,58 @@ class EhentaiPublisher(BasePublisher):
             lines.append("✓ 页面顺序连续，未发现重复或明显漏号")
         return lines
 
+    # ---------- 出口 IP（节点地区）检测 ----------
+
+    def exit_ip(self) -> tuple[str, str]:
+        """查当前出口 IP 与地区码（走这个平台自己的代理）。
+
+        只用本次会话的临时请求，不改任何状态；查不到时抛异常，由调用方决定忽略。
+        """
+        from ..http_client import lookup_exit_ip
+
+        return lookup_exit_ip(self.http)
+
+    def _node_hint(self) -> str:
+        """出口 IP 在香港时给一句提示（不拦上传，只提醒换节点）。
+
+        香港节点容易被 e-hentai 前面的 Cloudflare 拦成 403，提前说一句，
+        用户就不用等整批图片传完才发现发不出去。`settings.ip_check=false` 可关。
+        """
+        from ..http_client import BLOCKED_UPLOAD_COUNTRIES
+
+        if not bool(self.cfg.get("ip_check", True)):
+            return ""
+        try:
+            ip, country = self.exit_ip()
+        except Exception as exc:  # noqa: BLE001 - 查不到不影响上传
+            self.log.info("出口 IP 检测失败（不影响上传）：%s", exc)
+            return ""
+        region = BLOCKED_UPLOAD_COUNTRIES.get(country or "")
+        if region:
+            self.log.warning(
+                "⚠ 出口 IP 是%s节点（%s）：e-hentai 上传常被 Cloudflare 拦，请使用欧美 IP 上传",
+                region,
+                ip or "未知",
+            )
+            self._pending_note = (
+                f"⚠ 检测到{region}节点出口 IP（{ip or '未知'}），"
+                "e-hentai 会限制该地区上传，**请使用欧美 IP 上传**"
+            )
+            return self._pending_note
+        self.log.info("e-hentai 出口 IP：%s（%s）", ip or "未知", country or "未知地区")
+        return ""
+
     def check(self) -> CheckResult:
         missing = self.missing_cookies()
         if missing:
             return CheckResult(self.key, False, f"缺少 Cookie：{', '.join(missing)}")
+        node_warning = self._node_hint()
         try:
             resp = self.http.get(UPLOAD_PAGE_URL)
         except Exception as exc:
             blocked = _cloudflare_block_hint(self.http)
             if blocked:
-                return CheckResult(self.key, False, blocked)
+                return CheckResult(self.key, False, blocked + node_warning)
             if _is_connect_error(exc):
                 return CheckResult(
                     self.key,
@@ -638,7 +681,10 @@ class EhentaiPublisher(BasePublisher):
             )
         form = _parse_upload_page(resp.text)
         if form:
-            return CheckResult(self.key, True, "已登录，可上传（上传页表单解析成功）")
+            message = "已登录，可上传（上传页表单解析成功）"
+            if node_warning:
+                message += node_warning
+            return CheckResult(self.key, True, message)
         text = _plain_text(resp.text)
         if re.search(r"log\s*in|sign\s*in|登录", text, re.I):
             return CheckResult(self.key, False, "Cookie 无效或未登录，请检查 ipb_member_id / ipb_pass_hash")
@@ -892,6 +938,14 @@ class EhentaiPublisher(BasePublisher):
         self.require_cookies()
         if not chapter.pages:
             return PublishResult.skipped(self.key, chapter, "没有图片")
+        # 上传前先看一眼出口 IP：香港节点会被 Cloudflare 拦，提前提示换欧美 IP
+        self._pending_note = ""
+        self._node_hint()
+        self.log.info(
+            "发布方式：%s",
+            "上传后直接发布" if self.cfg.get("publish_after_upload", True)
+            else "只上传到草稿（publish_after_upload=false）",
+        )
         try:
             self.progress("prepare", 0, len(chapter.pages),
                           "开始准备 e-hentai 上传文件", chapter_key=chapter.key)
@@ -925,18 +979,34 @@ class EhentaiPublisher(BasePublisher):
                 pages = self._archive_pages(chapter)
             action = urljoin(UPLOAD_PAGE_URL, form.action or UPLOAD_PAGE_URL)
             resp = self._upload_files(action, data, file_name, pages, chapter)
-            return self._interpret_response(resp, chapter, len(pages))
+            result = self._interpret_response(resp, chapter, len(pages))
+            if self._pending_note:
+                result.message = (
+                    f"{result.message}；{self._pending_note}"
+                    if result.message
+                    else self._pending_note
+                )
+            return result
         except HttpError as exc:
             blocked = _cloudflare_block_hint(self.http)
             if blocked:
-                raise PublisherError(blocked) from exc
+                raise PublisherError(blocked + self._note_suffix()) from exc
             if _is_connect_error(exc):
                 raise PublisherError(
                     f"e-hentai 网络请求失败：{exc}\n{_connect_hint(self.http, exc)}"
+                    + self._note_suffix()
                 ) from exc
+            raise
+        except PublisherError as exc:
+            # 节点提示要跟着失败原因一起出现，否则用户只看到 403 不知道为什么
+            if self._pending_note and self._pending_note not in str(exc):
+                raise PublisherError(f"{exc}{self._note_suffix()}") from exc
             raise
         finally:
             self.cleanup_prepared(chapter)
+
+    def _note_suffix(self) -> str:
+        return f"\n{self._pending_note}" if self._pending_note else ""
 
     def _upload_files(
         self,
@@ -1189,73 +1259,79 @@ class EhentaiPublisher(BasePublisher):
             )
 
         self.log.info("草稿 %s 在册 %d/%d 页，继续正式发布", ulgid, actual_pages, page_count)
-        self.progress(
-            "publish",
-            actual_pages,
-            page_count,
-            "正在正式发布草稿…",
-            chapter_key=chapter.key,
+        # 站点自己的发布入口就在管理页上（input#publishbutton 的 onclick），优先照抄，
+        # 站点改路径/参数也不用跟着改。
+        publish_url = _publish_url_from_page(text) or (
+            manage_url + ("&" if "?" in manage_url else "?") + "act=publish&from=gallery"
         )
-        separator = "&" if "?" in manage_url else "?"
-        publish_url = manage_url + separator + "act=publish&from=gallery"
-        try:
-            pub = self.http.get(
-                publish_url,
-                headers={"Referer": manage_url},
-                allow_redirects=True,
+        attempts = max(1, int(self.cfg.get("publish_attempts", 3) or 3))
+        retry_wait = max(0.0, float(self.cfg.get("publish_retry_wait", 3.0) or 0.0))
+        last = None
+        for attempt in range(1, attempts + 1):
+            self.progress(
+                "publish",
+                actual_pages,
+                page_count,
+                f"正在正式发布草稿（第 {attempt}/{attempts} 次）…",
+                chapter_key=chapter.key,
             )
-        except Exception as exc:
-            return PublishResult.partial(
-                self.key,
-                chapter,
-                url=manage_url,
-                message=(
+            try:
+                pub = self.http.get(
+                    publish_url,
+                    headers={"Referer": manage_url},
+                    allow_redirects=True,
+                )
+            except Exception as exc:
+                self.log.warning("发布请求失败（第 %d 次）：%s", attempt, exc)
+                if attempt < attempts:
+                    time.sleep(retry_wait * attempt)
+                    continue
+                return PublishResult.failed(
+                    self.key,
+                    chapter,
                     f"图片已上传到草稿（ulgid={ulgid}），但发布请求失败：{exc}。"
-                    "请到 My Uploads 手动发布"
-                ),
-                pages=actual_pages,
-                draft_ulgid=ulgid,
+                    f"请到 My Uploads 手动发布：{manage_url}",
+                    pages=actual_pages,
+                    draft_ulgid=ulgid,
+                )
+            last = pub
+            gallery = re.search(
+                r"https?://[^\"'\s<>]*?/(?:g|gallery)/[0-9a-f]+/\d+",
+                pub.url + "\n" + pub.text,
+                re.I,
             )
-        pub_text = pub.text
-        gallery = re.search(
-            r"https?://[^\"'\s<>]*?/(?:g|gallery)/[0-9a-f]+/\d+",
-            pub.url + "\n" + pub_text,
-            re.I,
-        )
-        if gallery:
-            url = gallery.group(0).rstrip("/")
-            return PublishResult.ok(
-                self.key,
-                chapter,
-                url=url,
-                message=f"上传并发布完成，共 {actual_pages} 页",
-                pages=actual_pages,
-                draft_ulgid=ulgid,
-            )
-        pub_plain = _plain_text(pub_text)
-        if re.search(r"published|已发布|publish success|successfully published", pub_plain, re.I):
-            return PublishResult.ok(
-                self.key,
-                chapter,
-                url=manage_url,
-                message=(
-                    f"已上传并触发发布（ulgid={ulgid}），最终链接以 My Uploads 为准，"
-                    f"在册 {actual_pages} 页"
-                ),
-                pages=actual_pages,
-                draft_ulgid=ulgid,
-            )
-        # 发布后的页面形态未能识别：图片已上传成功，保留管理页链接
-        self.http._dump(pub, tag="ehentai-publish")
-        return PublishResult.partial(
+            if gallery:
+                return PublishResult.ok(
+                    self.key,
+                    chapter,
+                    url=gallery.group(0).rstrip("/"),
+                    message=f"上传并发布完成，共 {actual_pages} 页",
+                    pages=actual_pages,
+                    draft_ulgid=ulgid,
+                )
+            if _gallery_is_published(pub.text):
+                return PublishResult.ok(
+                    self.key,
+                    chapter,
+                    url=manage_url,
+                    message=(
+                        f"已发布（ulgid={ulgid}），在册 {actual_pages} 页；"
+                        "公开链接以 My Uploads 里的 View 为准"
+                    ),
+                    pages=actual_pages,
+                    draft_ulgid=ulgid,
+                )
+            if attempt < attempts:
+                self.log.info("站点还没把画廊转为已发布，%.0f 秒后重试", retry_wait * attempt)
+                time.sleep(retry_wait * attempt)
+        if last is not None:
+            self.http._dump(last, tag="ehentai-publish")
+        return PublishResult.failed(
             self.key,
             chapter,
-            url=manage_url,
-            message=(
-                f"图片已上传到草稿（ulgid={ulgid}），发布确认页面未能自动识别"
-                "（已保存 output/debug，文件名含 ehentai-publish）。"
-                "请到 My Uploads 检查并手动发布"
-            ),
+            f"图片已上传，但站点没有把画廊转为已发布（ulgid={ulgid}，已重试 {attempts} 次）。"
+            "这不是“发成功了”：请到 My Uploads 点该草稿的 Publish Gallery 手动发布，"
+            f"或在 e-hentai 设置里把 publish_attempts 调大后重试：{manage_url}",
             pages=actual_pages,
             draft_ulgid=ulgid,
         )
@@ -1297,6 +1373,49 @@ class EhentaiPublisher(BasePublisher):
             self.log.warning("查询草稿管理页失败：%s", exc)
             return 0
         return _count(page.text)
+
+
+def _publish_url_from_page(html_text: str) -> str:
+    """从草稿管理页里抄出站点自己的“Publish Gallery”地址。
+
+    页面里是 `onclick="document.location='…act=publish&from=gallery'"`；
+    照抄它就不用猜参数（站点改流程也能跟上）。找不到返回空串。
+    """
+    match = re.search(
+        r"publishbutton[^>]*onclick=\"\s*document\.location\s*=\s*'([^']+)'",
+        html_text or "",
+        re.I,
+    )
+    if not match:
+        match = re.search(
+            r"onclick=\"\s*document\.location\s*=\s*'([^']*act=publish[^']*)'",
+            html_text or "",
+            re.I,
+        )
+    if not match:
+        return ""
+    return re.sub(r"&amp;", "&", match.group(1)).strip()
+
+
+def _gallery_is_published(html_text: str) -> bool:
+    """判断管理页上的画廊是否已经“发布”了。
+
+    注意：**未发布**的页面里满是 "Unpublished"（含 "published" 子串）和
+    "Not published yet"，早期版本用 `re.search("published")` 判断，把草稿
+    当成了发布成功——用户看到的就是“选了直接发布却还是草稿”。
+    所以这里只认明确的已发布标记，其余一律当作“还没发布”。
+    """
+    text = html_text or ""
+    if re.search(r"This gallery has been published", text, re.I):
+        return True
+    if re.search(r"has been published and images", text, re.I):
+        return True
+    # 未发布的特征：No (Unpublished) / Not published yet / 还留着 Publish 按钮
+    if re.search(r"\(\s*Unpublished\s*\)|Not published yet", text, re.I):
+        return False
+    if re.search(r"id=\"publishbutton\"", text, re.I):
+        return False
+    return False
 
 
 def _parse_upload_page(html_text: str) -> _Form | None:

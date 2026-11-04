@@ -153,8 +153,10 @@ class _XhhHandler(BaseHTTPRequestHandler):
     """只回帖子/评论创建接口的假小黑盒服务端。"""
 
     posts: list = []
+    gets: list = []
     link_counter = 0
     comment_counter = 0
+    draft_ids: set = set()  # 草稿箱里“已经存在”的 link_id
 
     def log_message(self, *args):
         pass
@@ -166,6 +168,15 @@ class _XhhHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def do_GET(self) -> None:  # noqa: N802
+        path = self.path.split("?")[0]
+        self.__class__.gets.append({"path": path, "query": self.path})
+        if path == X.DRAFTS_URL:
+            links = [{"linkid": int(i)} for i in sorted(self.__class__.draft_ids)]
+            self._json({"status": "ok", "result": {"links": links}})
+            return
+        self._json({"status": "failed", "msg": f"unknown path {path}"})
 
     def do_POST(self) -> None:
         length = int(self.headers.get("Content-Length", 0))
@@ -206,8 +217,10 @@ class XiaoheiheOverflowCommentTest(unittest.TestCase):
 
     def setUp(self):
         _XhhHandler.posts = []
+        _XhhHandler.gets = []
         _XhhHandler.link_counter = 0
         _XhhHandler.comment_counter = 0
+        _XhhHandler.draft_ids = set()
         self.tmp = tempfile.TemporaryDirectory()
 
     def tearDown(self):
@@ -304,6 +317,27 @@ class XiaoheiheOverflowCommentTest(unittest.TestCase):
         # 不是草稿（draft=1），而是 view_limit=3 的正式帖
         self.assertIn("view_limit=3", post_calls[0]["body"])
         self.assertNotIn("draft=1", post_calls[0]["body"])
+
+    def test_publish_sends_explicit_draft_zero(self):
+        """选了直接发布时必须显式发 draft=0：不传时站点会默认存草稿（接口照样回 ok）。"""
+        result = self._run(self._publisher(), self._chapter(3))
+        self.assertEqual(result.status, "ok", result.message)
+        body = [p for p in _XhhHandler.posts if p["path"] == X.POST_URL][0]["body"]
+        self.assertIn("draft=0", body)
+
+    def test_draft_mode_sends_draft_one(self):
+        result = self._run(self._publisher(publish_draft=True), self._chapter(3))
+        self.assertEqual(result.status, "ok", result.message)
+        body = [p for p in _XhhHandler.posts if p["path"] == X.POST_URL][0]["body"]
+        self.assertIn("draft=1", body)
+
+    def test_silent_draft_is_reported_not_ok(self):
+        """站点把“直接发布”的内容塞进草稿箱时，不能报成功。"""
+        _XhhHandler.draft_ids = {100001}
+        result = self._run(self._publisher(), self._chapter(3))
+        self.assertEqual(result.status, "partial", result.message)
+        self.assertIn("仍把内容建成了草稿", result.message)
+        self.assertIn("creator/draft", result.message)
 
     def test_rnd_matches_captured_request(self):
         """评论接口的 _rnd 参数与网页端抓包逐字节一致（少了它必然失败）。"""

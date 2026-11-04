@@ -714,5 +714,132 @@ class TestEhentaiPublisherMock(unittest.TestCase):
         self.assertEqual(len(dumps), 1)
 
 
+class _UnpublishedHandler(_Handler):
+    """复刻真实站点：act=publish 先回“仍是草稿”的管理页（异步入库没就绪），
+    之后才真的发布。用来钉住“选了直接发布，结果还是草稿”这个回归。"""
+
+    publish_calls = 0
+    unpublished_rounds = 1
+    publish_body = ""
+
+    def do_GET(self):  # noqa: N802
+        if "act=publish" not in self.path:
+            super().do_GET()
+            return
+        cls = self.__class__
+        cls.gets.append(self.path)
+        cls.publish_calls += 1
+        if cls.publish_body:
+            body = cls.publish_body
+        elif cls.publish_calls <= cls.unpublished_rounds:
+            body = DRAFT_HTML  # 还是草稿：里面有 No (Unpublished)
+        else:
+            body = SUCCESS_HTML
+        data = body.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+
+class TestEhentaiPublishReallyHappens(unittest.TestCase):
+    """`publish_after_upload=true` 时必须真的把画廊发布出去，不能只是“请求发出去了”。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.server = HTTPServer(("127.0.0.1", 0), _UnpublishedHandler)
+        cls.port = cls.server.server_address[1]
+        threading.Thread(target=cls.server.serve_forever, daemon=True).start()
+        cls._orig = eh_mod.UPLOAD_PAGE_URL
+        cls._orig_api = eh_mod.UPLOAD_API_URL
+        eh_mod.UPLOAD_PAGE_URL = f"http://127.0.0.1:{cls.port}/upload"
+        eh_mod.UPLOAD_API_URL = f"http://127.0.0.1:{cls.port}/api"
+
+    @classmethod
+    def tearDownClass(cls):
+        eh_mod.UPLOAD_PAGE_URL = cls._orig
+        eh_mod.UPLOAD_API_URL = cls._orig_api
+        cls.server.shutdown()
+
+    def setUp(self):
+        _UnpublishedHandler.posts = []
+        _UnpublishedHandler.gets = []
+        _UnpublishedHandler.publish_calls = 0
+        _UnpublishedHandler.publish_body = ""
+        _UnpublishedHandler.unpublished_rounds = 1
+        _UnpublishedHandler.page_html = UPLOAD_HTML
+        _UnpublishedHandler.redirect_url = ""
+        self.tmp = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _publisher(self, **settings):
+        cfg = PlatformConfig(
+            name="ehentai",
+            cookies={"ipb_member_id": "1", "ipb_pass_hash": "h"},
+            settings={
+                "category_label": "Manga",
+                "language_label": "Chinese",
+                "publish_after_upload": True,
+                "publish_retry_wait": 0,
+                **settings,
+            },
+        )
+        return EhentaiPublisher(
+            cfg, CommonConfig(output_dir=str(Path(self.tmp.name) / "out"), retries=0)
+        )
+
+    def test_unpublished_marker_is_not_treated_as_published(self):
+        """回归：`Unpublished` 里含 `published`，旧判断把草稿当成了发布成功。"""
+        self.assertFalse(eh_mod._gallery_is_published(DRAFT_HTML))
+        self.assertFalse(eh_mod._gallery_is_published("<td>Not published yet</td>"))
+        self.assertTrue(
+            eh_mod._gallery_is_published(
+                "<p>This gallery has been published, and images can therefore no longer be added</p>"
+            )
+        )
+
+    def test_retry_until_site_really_publishes(self):
+        publisher = self._publisher()
+        result = publisher.publish(_make_chapter(Path(self.tmp.name)))
+        self.assertEqual(result.status, "ok", result.message)
+        self.assertEqual(_UnpublishedHandler.publish_calls, 2)  # 第一次仍是草稿 → 重试成功
+        self.assertEqual(result.url, "https://e-hentai.org/g/abcdef0123456789/1")
+
+    def test_fails_loudly_when_site_keeps_draft(self):
+        _UnpublishedHandler.unpublished_rounds = 99
+        publisher = self._publisher(publish_attempts=2)
+        result = publisher.publish(_make_chapter(Path(self.tmp.name)))
+        self.assertEqual(result.status, "failed", result.message)
+        self.assertIn("没有把画廊转为已发布", result.message)
+        self.assertIn("ulgid=99999", result.message)
+        self.assertEqual(_UnpublishedHandler.publish_calls, 2)
+
+    def test_uses_publish_link_from_manage_page(self):
+        """管理页里给了站点自己的 Publish 地址时照抄，不自己拼参数。"""
+        page = DRAFT_HTML.replace(
+            "</body>",
+            "<input id=\"publishbutton\" type=\"submit\" value=\"Publish Gallery\" "
+            "onclick=\"document.location='http://127.0.0.1:%d/upload?ulgid=99999&amp;act=publish&amp;from=gallery'; return false\" />"
+            "</body>" % self.port,
+        )
+        self.assertEqual(
+            eh_mod._publish_url_from_page(page),
+            f"http://127.0.0.1:{self.port}/upload?ulgid=99999&act=publish&from=gallery",
+        )
+        self.assertEqual(eh_mod._publish_url_from_page(DRAFT_HTML), "")
+
+        _UnpublishedHandler.page_html = UPLOAD_HTML
+        _UnpublishedHandler.publish_body = page.replace(
+            "onclick", "onclick"  # 保持原样：仍回未发布页
+        )
+        publisher = self._publisher(publish_attempts=1)
+        result = publisher.publish(_make_chapter(Path(self.tmp.name)))
+        self.assertEqual(result.status, "failed", result.message)
+        self.assertTrue(any("act=publish" in path for path in _UnpublishedHandler.gets))
+
+
 if __name__ == "__main__":
     unittest.main()

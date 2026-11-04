@@ -414,6 +414,35 @@ class XiaoheihePublisher(BasePublisher):
             return text[:MAX_DESC_CHARS]
         return text
 
+    def _draft_ids(self) -> set[str]:
+        """草稿箱里的 link_id 集合（只读一次，用来核对“到底发没发出去”）。
+
+        站点在没有显式 draft 参数时会按“存草稿”处理，而接口照样回 status=ok，
+        只看返回值会误报“发布成功”。这里拿草稿箱对一遍：内容在草稿箱里就是没发出去。
+        """
+        cached = getattr(self, "_draft_ids_cache", None)
+        if cached is not None:
+            return cached
+        ids: set[str] = set()
+        try:
+            payload = self.http.get_json(
+                self._signed(DRAFTS_URL, {"offset": 0, "limit": 40, "no_more": "false"}),
+                headers={"Referer": DRAFT_BOX_REFERER},
+            )
+            if payload.get("status") == "ok":
+                ids = {
+                    str(l.get("linkid") or l.get("link_id") or "")
+                    for l in ((payload.get("result") or {}).get("links") or [])
+                }
+            ids.discard("")
+        except Exception as exc:  # noqa: BLE001 - 只是核对，读不到不影响发布
+            self.log.debug("读取草稿箱失败（跳过草稿核对）：%s", exc)
+            ids = set()
+            self._draft_ids_cache = set()  # 别再重复请求
+            return ids
+        self._draft_ids_cache = ids
+        return ids
+
     def _publish_draft(self) -> bool:
         """草稿开关：默认 true（只存草稿），兼容 config 里 true/false（bool 或字符串）。"""
         value = self.cfg.get("publish_draft", True)
@@ -654,6 +683,11 @@ class XiaoheihePublisher(BasePublisher):
             page_done = 0
             head_link_id = ""
             head_as_draft = False
+            silent_draft: list[str] = []  # 选了直接发布、站点却仍存成草稿的帖子
+            self.log.info(
+                "发布方式：%s",
+                "先存草稿" if self._publish_draft() else "直接发布",
+            )
             for index, group in enumerate(groups, 1):
                 try:
                     self.log.info(
@@ -725,8 +759,8 @@ class XiaoheihePublisher(BasePublisher):
                         body["hashtags"] = hashtags
                     # 需要评论区续图时不存草稿：草稿没法评论，按「仅自己可见」正式发布
                     as_draft = self._publish_draft() and not overflow_pages
-                    if as_draft:
-                        body["draft"] = 1
+                    # draft 显式带上：不传时站点会按“存草稿”处理（接口照样回 ok）
+                    body["draft"] = 1 if as_draft else 0
                     if index == 1:
                         head_as_draft = as_draft
                     resp = self.http.post(
@@ -755,6 +789,12 @@ class XiaoheihePublisher(BasePublisher):
                         )
                     if index == 1:
                         head_link_id = link_id
+                    if not as_draft and link_id in self._draft_ids():
+                        # 接口回 ok，但内容躺在草稿箱里 —— 就是“选了直接发布还是草稿”
+                        self.log.warning(
+                            "小黑盒 %s 明明选了直接发布，站点却建成了草稿", link_id
+                        )
+                        silent_draft.append(link_id)
                     if as_draft:
                         # 草稿只存在于创作中心“草稿箱”，公开帖子链接打不开。
                         # 主动读一次草稿箱确认草稿真的在（而不是“建完即消失”）。
@@ -839,6 +879,23 @@ class XiaoheihePublisher(BasePublisher):
                     mode=mode,
                     pages=len(pages),
                     draft=self._publish_draft(),
+                    comments=comments_posted,
+                )
+            if silent_draft and not self._publish_draft():
+                return PublishResult.partial(
+                    self.key,
+                    chapter,
+                    url=published[0] if published else "",
+                    message=(
+                        "⚠ 选了直接发布，但站点仍把内容建成了草稿"
+                        f"（link_id={', '.join(silent_draft)}）："
+                        f"去草稿箱点发布即可，或在小黑盒设置里确认 publish_draft=false。"
+                        f"草稿箱：{WEB}/creator/draft"
+                    ),
+                    urls=published,
+                    mode=mode,
+                    pages=len(pages),
+                    draft=True,
                     comments=comments_posted,
                 )
             note = (

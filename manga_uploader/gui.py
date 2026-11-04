@@ -445,15 +445,13 @@ class UploaderApp:
 
     def _build_proxy_ui(self, parent: tk.Widget) -> None:
         hint = (
-            "默认直连。e-hentai 等海外站连不上时再开“系统代理”或填手动代理；"
-            "国内平台走国外代理可能触发风控。"
+            "现在按平台各自决定，默认就能用：B站/贴吧/小黑盒/再漫画直连，"
+            "e-hentai 自动用系统代理（Clash、v2ray 开了系统代理即可）。\n"
+            "下面的地址只是“备用”：系统代理检测不到时，e-hentai 用它兜底。"
+            "要按平台单独改，请在网页端「平台账号」卡片里设置。"
         )
         ttk.Label(parent, text=hint, wraplength=930).grid(row=0, column=0, columnspan=4, sticky="w")
-        ttk.Checkbutton(
-            parent, text="使用 Windows 系统代理（自动检测注册表/环境变量）",
-            variable=self.use_system_proxy_var,
-        ).grid(row=1, column=0, columnspan=4, sticky="w", pady=(6, 0))
-        ttk.Label(parent, text="手动代理 URL：").grid(row=2, column=0, sticky="w", pady=4)
+        ttk.Label(parent, text="备用代理 URL：").grid(row=2, column=0, sticky="w", pady=4)
         ttk.Entry(parent, textvariable=self.proxy_url_var, width=64).grid(
             row=2, column=1, columnspan=3, sticky="w", pady=4
         )

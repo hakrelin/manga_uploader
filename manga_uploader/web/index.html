@@ -380,10 +380,15 @@ try {
             </select>
             <button class="btn btn-primary" :disabled="busy || !quickProfile"
                     @click="switchProfile(quickProfile)">切换</button>
+            <button class="btn" :disabled="busy || !activeProfile"
+                    @click="saveToActiveProfile">保存到当前配置</button>
           </div>
-          <p class="hint-text">预设存在 config.profiles.yaml；切换会把该预设的平台账号/通用设置写入
-            config.yaml（AI 接口设置保留），页面里未保存的改动会丢失。
-            预设里没写的平台 / 空的 Cookie 会保留当前值，不会被清空。</p>
+          <p class="hint-text">
+            当前使用：<strong>{{ activeProfile || "未选择预设（直接用 config.yaml）" }}</strong>。
+            每套预设互相独立；切换会把该预设<strong>整套</strong>写进 config.yaml
+            （AI/代理设置保留），预设里没有的平台 / 空 Cookie 页面上就是空的。
+            改完账号请点「保存到当前配置」，它会同时更新预设和 config.yaml。
+          </p>
         </div>
       </div>
 
@@ -408,6 +413,8 @@ try {
             </button>
             <button v-if="card.qr" class="btn btn-ghost btn-sm" @click="qrLogin(card)">扫码登录</button>
             <button v-if="card.key === 'bilibili'" class="btn btn-ghost btn-sm" @click="biliListsOpen(card)">选择/新建文集…</button>
+            <button v-if="card.key === 'ehentai'" class="btn btn-ghost btn-sm" :disabled="busy"
+                    @click="checkExitIp(card)">检测出口 IP</button>
             <button v-if="card.field_map" class="btn btn-ghost btn-sm" @click="fieldMapOpen(card.key)">上传表单填写…</button>
             <button class="btn btn-ghost btn-sm" @click="pasteCookie(card)">粘贴整段 Cookie</button>
             <button class="btn btn-ghost btn-sm" :disabled="busy" @click="checkOne(card.key)">检查登录</button>
@@ -444,7 +451,9 @@ try {
               <label v-else-if="item.kind === 'switch'" class="switch">
                 <input type="checkbox" v-model="config.platforms[card.key].settings[itemKey]">
                 <span class="switch-track"></span>
-                <span class="switch-label">{{ item.onLabel || '开启' }}</span>
+                <!-- 文案要反映当前状态：静态写“开启/直接发布”会让人以为已经选好了 -->
+                <span class="switch-label">{{ config.platforms[card.key].settings[itemKey]
+                  ? (item.onLabel || '开启') : (item.offLabel || '关闭') }}</span>
               </label>
               <div v-else-if="item.kind === 'text' && item.proxy" class="input-row">
                 <input type="text" class="input"
@@ -460,9 +469,9 @@ try {
             </div>
           </div>
 
-          <p class="hint-text">「此平台代理」只影响这一个平台：URL 留空时沿用全局代理 URL；<b>手填 URL 优先于系统代理开关</b>。
-            平台与全局 URL 都为空时，才按此平台开关检测系统代理。请填写代理软件实际的 HTTP/混合端口，或点击「检测系统代理」。
-            国内平台（B站/贴吧/再漫画/小黑盒）建议直连，只有 e-hentai 这类海外站才需要代理。</p>
+          <p class="hint-text">代理只看这一个平台：<b>都不填 = 直连</b>；打开「自动使用系统代理」= 读系统代理
+            （Clash/v2ray 开了系统代理即可，不用填端口）；填了「手动代理 URL」= 只用它。
+            默认 B站/贴吧/小黑盒/再漫画直连，e-hentai 走系统代理；e 站上传前会查出口 IP，香港节点会提示换欧美 IP。</p>
           <p class="hint-text">{{ card.hint }}</p>
           <div v-if="statuses[card.key] && statuses[card.key].length" class="check-status">
             <span v-for="s in statuses[card.key]" :key="s.message" :class="s.ok ? 'ok' : 'bad'">{{ s.ok ? '✓' : '✗' }} {{ s.message }}</span>
@@ -522,7 +531,7 @@ try {
       <div class="card">
         <div class="card-head">
           <h2>配置切换表</h2>
-          <span class="hint-text">可保存多套常用配置（平台账号 + 通用设置），随时切换、可重命名</span>
+          <span class="hint-text">每套配置都是完整快照（平台账号 + 通用设置），互相独立、随时切换</span>
         </div>
         <div class="card-body">
           <div class="input-row">
@@ -531,7 +540,14 @@ try {
                    @keyup.enter="saveProfileAs(newProfileName)">
             <button class="btn btn-primary" :disabled="busy || !newProfileName"
                     @click="saveProfileAs(newProfileName)">保存当前为新配置</button>
+            <button class="btn" :disabled="busy || !activeProfile"
+                    @click="saveToActiveProfile">保存到当前配置</button>
           </div>
+          <p class="hint-text">
+            当前使用：<strong>{{ activeProfile || "未选择预设（直接用 config.yaml）" }}</strong>。
+            「保存当前为新配置」会同时把它设为当前并写入 config.yaml；
+            改完账号点「保存到当前配置」即可原地更新，切走再切回来不会变回旧号。
+          </p>
           <div v-if="profiles.length" class="prof-table">
             <div class="prof-row prof-head">
               <span>配置名称</span><span>更新时间</span><span class="prof-actions">操作</span>
@@ -594,15 +610,19 @@ try {
               <input type="number" min="0" step="0.5" v-model.number="config.common.interval_seconds" class="input">
             </div>
             <div class="field field-wide">
-              <label class="field-label">手动代理 URL <span class="field-hint">如 http://127.0.0.1:7890（留空则直连）</span></label>
+              <label class="field-label">备用代理（可选） <span class="field-hint">系统代理检测不到时，e-hentai 用它兜底；其它平台不用填</span></label>
               <div class="input-row">
-                <input type="text" v-model="config.common.proxy_url" class="input" placeholder="http://127.0.0.1:7890">
+                <input type="text" v-model="config.common.proxy_url" class="input" placeholder="留空即可，如 http://127.0.0.1:7890">
                 <button class="btn btn-ghost" @click="detectProxy()">检测系统代理</button>
               </div>
             </div>
           </div>
-          <label class="check-row"><input type="checkbox" v-model="config.common.use_system_proxy"><span>使用系统代理（自动检测注册表/环境变量）</span></label>
-          <p class="hint-text">默认直连。e-hentai 等海外站连不上时再开代理；国内平台走国外代理可能触发风控。</p>
+          <p class="hint-text">
+            <strong>默认就能用，不用调：</strong>B站 / 贴吧 / 小黑盒 / 再漫画走直连，
+            e-hentai 自动用系统代理（Clash、v2ray 等开了「系统代理」就会被读到）。
+            要按平台单独改，去「平台账号」页每张卡片底部的「代理」两项：
+            都不填 = 直连，开开关 = 系统代理，填 URL = 只用这个代理。
+          </p>
         </div>
       </div>
 
@@ -828,13 +848,18 @@ try {
         <li>发布前建议用「全文预览」检查格式与缺页；正式发布后不可撤销，小范围测试可先启用小黑盒“存草稿”。</li>
       </ul>
 
-      <h3>网络与设置</h3>
+      <h3>网络与代理</h3>
       <ul>
-        <li>e-hentai 等海外站连不上时，在「设置」里勾选使用系统代理或填手动代理；国内平台请勿走海外代理，容易触发风控。</li>
-        <li>只想让某一个平台走代理：在「平台账号」展开该平台卡片，底部有
-          「此平台使用系统代理」开关和「此平台代理 URL」（带「检测系统代理」按钮）。
-          <b>留空 / 不勾 = 沿用</b>「设置 → 网络」里的全局代理，所以可以做到
-          「全局直连、只给 e-hentai 配代理」，国内平台保持直连更安全。</li>
+        <li><b>默认不用调：</b>B站 / 贴吧 / 小黑盒 / 再漫画直连，e-hentai 自动用系统代理
+          （Clash、v2ray 等软件里开「系统代理」即可，不用填端口）。</li>
+        <li>要单独改某个平台：在「平台账号」展开该平台卡片，底部有
+          「自动使用系统代理」开关和「手动代理 URL」。都不填 = 直连；开开关 = 系统代理；
+          填 URL = 只用这个代理。每个平台各管各的，互不影响。</li>
+        <li>e-hentai 卡片上的「检测出口 IP」可以看当前实际走的是哪个地区的节点；
+          上传前也会自动查一次，<b>发现是香港节点会提示换欧美 IP</b>（香港节点容易被 Cloudflare 拦成 403）。
+          这个检查可在 e-hentai 设置里用 <code>ip_check: false</code> 关掉。</li>
+        <li>「设置 → 网络」里那个备用代理只在<b>系统代理检测不到</b>时给 e-hentai 兜底，平时留空即可。
+          国内平台走海外代理容易触发风控，默认不推荐。</li>
         <li>上传失败时，程序会把原始响应存到 output/debug（如文件名含 ehentai-upload-page 的 html），可直接把文件发出来排查。</li>
         <li>如果同时开了多个服务实例（例如 8970 与 8971），请关掉旧实例只留最新一个，避免新版页面配旧版后端。</li>
       </ul>

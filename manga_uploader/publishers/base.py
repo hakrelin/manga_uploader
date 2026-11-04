@@ -7,7 +7,7 @@ import hashlib
 from pathlib import Path
 
 from ..config import CommonConfig, PlatformConfig, missing_cookies
-from ..http_client import HttpClient
+from ..http_client import HttpClient, resolve_proxy
 from ..models import Chapter, CheckResult, PublishResult
 from ..util import get_logger, prepare_page_cached
 
@@ -30,25 +30,26 @@ class BasePublisher(ABC):
         self.log = get_logger(self.key)
         self.output_dir = Path(output_dir) if output_dir else Path(common.output_dir)
         dump_dir = self.output_dir / "debug"
-        # 平台级代理覆盖：config 里 platforms.<key>.settings 可单独指定
-        # proxy_url / use_system_proxy：
-        # - proxy_url 留空（或没配）= 沿用 common 的全局代理（界面上的“留空=跟随全局”）
-        # - use_system_proxy 显式填 true/false 才覆盖全局；没配就跟着全局
-        platform_proxy = str(self.cfg.get("proxy_url") or "").strip()
-        platform_system = self.cfg.get("use_system_proxy")
-        proxy_url = platform_proxy or common.proxy_url
-        use_system_proxy = (
-            bool(common.use_system_proxy) if platform_system is None else bool(platform_system)
-        )
+        # 平台代理：只看这个平台自己的两个设置（规则见 http_client.resolve_proxy）
+        # - proxy_url 填了 → 用它
+        # - use_system_proxy 开 → 自动读系统代理（检测不到时用 common.proxy_url 兜底）
+        # - 都没有 → 直连
+        # 默认值：B站/贴吧/小黑盒/再漫画直连，e-hentai 走系统代理。
+        # 平台之间互不影响，也不会因为“留空”掉进全局设置里。
+        self.proxy_url, self.proxy_note = resolve_proxy(cfg.settings, common)
         self.http = HttpClient(
             cookies=cfg.cookies,
             timeout=common.timeout,
             retries=common.retries,
             dump_dir=dump_dir,
             log_prefix=self.key,
-            proxy_url=proxy_url,
-            use_system_proxy=use_system_proxy,
+            proxy_url=self.proxy_url,
+            use_system_proxy=False,
         )
+        if self.proxy_url:
+            self.log.info("网络：%s %s", self.proxy_note, self.proxy_url)
+        else:
+            self.log.info("网络：直连")
 
     # ---------- 通用 ----------
 
