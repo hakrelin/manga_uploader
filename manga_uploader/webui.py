@@ -250,26 +250,16 @@ PLATFORM_CARDS: list[dict[str, Any]] = [
     },
 ]
 
-# 每个平台卡片都带一组代理设置（一平台一套，互不影响）：
-#   都不填 = 直连；开开关 = 自动用系统代理；填 URL = 只用这个代理
-PROXY_CONTROLS: dict[str, dict[str, Any]] = {
-    "use_system_proxy": {
-        "kind": "switch",
-        "label": "代理",
-        "onLabel": "系统代理",
-        "offLabel": "直连",
-    },
-    "proxy_url": {
-        "kind": "text",
-        "label": "手动代理 URL（填了就优先用它）",
-        "placeholder": "留空 = 不填，如 http://127.0.0.1:7890",
-        "proxy": True,  # 前端据此渲染「检测系统代理」按钮
-    },
-}
+# 代理不再让用户填：每个平台自动在「直连 ↔ 系统代理」之间选（见 http_client）。
+# 这里只保留一组只读展示项，前端用它显示“当前走的是哪条路径”。
+PROXY_CONTROLS: dict[str, dict[str, Any]] = {}
 
 for _card in PLATFORM_CARDS:
+    # 老配置里可能还留着 use_system_proxy / proxy_url：从卡片控件里去掉，
+    # 页面上不再出现输入框（值仍会被自动选路当作候选项，不会浪费）。
     _controls = _card.setdefault("controls", {})
-    _controls.update({k: dict(v) for k, v in PROXY_CONTROLS.items()})
+    _controls.pop("use_system_proxy", None)
+    _controls.pop("proxy_url", None)
 
 for _card in PLATFORM_CARDS:
     # 支持「浏览器登录」的平台：前端据此显示「🌐 浏览器登录」按钮

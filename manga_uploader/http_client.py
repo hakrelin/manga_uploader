@@ -79,9 +79,9 @@ def resolve_proxy(settings: Any, common: Any = None) -> tuple[str, str]:
     默认值：国内平台直连，e-hentai 走系统代理（见 config.DEFAULT_SETTINGS）。
     """
     settings = settings if isinstance(settings, dict) else {}
-    proxy_url = str(settings.get("proxy_url") or "").strip()
-    if proxy_url:
-        return proxy_url, "手动代理"
+    manual = str(settings.get("proxy_url") or "").strip()
+    if manual:
+        return manual, "手动代理"
     if bool(settings.get("use_system_proxy")):
         detected = detect_system_proxy()
         if detected:
@@ -91,6 +91,52 @@ def resolve_proxy(settings: Any, common: Any = None) -> tuple[str, str]:
             return fallback, "备用代理（没检测到系统代理）"
         return "", "直连（没检测到系统代理）"
     return "", "直连"
+
+
+# 走系统代理优先的平台（海外站）。国内站不在这里：默认直连，直连不通再自动退到代理。
+OVERSEAS_PLATFORMS = {"ehentai"}
+
+
+def resolve_proxy_candidates(
+    settings: Any, common: Any = None, *, prefer_direct: bool = True
+) -> list[tuple[str, str]]:
+    """这个平台可以走的网络路径，按优先级排好：[(代理地址或 '', 说明), …]。
+
+    **全自动**：不再有“手填了就只用它、不许改道”的模式。用户/老配置里留下的
+    代理地址只会被当成候选项之一，哪条通就走哪条；一条都不通时按最后一条报错。
+
+    顺序：
+    - 国内站（prefer_direct）：直连 → 系统代理 → 配置里的代理 → common 里的兜底
+    - 海外站（e-hentai）：系统代理 → 配置里的代理 → common 兜底 → 直连
+
+    换路是**按请求**进行的：某条路径 SSL EOF / 连接重置 / 超时，就立刻换下一条
+    重发同一个请求（不消耗重试次数），日志里会写明换成了哪条。
+    """
+    settings = settings if isinstance(settings, dict) else {}
+    system = detect_system_proxy()
+    manual = str(settings.get("proxy_url") or "").strip()
+    fallback = str(getattr(common, "proxy_url", "") or "").strip() if common else ""
+
+    routes: list[tuple[str, str]] = []
+    if prefer_direct:
+        routes.append(("", "直连"))
+    if system:
+        routes.append((system, "系统代理"))
+    if manual:
+        routes.append((manual, "配置的代理"))
+    if fallback:
+        routes.append((fallback, "备用代理"))
+    if not prefer_direct:
+        routes.append(("", "直连"))
+
+    seen: set[str] = set()
+    unique: list[tuple[str, str]] = []
+    for url, label in routes:
+        if url in seen:
+            continue
+        seen.add(url)
+        unique.append((url, label))
+    return unique or [("", "直连")]
 
 
 def lookup_exit_ip(http: "HttpClient") -> tuple[str, str]:
@@ -132,6 +178,7 @@ class HttpClient:
         extra_headers: Optional[dict[str, str]] = None,
         proxy_url: str = "",
         use_system_proxy: bool = False,
+        proxy_candidates: Optional[list[tuple[str, str]]] = None,
     ) -> None:
         self.log = get_logger(log_prefix)
         self.timeout = timeout
@@ -152,17 +199,77 @@ class HttpClient:
             # 否则自动补全时会出现 “buvid4=; buvid4=xxx” 这种重复下发。
             if str(value if value is not None else "").strip():
                 self.session.cookies.set(name, str(value))
-        effective_proxy = proxy_url.strip() if proxy_url else ""
-        if not effective_proxy and use_system_proxy:
-            effective_proxy = detect_system_proxy()
-        if effective_proxy:
-            self.session.proxies.update(
-                {"http": effective_proxy, "https": effective_proxy}
-            )
-            self.log.info("使用代理：%s", effective_proxy)
+        # 网络路径：一条或多条（失败自动换下一条）。老调用方式仍然有效。
+        if proxy_candidates:
+            self._routes: list[tuple[str, str]] = list(proxy_candidates)
+        else:
+            effective = proxy_url.strip() if proxy_url else ""
+            if not effective and use_system_proxy:
+                effective = detect_system_proxy()
+            self._routes = [(effective, "代理" if effective else "直连")]
+        self._route_index = 0
+        self._apply_route(0)
         # 只用程序算出的代理（平台级/全局），忽略环境变量里的意外代理
         self.session.trust_env = False
         self.last_request: Optional[requests.Response] = None
+
+    # ---------- 路由 ----------
+
+    @property
+    def active_proxy(self) -> str:
+        return self._routes[self._route_index][0]
+
+    @property
+    def active_proxy_label(self) -> str:
+        return self._routes[self._route_index][1]
+
+    def _apply_route(self, index: int) -> None:
+        url, label = self._routes[index]
+        self.session.proxies.clear()
+        if url:
+            self.session.proxies.update({"http": url, "https": url})
+            self.log.info("网络路径：%s %s", label, url)
+        else:
+            self.log.info("网络路径：%s", label)
+
+    def _switch_route(self, exc: BaseException) -> bool:
+        """失败就换下一条网络路径（直连↔系统代理），用户不用自己改设置。"""
+        next_index = self._route_index + 1
+        if next_index >= len(self._routes):
+            return False
+        self._route_index = next_index
+        self._apply_route(next_index)
+        target = self.active_proxy or "直连"
+        self.log.warning(
+            "当前网络路径不可用（%s：%s），自动改用%s%s 重试",
+            exc.__class__.__name__,
+            str(exc)[:120],
+            self.active_proxy_label,
+            f" {target}" if target else "",
+        )
+        return True
+
+    def ensure_route(self, probe_url: str, *, timeout: Optional[float] = None) -> str:
+        """用一次轻量请求确认哪条路径能通，返回最终生效的代理地址（空=直连）。
+
+        上传大文件前先探一下，比传到一半再失败划算得多（COS 上传不走这里，
+        所以小黑盒会先调它再传图）。拿到任何 HTTP 响应都算“能通”。
+        """
+        for _ in range(len(self._routes)):
+            try:
+                resp = self.session.get(
+                    probe_url,
+                    timeout=timeout or min(5.0, max(self.timeout, 2.0)),
+                    allow_redirects=False,
+                    stream=True,
+                )
+                resp.close()
+                return self.active_proxy
+            except (requests.exceptions.RequestException, OSError) as exc:
+                if not self._switch_route(exc):
+                    self.log.warning("所有网络路径都探测失败（最后一次：%s）", exc)
+                    break
+        return self.active_proxy
 
     # ---------- 基础请求 ----------
 
@@ -179,7 +286,9 @@ class HttpClient:
         last_error: Optional[Exception] = None
         attempts = (self.retries + 1) if retry else 1
         request_timeout = kwargs.pop("timeout", None) or max(self.timeout, 1.0)
-        for attempt in range(1, attempts + 1):
+        attempt = 1
+        switched = 0
+        while attempt <= attempts:
             try:
                 resp = self.session.request(
                     method,
@@ -193,6 +302,7 @@ class HttpClient:
                     wait = min(2 ** attempt, max_wait)
                     self.log.warning("%s %s 状态 %s，%s 秒后重试", method, url, resp.status_code, wait)
                     time.sleep(wait)
+                    attempt += 1
                     continue
                 if resp.status_code >= 400:
                     self._dump(resp)
@@ -202,15 +312,21 @@ class HttpClient:
                 return resp
             except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
                 last_error = exc
+                # 先试“换一条网络路径”（直连被梯子/防火墙掐断时最有用的那步）
+                if switched < len(self._routes) - 1 and self._switch_route(exc):
+                    switched += 1
+                    continue
                 if attempt < attempts:
                     wait = min(2 ** (attempt - 1), max_wait)
                     self.log.warning("网络错误（%s），%s 秒后重试", exc.__class__.__name__, wait)
                     time.sleep(wait)
+                    attempt += 1
                     continue
             except requests.exceptions.TooManyRedirects as exc:
                 raise HttpError(
                     f"{method} {url} 重定向次数过多（可能未登录、被要求验证或风控）：{exc}"
                 ) from exc
+            attempt += 1
         raise HttpError(f"{method} {url} 多次重试后仍然失败：{last_error}")
 
     def get(self, url: str, **kwargs: Any) -> requests.Response:

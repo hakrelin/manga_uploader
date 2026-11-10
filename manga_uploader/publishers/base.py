@@ -7,7 +7,7 @@ import hashlib
 from pathlib import Path
 
 from ..config import CommonConfig, PlatformConfig, missing_cookies
-from ..http_client import HttpClient, resolve_proxy
+from ..http_client import HttpClient, OVERSEAS_PLATFORMS, resolve_proxy_candidates
 from ..models import Chapter, CheckResult, PublishResult
 from ..util import get_logger, prepare_page_cached
 
@@ -30,26 +30,32 @@ class BasePublisher(ABC):
         self.log = get_logger(self.key)
         self.output_dir = Path(output_dir) if output_dir else Path(common.output_dir)
         dump_dir = self.output_dir / "debug"
-        # 平台代理：只看这个平台自己的两个设置（规则见 http_client.resolve_proxy）
-        # - proxy_url 填了 → 用它
-        # - use_system_proxy 开 → 自动读系统代理（检测不到时用 common.proxy_url 兜底）
-        # - 都没有 → 直连
-        # 默认值：B站/贴吧/小黑盒/再漫画直连，e-hentai 走系统代理。
+        # 平台代理：给出**多条**候选路径，失败自动换下一条（见 resolve_proxy_candidates）
+        # - 国内站：直连 → 系统代理 → 备用代理（挂了梯子/TUN 时直连会被劫，自动退到代理）
+        # - e-hentai：系统代理 → 备用代理 → 直连（没开梯子也能直连兜底）
+        # - 用户在平台里手填 proxy_url：只用它（尊重指定，不偷偷改道）
         # 平台之间互不影响，也不会因为“留空”掉进全局设置里。
-        self.proxy_url, self.proxy_note = resolve_proxy(cfg.settings, common)
+        prefer_direct = self.key not in OVERSEAS_PLATFORMS
+        self.proxy_routes = resolve_proxy_candidates(
+            cfg.settings, common, prefer_direct=prefer_direct
+        )
         self.http = HttpClient(
             cookies=cfg.cookies,
             timeout=common.timeout,
             retries=common.retries,
             dump_dir=dump_dir,
             log_prefix=self.key,
-            proxy_url=self.proxy_url,
-            use_system_proxy=False,
+            proxy_candidates=self.proxy_routes,
         )
-        if self.proxy_url:
-            self.log.info("网络：%s %s", self.proxy_note, self.proxy_url)
-        else:
-            self.log.info("网络：直连")
+
+    @property
+    def proxy_url(self) -> str:
+        """当前实际生效的代理（可能是自动换过之后的）。"""
+        return self.http.active_proxy
+
+    @property
+    def proxy_note(self) -> str:
+        return self.http.active_proxy_label
 
     # ---------- 通用 ----------
 

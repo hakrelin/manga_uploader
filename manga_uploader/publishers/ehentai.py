@@ -62,11 +62,10 @@ def strip_tags(text: str) -> str:
 # 报错时把“怎么办”直接写进提示，省得用户对着 ConnectTimeoutError 猜。
 CONNECT_HINT = (
     "e-hentai 的上传域名（upload.e-hentai.org）在国内直连通常连不上。"
-    "请任选其一后重试：① 在配置的 e-hentai 里勾选「使用系统代理」（或填写代理地址 "
-    "proxy_url，例如 http://127.0.0.1:7890）；② 在 GUI「设置」里开启全局系统代理；"
-    "③ 让本机能直连外网（换网络/开代理软件的系统代理）。"
-    "注意贴吧/B站等国内站不需要代理，可以在 platforms.<平台>.settings 里单独给 "
-    "e-hentai 配代理、国内站保持直连。"
+    "程序会自动在「系统代理 ↔ 直连」之间选能通的那条，所以先确认："
+    "① 代理软件（Clash/v2ray 等）开着并启用了「系统代理」（程序会自动读到，不用填地址）；"
+    "② 如果代理软件用的是 TUN/规则模式但没开系统代理，请打开系统代理或让节点能直连外网。"
+    "国内站（贴吧/B站/小黑盒/再漫画）始终优先直连，不会被这条影响。"
 )
 
 NODE_HINT = "请使用欧美节点上传；香港节点可能触发 Cloudflare 拦截（403）。"
@@ -113,13 +112,13 @@ def _connect_hint(client: HttpClient, exc: BaseException) -> str:
         except ValueError:
             endpoint = "（地址格式有误）"
         route = (
-            f"当前请求已配置代理：{endpoint}。"
-            "手填代理 URL 优先于「使用系统代理」开关；"
-            "请核对代理软件的 HTTP/混合端口，或点击「检测系统代理」更新地址。"
+            f"当前请求走的是代理：{endpoint}（程序自动选的）。"
+            "如果这条不通，会自动换直连重试；两边都不通时请看代理软件是否在运行、"
+            "以及它的 HTTP/混合端口是否变化。"
             "若程序运行在服务器/容器里，127.0.0.1 指的是运行程序的环境。"
         )
     else:
-        route = "当前请求未配置显式代理（系统 TUN/VPN 仍可能接管流量）。" + CONNECT_HINT
+        route = "当前请求走的是直连（没检测到系统代理）。" + CONNECT_HINT
     detail = str(exc).lower()
     if "unexpected_eof" in detail or "ssleoferror" in detail:
         route += (
@@ -655,6 +654,7 @@ class EhentaiPublisher(BasePublisher):
         missing = self.missing_cookies()
         if missing:
             return CheckResult(self.key, False, f"缺少 Cookie：{', '.join(missing)}")
+        self.http.ensure_route(UPLOAD_PAGE_URL)
         node_warning = self._node_hint()
         try:
             resp = self.http.get(UPLOAD_PAGE_URL)
@@ -938,7 +938,9 @@ class EhentaiPublisher(BasePublisher):
         self.require_cookies()
         if not chapter.pages:
             return PublishResult.skipped(self.key, chapter, "没有图片")
-        # 上传前先看一眼出口 IP：香港节点会被 Cloudflare 拦，提前提示换欧美 IP
+        # 上传前先确认哪条网络路径能通（系统代理 ↔ 直连），再顺手看一眼出口 IP：
+        # 香港节点会被 Cloudflare 拦，提前提示换欧美 IP
+        self.http.ensure_route(UPLOAD_PAGE_URL)
         self._pending_note = ""
         self._node_hint()
         self.log.info(

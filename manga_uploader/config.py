@@ -38,7 +38,8 @@ class CommonConfig:
     parallel: bool = False
     verbose: bool = False
     log_file: Optional[str] = None
-    # 代理：proxy_url 手动指定 http(s)://…；use_system_proxy 读取 Windows 系统代理
+    # 代理：全自动（直连 ↔ 系统代理，失败自动换路）。这两个字段只为兼容老配置保留：
+    # proxy_url 会作为候选之一参与自动选路，use_system_proxy 已不再影响任何行为。
     proxy_url: str = ""
     use_system_proxy: bool = False
     # 罗马音 AI 转换（OpenAI 兼容接口；空 api_key 时自动回退本地 pykakasi）
@@ -74,8 +75,6 @@ DEFAULT_SETTINGS: dict[str, dict[str, Any]] = {
         "image_category": "draw",  # daily / draw / cos
         "max_pages_per_post": 9,   # 图文动态单条上限 9 张（仅 publish_mode=dynamic）
         "topics": ["#原创漫画#"],
-        "use_system_proxy": False,  # 国内站默认直连，避免代理造成 SSL/风控问题
-        "proxy_url": "",
     },
     "tieba": {
         "forum": "",          # 目标吧名；多个吧用逗号分隔（如 东方吧,漫画吧），发布时依次串行
@@ -86,8 +85,6 @@ DEFAULT_SETTINGS: dict[str, dict[str, Any]] = {
         "upload_retry_wait": 3.0,  # 重试间隔基准秒数（第 n 次等待 n 倍）
         "forum_interval": 3.0,     # 两个吧之间等待秒数，降低被限流概率
         "title_suffix": "",
-        "use_system_proxy": False,
-        "proxy_url": "",
     },
     "ehentai": {
         "category_label": "Doujinshi",  # 默认同人志（汉化搬运）；可选 Non-H/Manga 等
@@ -101,10 +98,6 @@ DEFAULT_SETTINGS: dict[str, dict[str, Any]] = {
         # 归档超过它、且 zip_split_uploads 开着时，自动分卷上传到同一画廊（不压图）
         "zip_max_mb": 90.0,
         "zip_split_uploads": True,
-        # 海外站：默认自动读系统代理（Clash/v2ray 开了系统代理就能直接用，不用填地址）。
-        # 想手填就填 proxy_url（优先于这个开关）；想直连就把它改成 False。
-        "use_system_proxy": True,
-        "proxy_url": "",
         # 上传前查一次出口 IP：香港节点会被 Cloudflare 拦，先提示换欧美 IP
         "ip_check": True,
         # 正式发布这一步站点可能“暂时还不让发”（异步入库/刚建好），重试几次再判失败
@@ -133,8 +126,6 @@ DEFAULT_SETTINGS: dict[str, dict[str, Any]] = {
         # 站外转载来源描述（默认 bilibili）
         "source": "bilibili",
         "device_id": "",  # 留空用内置设备号；被风控时可换
-        "use_system_proxy": False,  # 国内站默认直连
-        "proxy_url": "",
     },
     "zaimanhua": {
         "cate": "1",  # 1 原创作品 / 2 原创汉化 / 3 个人扫漫 / 4 转载作品
@@ -142,8 +133,6 @@ DEFAULT_SETTINGS: dict[str, dict[str, Any]] = {
         "chapter_name": "",  # 章节名，留空用章节标题
         "max_pages_per_upload": 500,  # 单次提交页数上限
         "upload_attempts": 2,  # 单张图片上传失败自动重试次数（网络/服务器抽风）
-        "use_system_proxy": False,  # 再漫画是国内站：默认直连，避免代理断连
-        "proxy_url": "",  # 手动代理同样默认留空
     },
 }
 

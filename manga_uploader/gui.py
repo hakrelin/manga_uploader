@@ -445,17 +445,12 @@ class UploaderApp:
 
     def _build_proxy_ui(self, parent: tk.Widget) -> None:
         hint = (
-            "现在按平台各自决定，默认就能用：B站/贴吧/小黑盒/再漫画直连，"
-            "e-hentai 自动用系统代理（Clash、v2ray 开了系统代理即可）。\n"
-            "下面的地址只是“备用”：系统代理检测不到时，e-hentai 用它兜底。"
-            "要按平台单独改，请在网页端「平台账号」卡片里设置。"
+            "代理全自动，不用设置：国内站（B站/贴吧/小黑盒/再漫画）优先直连，直连被掐断会自动换"
+            "系统代理重试；e-hentai 优先系统代理、不行再退直连。\n"
+            "开了梯子（系统代理/规则模式）也能自己挑能用的那条路，日志里会写当前用的是哪条。"
         )
         ttk.Label(parent, text=hint, wraplength=930).grid(row=0, column=0, columnspan=4, sticky="w")
-        ttk.Label(parent, text="备用代理 URL：").grid(row=2, column=0, sticky="w", pady=4)
-        ttk.Entry(parent, textvariable=self.proxy_url_var, width=64).grid(
-            row=2, column=1, columnspan=3, sticky="w", pady=4
-        )
-        ttk.Button(parent, text="检测系统代理", command=self._detect_proxy).grid(
+        ttk.Button(parent, text="检测系统代理（仅查看）", command=self._detect_proxy).grid(
             row=3, column=0, sticky="w", pady=2
         )
         self.detected_proxy_var = tk.StringVar(value="")
@@ -468,8 +463,6 @@ class UploaderApp:
 
         url = detect_system_proxy()
         self.detected_proxy_var.set(f"检测到：{url or '无（未开启系统代理）'}")
-        if url:
-            self.proxy_url_var.set(url)
 
     def _open_browser(self, url: str) -> None:
         """打开系统默认浏览器；pythonw 环境下 webbrowser 可能静默失败，做多重兜底。"""

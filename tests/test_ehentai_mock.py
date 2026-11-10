@@ -184,9 +184,12 @@ class TestEhentaiConnectErrors(unittest.TestCase):
         self.tmp.cleanup()
 
     def _publisher(self):
-        return EhentaiPublisher(
+        pub = EhentaiPublisher(
             self.cfg, CommonConfig(output_dir=str(Path(self.tmp.name) / "out"))
         )
+        # 这些用例只关心报错文案，不要真的去探测 upload.e-hentai.org（会等超时）
+        pub.http.ensure_route = lambda *a, **k: ""  # type: ignore[assignment]
+        return pub
 
     def test_check_reports_proxy_hint_on_connect_timeout(self):
         publisher = self._publisher()
@@ -195,7 +198,7 @@ class TestEhentaiConnectErrors(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertIn("upload.e-hentai.org", result.message)
         self.assertIn("代理", result.message)
-        self.assertIn("proxy_url", result.message)
+        self.assertIn("系统代理", result.message)
 
     def test_publish_reports_proxy_hint_on_connect_timeout(self):
         publisher = self._publisher()
@@ -204,7 +207,7 @@ class TestEhentaiConnectErrors(unittest.TestCase):
                 publisher.publish(_make_chapter(Path(self.tmp.name)))
         text = str(ctx.exception)
         self.assertIn("代理", text)
-        self.assertIn("proxy_url", text)
+        self.assertIn("系统代理", text)
 
     def test_connect_error_detector_ignores_business_errors(self):
         """业务报错（服务端 200 但提示未登录/无资格）不能被当成网络不通。"""
@@ -212,25 +215,28 @@ class TestEhentaiConnectErrors(unittest.TestCase):
         self.assertFalse(eh_mod._is_connect_error(PublisherError("Cookie 无效或未登录")))
 
     def test_tls_eof_with_proxy_reports_actual_route(self):
-        self.cfg.settings.update(proxy_url="http://127.0.0.1:7890", use_system_proxy=True)
-        with mock.patch("manga_uploader.http_client.detect_system_proxy") as detect:
+        """代理是全自动的：报错里要写清这次实际走的是哪条，并说明会自动换路。"""
+        self.cfg.settings.update(proxy_url="http://127.0.0.1:7890")
+        with mock.patch(
+            "manga_uploader.http_client.detect_system_proxy",
+            return_value="http://127.0.0.1:7890",
+        ):
             publisher = self._publisher()
-        detect.assert_not_called()
         error = HttpError("SSLError: [SSL: UNEXPECTED_EOF_WHILE_READING]")
         with mock.patch.object(publisher.http, "get", side_effect=error):
             result = publisher.check()
         self.assertFalse(result.ok)
-        self.assertIn("当前请求已配置代理：http://127.0.0.1:7890", result.message)
-        self.assertIn("手填代理 URL 优先", result.message)
+        self.assertIn("当前请求走的是代理：http://127.0.0.1:7890", result.message)
+        self.assertIn("自动换直连重试", result.message)
         self.assertIn("TLS 连接被中途关闭", result.message)
         self.assertIn("不能据此判断 Cookie 失效", result.message)
-        self.assertNotIn("请任选其一", result.message)
+        self.assertNotIn("手填代理 URL 优先", result.message)
         publisher.http.close()
 
     def test_tls_eof_without_proxy_reports_route(self):
         publisher = self._publisher()
         hint = eh_mod._connect_hint(publisher.http, HttpError("SSLEOFError"))
-        self.assertIn("未配置显式代理", hint)
+        self.assertIn("直连", hint)
         self.assertIn("TLS 连接被中途关闭", hint)
         publisher.http.close()
 

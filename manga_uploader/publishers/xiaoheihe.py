@@ -451,11 +451,59 @@ class XiaoheihePublisher(BasePublisher):
         return str(value).strip().lower() in ("1", "true", "yes", "on")
 
     def _topic_ids(self) -> str:
-        """关联社区 topic_ids（逗号分隔 id 或名称均可；默认东方双社区）。"""
+        """关联社区 topic_ids（逗号分隔 id 或名称均可；默认东方夜雀食堂）。"""
         value = str(self.cfg.get("topic_ids") or "").strip()
         if not value:
             value = DEFAULT_TOPIC_IDS
         return value
+
+    def _note_unknown_topics(self, topic_ids: str) -> None:
+        """只在日志里提示“这个社区不在编辑器的推荐列表”，**绝不擅自替换/丢弃**。
+
+        topic_selection 接口返回的只是“常用/推荐社区”，不是站点全部社区
+        （例如 477625 东方冰之勇者记 能发、但不在这个列表里）。所以这里只做提示，
+        发送时始终按用户配置的 id 原样提交。
+        """
+        try:
+            payload = self.http.get_json(
+                self._signed(TOPIC_SELECT_URL),
+                headers={"Referer": EDITOR_URL},
+            )
+        except Exception:  # noqa: BLE001 - 只是提示，失败就算了
+            return
+        if payload.get("status") != "ok":
+            return
+        topics = (payload.get("result") or {}).get("topic_list") or []
+        listed = {
+            str(t.get("topic_id") or t.get("id") or "")
+            for t in topics
+        }
+        missing = [t.strip() for t in re.split(r"[,，]", topic_ids) if t.strip() and t.strip() not in listed]
+        if missing:
+            self.log.info(
+                "社区 %s 不在编辑器推荐列表里（不影响发布，仍按配置提交）",
+                ",".join(missing),
+            )
+
+    def _dump_post_debug(self, tag: str, body: dict, payload: dict) -> None:
+        """把发帖请求/响应写到 output/debug，供“没发出去”时排查（不含 Cookie）。"""
+        dump_dir = self.http.dump_dir
+        if not dump_dir:
+            return
+        try:
+            dump_dir.mkdir(parents=True, exist_ok=True)
+            stamps = time.strftime("%Y%m%d-%H%M%S")
+            path = dump_dir / f"xiaoheihe-{tag}-{stamps}-{hash(str(payload)) % 10000:04d}.json"
+            data = {
+                "request": {k: (v if k != "text" else str(v)[:500]) for k, v in body.items()},
+                "response_status": payload.get("status"),
+                "response_msg": payload.get("msg"),
+                "response_result": payload.get("result"),
+            }
+            path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            self.log.info("小黑盒发帖诊断已保存：%s", path)
+        except OSError:  # pragma: no cover - 诊断不影响发布
+            pass
 
     def _hashtags(self) -> str:
         value = str(self.cfg.get("hashtags") or "").strip()
@@ -646,6 +694,9 @@ class XiaoheihePublisher(BasePublisher):
         if not chapter.pages:
             return PublishResult.skipped(self.key, chapter, "没有图片")
 
+        # 先确认哪条网络路径能通（挂了梯子/代理时，直连可能被掐断，
+        # 这里会自己换到能用的那条，用户不用去改设置）。探测失败也继续，交给请求层再试。
+        self.http.ensure_route(API + "/")
         pages = self.prepare_pages(chapter)
         try:
             published: list[str] = []
@@ -677,6 +728,7 @@ class XiaoheihePublisher(BasePublisher):
             description = self._description(chapter)
             title = self._title(chapter)
             topic_ids = self._topic_ids()
+            self._note_unknown_topics(topic_ids)
             hashtags = self._hashtags()
             decl = self._declaration()
             total = len(groups)
@@ -776,6 +828,7 @@ class XiaoheihePublisher(BasePublisher):
                         ) from exc
                     if payload.get("status") != "ok":
                         msg = _api_error(payload)
+                        self._dump_post_debug("post-failed", body, payload)
                         if "10006" in str(payload.get("msg") or ""):
                             msg = (
                                 f"{msg}（发帖频率过快，请间隔几分钟再试；"
@@ -784,9 +837,12 @@ class XiaoheihePublisher(BasePublisher):
                         raise PublisherError(f"小黑盒 发布失败：{msg}")
                     link_id = str(payload.get("link_id") or "").strip()
                     if not link_id:
+                        self._dump_post_debug("post-no-id", body, payload)
                         raise PublisherError(
                             f"小黑盒 发布响应缺少 link_id：{payload}"
                         )
+                    if self.common.verbose:
+                        self._dump_post_debug("post-ok", body, payload)
                     if index == 1:
                         head_link_id = link_id
                     if not as_draft and link_id in self._draft_ids():
@@ -1086,30 +1142,63 @@ class XiaoheihePublisher(BasePublisher):
             raise PublisherError(f"小黑盒 上传凭证不完整：{payload}")
 
         # 3) COS 直传（必须真实落盘，回调不校验文件是否存在）
+        #    小黑盒图床是国内腾讯云：如果这条连接走了代理节点，常见
+        #    “SSLError: UNEXPECTED_EOF_WHILE_READING”，帖子最后就没东西发出去。
+        #    所以先探一次这条域名走哪条路径能通，再用**当前生效的路径**上传；
+        #    失败会自动换路径 + 重试，仍不行才报错并提示改用直连。
         from qcloud_cos import CosConfig, CosS3Client
         from qcloud_cos.cos_exception import CosServiceError
 
-        cos_client = CosS3Client(
-            CosConfig(
-                Region=region,
-                SecretId=secret_id,
-                SecretKey=secret_key,
-                Token=session_token,
-                Scheme="https",
-            )
-        )
-        try:
-            with open(page.path, "rb") as fh:
-                cos_client.put_object(
-                    Bucket=bucket,
-                    Key=key.lstrip("/"),
-                    Body=fh,
-                    ContentType=mime,
+        cos_host = f"{bucket}.cos.{region}.myqcloud.com"
+        self.http.ensure_route(f"https://{cos_host}/")
+        attempts = max(1, int(self.cfg.get("upload_attempts", 3) or 3))
+        for attempt in range(1, attempts + 1):
+            proxy = self.http.active_proxy
+            cos_client = CosS3Client(
+                CosConfig(
+                    Region=region,
+                    SecretId=secret_id,
+                    SecretKey=secret_key,
+                    Token=session_token,
+                    Scheme="https",
+                    Proxies={"http": proxy, "https": proxy} if proxy else None,
                 )
-        except CosServiceError as exc:
-            raise PublisherError(
-                f"小黑盒 COS 上传失败：{getattr(exc, 'get_message', None) or exc}"
-            ) from exc
+            )
+            try:
+                with open(page.path, "rb") as fh:
+                    cos_client.put_object(
+                        Bucket=bucket,
+                        Key=key.lstrip("/"),
+                        Body=fh,
+                        ContentType=mime,
+                    )
+                break
+            except CosServiceError as exc:
+                message = str(getattr(exc, "get_message", None) or exc)
+                if attempt < attempts:
+                    self.log.warning("小黑盒 COS 上传失败（第 %d/%d 次）：%s", attempt, attempts, message)
+                    time.sleep(2 * attempt)
+                    continue
+                raise PublisherError(f"小黑盒 COS 上传失败：{message}") from exc
+            except Exception as exc:  # noqa: BLE001 - 网络/TLS 层错误统一给可操作提示
+                if attempt < attempts:
+                    self.log.warning(
+                        "小黑盒图片上传被中断（第 %d/%d 次，%s，路径=%s）：%s",
+                        attempt, attempts, cos_host, self.http.active_proxy_label, exc,
+                    )
+                    # 下次换一条网络路径（例如代理→直连）再传
+                    self.http._switch_route(exc)
+                    time.sleep(2 * attempt)
+                    continue
+                raise PublisherError(
+                    "小黑盒图片上传到 CDN 失败（网络被中断）："
+                    f"{exc}\n"
+                    f"上传域名：{cos_host}\n"
+                    "已经自动换过网络路径（直连/系统代理）还是传不上去："
+                    "请检查代理软件的规则是否把 *.myqcloud.com 也走了节点，"
+                    "或在「平台账号 → 小黑盒」里把代理设为直连后重试；"
+                    "也可以把 settings.upload_attempts 调大。"
+                ) from exc
 
         # 4) 回调：确认上传，拿 CDN 地址
         resp = self.http.post(

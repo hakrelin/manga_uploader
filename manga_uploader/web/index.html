@@ -455,23 +455,14 @@ try {
                 <span class="switch-label">{{ config.platforms[card.key].settings[itemKey]
                   ? (item.onLabel || '开启') : (item.offLabel || '关闭') }}</span>
               </label>
-              <div v-else-if="item.kind === 'text' && item.proxy" class="input-row">
-                <input type="text" class="input"
-                  v-model="config.platforms[card.key].settings[itemKey]"
-                  :placeholder="item.placeholder || ''">
-                <button class="btn btn-ghost btn-sm" :disabled="busy"
-                        title="读取本机系统代理并填到这里"
-                        @click="detectProxy(card.key)">检测系统代理</button>
-              </div>
               <input v-else type="text" class="input"
                 v-model="config.platforms[card.key].settings[itemKey]"
                 :placeholder="item.placeholder || ''">
             </div>
           </div>
 
-          <p class="hint-text">代理只看这一个平台：<b>都不填 = 直连</b>；打开「自动使用系统代理」= 读系统代理
-            （Clash/v2ray 开了系统代理即可，不用填端口）；填了「手动代理 URL」= 只用它。
-            默认 B站/贴吧/小黑盒/再漫画直连，e-hentai 走系统代理；e 站上传前会查出口 IP，香港节点会提示换欧美 IP。</p>
+          <p class="hint-text">代理<b>全自动</b>：国内站优先直连、直连不通自动换系统代理；e-hentai 优先系统代理、
+            不通再退直连。哪条通走哪条，日志里会写当前路径，不用填地址。</p>
           <p class="hint-text">{{ card.hint }}</p>
           <div v-if="statuses[card.key] && statuses[card.key].length" class="check-status">
             <span v-for="s in statuses[card.key]" :key="s.message" :class="s.ok ? 'ok' : 'bad'">{{ s.ok ? '✓' : '✗' }} {{ s.message }}</span>
@@ -610,18 +601,18 @@ try {
               <input type="number" min="0" step="0.5" v-model.number="config.common.interval_seconds" class="input">
             </div>
             <div class="field field-wide">
-              <label class="field-label">备用代理（可选） <span class="field-hint">系统代理检测不到时，e-hentai 用它兜底；其它平台不用填</span></label>
+              <label class="field-label">当前代理（自动选择，无需设置）
+                <span class="field-hint">直连 ↔ 系统代理，哪条通走哪条；失败自动切换</span></label>
               <div class="input-row">
-                <input type="text" v-model="config.common.proxy_url" class="input" placeholder="留空即可，如 http://127.0.0.1:7890">
-                <button class="btn btn-ghost" @click="detectProxy()">检测系统代理</button>
+                <input type="text" class="input" :value="autoProxyText" disabled>
+                <button class="btn btn-ghost" :disabled="busy" @click="checkExitIp({key: 'ehentai'})">看出口 IP</button>
               </div>
             </div>
           </div>
           <p class="hint-text">
-            <strong>默认就能用，不用调：</strong>B站 / 贴吧 / 小黑盒 / 再漫画走直连，
-            e-hentai 自动用系统代理（Clash、v2ray 等开了「系统代理」就会被读到）。
-            要按平台单独改，去「平台账号」页每张卡片底部的「代理」两项：
-            都不填 = 直连，开开关 = 系统代理，填 URL = 只用这个代理。
+            <strong>代理全自动，不用填任何东西：</strong>国内站（B 站 / 贴吧 / 小黑盒 / 再漫画）优先直连，
+            直连被掐（SSL EOF、连接重置）自动换系统代理重试；e-hentai 优先系统代理、不行再退直连。
+            开了梯子也不用改设置——程序自己挑能用的那条路。
           </p>
         </div>
       </div>

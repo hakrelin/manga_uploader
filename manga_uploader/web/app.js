@@ -826,9 +826,29 @@ createApp({
     function platStatus(card) {
       if (connected(card)) return "已连接";
       const p = config.platforms[card.key];
+      // 填了 Cookie 却没开「启用此平台」：一键发布不会发它，最容易误判成“发了但没发出去”
+      if (p && !p.enabled && hasCookies(card)) return "已填 Cookie，未启用（不会发布）";
       if (!p || !p.enabled) return "未启用";
       const missing = requiredCookies(card).filter((n) => !(p.cookies || {})[n]);
       return missing.length ? "缺少 " + missing.join("/") : "已启用";
+    }
+
+    function hasCookies(card) {
+      const p = config.platforms[card.key];
+      const required = requiredCookies(card);
+      const cookies = (p && p.cookies) || {};
+      if (required.length) return required.every((n) => String(cookies[n] || "").trim());
+      return Object.values(cookies).some((v) => String(v || "").trim());
+    }
+
+    // 有一堆平台填了 Cookie 但没启用 → 发布前提醒，别让人以为“发出去了”
+    function disabledWithCookiesText(targets) {
+      const rows = cards.value
+        .filter((c) => !targets.includes(c.key) && hasCookies(c))
+        .map((c) => `  · ${PLAT_LABELS[c.key] || c.key}`);
+      if (!rows.length) return "";
+      return "⚠ 下面这些平台已经填了 Cookie，但「启用此平台」是关的，本次不会发布：\n"
+        + rows.join("\n") + "\n要发它们：展开卡片打开「启用此平台」，再点发布。";
     }
 
     function extrasOf(card) {
@@ -854,6 +874,7 @@ createApp({
         applyConfigPayload(st.config);
         running.value = !!st.running;
         if (running.value) pubProgress.active = true; // 页面打开时已有任务在跑：先显示不确定进度
+        loadSystemProxy(); // 只用于显示“自动代理现状”，不参与配置
       } catch (e) {
         toastMsg("加载配置失败：" + e.message);
       }
@@ -1394,6 +1415,23 @@ createApp({
 
     // ---------------- 代理 ----------------
 
+    // 代理全自动：这里只负责把「检测到的系统代理」显示出来，用户不用填
+    const systemProxyUrl = ref("");
+    const autoProxyText = computed(() => (
+      systemProxyUrl.value
+        ? "自动：直连 ↔ 系统代理（" + systemProxyUrl.value + "）"
+        : "自动：直连（本机没检测到系统代理）"
+    ));
+
+    async function loadSystemProxy() {
+      try {
+        const r = await api("/api/proxy/detect");
+        systemProxyUrl.value = r.url || "";
+      } catch (e) {
+        systemProxyUrl.value = "";
+      }
+    }
+
     // 查这个平台实际的出口 IP（走它自己的代理设置），用来确认节点地区
     async function checkExitIp(card) {
       const key = card && card.key ? card.key : "ehentai";
@@ -1417,28 +1455,12 @@ createApp({
       }
     }
 
-    // 检测系统代理：带平台 key = 填这个平台的 platforms.<平台>.settings.proxy_url；
-    // 不带 = 填「设置 → 网络」的备用代理
-    async function detectProxy(platformKey) {
-      try {
-        const r = await api("/api/proxy/detect");
-        if (!r.url) {
-          toastMsg("未检测到系统代理");
-          return;
-        }
-        if (platformKey) {
-          const p = config.platforms[platformKey];
-          if (!p) return;
-          if (!p.settings) p.settings = {};
-          p.settings.proxy_url = r.url;
-          toastMsg((PLAT_LABELS[platformKey] || platformKey) + " 的代理已填入：" + r.url);
-          return;
-        }
-        config.common.proxy_url = r.url;
-        toastMsg("已填入检测到的代理：" + r.url);
-      } catch (e) {
-        toastMsg("检测代理失败：" + e.message);
-      }
+    // 代理全自动：不再往配置里写地址（老入口保留为“只查看/刷新系统代理”）
+    async function detectProxy() {
+      await loadSystemProxy();
+      toastMsg(systemProxyUrl.value
+        ? "本机系统代理：" + systemProxyUrl.value + "（程序会自动选用）"
+        : "本机没检测到系统代理，走直连");
     }
 
     // ---------------- e-hentai 上传表单字段 ----------------
@@ -1875,10 +1897,12 @@ createApp({
         staleDiff = acc.stale || {};
       } catch (e) { accountText = ""; }
       const staleText = staleAccountsText(staleDiff);
+      const disabledText = disabledWithCookiesText(targets);
       if (!window.confirm(
         "确认【立即发布】到：" + names.join("、") + "？\n\n" +
         (accountText ? "使用账号：" + accountText + "\n\n" : "") +
         (staleText ? staleText + "\n\n" : "") +
+        (disabledText ? disabledText + "\n\n" : "") +
         "「一键发布」是马上发出去，不做定时；要定时请用右上角「⏱ 云端定时」。\n发布后不可撤销。"
       )) return;
       busy.value = true;
@@ -2781,6 +2805,7 @@ createApp({
       platShort, platStatus, connected, extrasOf, extraLabel, staleAccountsText,
       saveConfig, openAccount, toggleExpand, openLogin,
       checkOne, checkAll, pasteCookie, qrLogin, detectProxy, checkExitIp,
+      systemProxyUrl, autoProxyText, loadSystemProxy,
       browserLogin, browserLoginStop, autoBrowserLogin, setAutoBrowserLogin,
       biliListsOpen, pickBiliList, clearBiliList, createBiliList,
       fieldMapOpen, onSourceChange, pickDir, pickZip, loadComic, onDrop,

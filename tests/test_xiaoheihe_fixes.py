@@ -339,6 +339,140 @@ class XiaoheiheOverflowCommentTest(unittest.TestCase):
         self.assertIn("仍把内容建成了草稿", result.message)
         self.assertIn("creator/draft", result.message)
 
+    # ---------- 社区 id 与图片 CDN（“点了发布却什么都没发出去”） ----------
+
+    def _plain_publisher(self, **settings):
+        base = {"topic_ids": "431327,477625", "publish_draft": False}
+        base.update(settings)
+        return X.XiaoheihePublisher(
+            PlatformConfig(name="xiaoheihe", cookies={"cookie": "pkey=A"}, settings=base),
+            CommonConfig(output_dir=tempfile.mkdtemp()),
+        )
+
+    def test_configured_topics_are_sent_as_is(self):
+        """配置里的社区 id 原样提交：topic_selection 只是“推荐列表”，不是全集。
+
+        477625（东方冰之勇者记）能发、但不在推荐列表里——以前把它当失效丢掉是错的。
+        """
+        pub = self._plain_publisher(topic_ids="431327,477625")
+        topics = {"status": "ok", "result": {"topic_list": [
+            {"topic_id": 431327, "name": "东方夜雀食堂"},
+        ]}}
+        with mock.patch.object(pub.http, "get_json", return_value=topics):
+            pub._note_unknown_topics("431327,477625")  # 只提示，不改配置
+        self.assertEqual(pub._topic_ids(), "431327,477625")
+        self.assertEqual(pub._topic_ids(), "431327,477625")
+
+    def test_topic_hint_survives_probe_failure(self):
+        pub = self._plain_publisher(topic_ids="431327,477625")
+        with mock.patch.object(pub.http, "get_json", side_effect=RuntimeError("网络炸了")):
+            pub._note_unknown_topics("431327,477625")
+        self.assertEqual(pub._topic_ids(), "431327,477625")
+
+    def _page(self):
+        tmp = Path(tempfile.mkdtemp()) / "001.png"
+        Image.new("RGB", (40, 60), (9, 9, 9)).save(tmp)
+        page = mock.Mock()
+        page.path = tmp
+        page.size_bytes = tmp.stat().st_size
+        page.width = 40
+        page.height = 60
+        return page
+
+    @staticmethod
+    def _resp(payload):
+        resp = mock.Mock()
+        resp.json.return_value = payload
+        resp.text = ""
+        return resp
+
+    def _upload_with(self, put):
+        """跑一次 _upload_page：INFO/TOKEN/CALLBACK 走 mock，COS 上传用 put()。"""
+        pub = self._plain_publisher(upload_attempts=3)
+        responses = [
+            self._resp({"status": "ok", "result": {
+                "keys": ["web/any/2026/11/02/x.png"], "bucket": "imgheybox-1251007209",
+                "region": "ap-shanghai"}}),
+            self._resp({"status": "ok", "result": {"credentials": {
+                "tmpSecretId": "a", "tmpSecretKey": "b", "sessionToken": "c"}}}),
+            self._resp({"status": "ok", "result": {"preview_urls": ["https://img.example/x.png"]}}),
+        ]
+        import qcloud_cos
+        with mock.patch.object(pub.http, "post", side_effect=responses), \
+             mock.patch.object(qcloud_cos, "CosS3Client") as client_cls, \
+             mock.patch("manga_uploader.publishers.xiaoheihe.time.sleep"):
+            client_cls.return_value.put_object.side_effect = put
+            return pub._upload_page(self._page())
+
+    def test_cos_tls_eof_is_retried_then_succeeds(self):
+        """图片 CDN 被代理掐断（SSL EOF）时重试几次；成功就不再算失败。"""
+        from requests.exceptions import SSLError
+
+        calls = {"n": 0}
+
+        def put(**_):
+            calls["n"] += 1
+            if calls["n"] <= 2:
+                raise SSLError("EOF occurred in violation of protocol")
+            return None
+
+        uploaded = self._upload_with(put)
+        self.assertEqual(calls["n"], 3)
+        self.assertEqual(uploaded.url, "https://img.example/x.png")
+
+    def test_cos_failure_message_says_use_direct_connection(self):
+        """一直失败时要给“关代理直连”的可操作提示，而不是一串 SSL 堆栈。"""
+        from requests.exceptions import SSLError
+
+        with self.assertRaises(Exception) as ctx:
+            self._upload_with(SSLError("EOF occurred in violation of protocol"))
+        text = str(ctx.exception)
+        self.assertIn("直连", text)
+        self.assertIn("myqcloud.com", text)
+
+    def test_cos_failure_switches_route_to_proxy(self):
+        """COS 直连被掐断时，自动换到系统代理那条路径再传（不用用户改设置）。"""
+        from requests.exceptions import SSLError
+        import qcloud_cos
+
+        with mock.patch(
+            "manga_uploader.http_client.detect_system_proxy",
+            return_value="http://sys-proxy:7890",
+        ):
+            pub = self._plain_publisher(upload_attempts=2, use_system_proxy=True)
+        pub.http.ensure_route = lambda *a, **k: ""  # type: ignore[assignment]
+        self.assertEqual(pub.http.active_proxy, "")  # 先在直连
+
+        responses = [
+            self._resp({"status": "ok", "result": {
+                "keys": ["web/any/2026/11/02/x.png"], "bucket": "imgheybox-1251007209",
+                "region": "ap-shanghai"}}),
+            self._resp({"status": "ok", "result": {"credentials": {
+                "tmpSecretId": "a", "tmpSecretKey": "b", "sessionToken": "c"}}}),
+            self._resp({"status": "ok", "result": {"preview_urls": ["https://img.example/x.png"]}}),
+        ]
+        calls = {"n": 0}
+
+        def put(**_):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise SSLError("UNEXPECTED_EOF_WHILE_READING")
+            return None
+
+        with mock.patch.object(pub.http, "post", side_effect=responses), \
+             mock.patch.object(qcloud_cos, "CosConfig") as cfg_cls, \
+             mock.patch.object(qcloud_cos, "CosS3Client") as client_cls, \
+             mock.patch("manga_uploader.publishers.xiaoheihe.time.sleep"):
+            client_cls.return_value.put_object.side_effect = put
+            uploaded = pub._upload_page(self._page())
+
+        self.assertEqual(uploaded.url, "https://img.example/x.png")
+        self.assertEqual(pub.http.active_proxy, "http://sys-proxy:7890")  # 已换路
+        # 第二次上传的 CosConfig 带上了代理
+        proxies = [c.kwargs.get("Proxies") for c in cfg_cls.call_args_list]
+        self.assertEqual(proxies[-1], {"http": "http://sys-proxy:7890",
+                                       "https": "http://sys-proxy:7890"})
+
     def test_rnd_matches_captured_request(self):
         """评论接口的 _rnd 参数与网页端抓包逐字节一致（少了它必然失败）。"""
         self.assertEqual(

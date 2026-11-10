@@ -100,11 +100,10 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(cfg.platforms["bilibili"].get("max_pages_per_post"), 9)
         self.assertEqual(cfg.platforms["bilibili"].get("publish_mode"), "article")
         self.assertAlmostEqual(cfg.common.max_bytes_mb, 10.0)
-        self.assertFalse(cfg.platforms["bilibili"].get("use_system_proxy"))
-        self.assertFalse(cfg.platforms["zaimanhua"].get("use_system_proxy"))
-        # e-hentai 单独配置为走系统代理（海外站），不再写死某个代理端口
-        self.assertTrue(cfg.platforms["ehentai"].get("use_system_proxy"))
-        self.assertEqual(cfg.platforms["ehentai"].get("proxy_url"), "")
+        # 代理全自动：示例配置里不再有逐平台的代理项
+        for key in ("bilibili", "tieba", "ehentai", "xiaoheihe", "zaimanhua"):
+            self.assertIsNone(cfg.platforms[key].get("proxy_url"), key)
+            self.assertIsNone(cfg.platforms[key].get("use_system_proxy"), key)
         self.assertFalse(cfg.common.ai_enabled)
         self.assertEqual(cfg.common.ai_timeout, 60.0)
 
@@ -522,40 +521,94 @@ class TestPerPlatformProxy(unittest.TestCase):
         )
         return BilibiliPublisher(cfg, common)
 
-    def test_platform_proxy_url_is_used(self):
+    def test_platform_proxy_url_is_only_a_candidate(self):
+        """代理全自动：手填的地址只是候选之一，直连优先，失败能换过去。"""
         common = CommonConfig()
         pub = self._publisher({"proxy_url": "http://127.0.0.1:2222"}, common)
-        self.assertEqual(pub.http.session.proxies.get("http"), "http://127.0.0.1:2222")
-        self.assertEqual(pub.http.session.proxies.get("https"), "http://127.0.0.1:2222")
-        self.assertEqual(pub.proxy_url, "http://127.0.0.1:2222")
+        self.assertEqual(pub.http.active_proxy, "")  # 国内站先直连
+        self.assertIn("http://127.0.0.1:2222", [r[0] for r in pub.http._routes])
 
     def test_domestic_platform_is_direct_even_with_global_proxy(self):
-        """国内平台默认直连：老配置里的全局代理不再偷偷生效。"""
+        """国内平台默认直连：老配置里的全局代理只会变成靠后的候选。"""
         common = CommonConfig(proxy_url="http://127.0.0.1:1111", use_system_proxy=True)
         pub = self._publisher({}, common)
         self.assertEqual(pub.http.session.proxies, {})
-        self.assertEqual(pub.proxy_url, "")
+        self.assertEqual(pub.http.active_proxy, "")
+        self.assertIn("http://127.0.0.1:1111", [r[0] for r in pub.http._routes])
 
-    def test_system_proxy_switch(self):
+    def test_system_proxy_is_a_candidate_without_any_setting(self):
+        """不用勾任何开关：检测到系统代理就自动作为候选（国内站排在直连之后）。"""
         with unittest.mock.patch.object(
             http_client, "detect_system_proxy", return_value="http://sys-proxy:7890"
         ):
-            on = self._publisher({"use_system_proxy": True}, CommonConfig())
-            self.assertEqual(on.http.session.proxies.get("https"), "http://sys-proxy:7890")
-            off = self._publisher({"use_system_proxy": False}, CommonConfig())
-            self.assertEqual(off.http.session.proxies, {})
+            pub = self._publisher({}, CommonConfig())
+            self.assertEqual(
+                [r[0] for r in pub.http._routes][:2], ["", "http://sys-proxy:7890"]
+            )
+            pub.http._switch_route(RuntimeError("sslerror"))
+            self.assertEqual(pub.http.session.proxies.get("https"), "http://sys-proxy:7890")
 
     def test_system_proxy_falls_back_to_global_url(self):
-        """系统里没开代理时，用老配置里的全局地址兜底（不让人升级后连不上 e 站）。"""
+        """系统里没开代理时，用老配置里的全局地址当兜底路径。"""
         with unittest.mock.patch.object(
             http_client, "detect_system_proxy", return_value=""
         ):
             pub = self._publisher(
                 {"use_system_proxy": True}, CommonConfig(proxy_url="http://127.0.0.1:1111")
             )
-            self.assertEqual(pub.http.session.proxies.get("https"), "http://127.0.0.1:1111")
+            self.assertEqual(
+                [r[0] for r in pub.http._routes], ["", "http://127.0.0.1:1111"]
+            )
 
-    def test_platform_proxy_url_beats_system_proxy(self):
+    def test_auto_switches_route_when_direct_is_blocked(self):
+        """直连被掐断（SSL EOF/连接重置）时自动换到代理，不用用户改设置。"""
+        import requests
+
+        with unittest.mock.patch.object(
+            http_client, "detect_system_proxy", return_value="http://sys-proxy:7890"
+        ):
+            pub = self._publisher({"use_system_proxy": True}, CommonConfig())
+        http = pub.http
+        calls = {"n": 0}
+
+        def fake_request(method, url, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise requests.exceptions.SSLError("UNEXPECTED_EOF_WHILE_READING")
+            resp = unittest.mock.Mock()
+            resp.status_code = 200
+            resp.text = "ok"
+            resp.url = url
+            return resp
+
+        with unittest.mock.patch.object(http.session, "request", side_effect=fake_request):
+            resp = http.get("https://api.xiaoheihe.cn/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(calls["n"], 2)                      # 失败一次后立刻换路径
+        self.assertEqual(http.active_proxy, "http://sys-proxy:7890")
+        self.assertEqual(http.session.proxies.get("https"), "http://sys-proxy:7890")
+
+    def test_ensure_route_locks_working_path(self):
+        import requests
+
+        with unittest.mock.patch.object(
+            http_client, "detect_system_proxy", return_value="http://sys-proxy:7890"
+        ):
+            pub = self._publisher({"use_system_proxy": True}, CommonConfig())
+        http = pub.http
+        calls = {"n": 0}
+
+        def fake_get(url, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise requests.exceptions.ConnectionError("refused")
+            return unittest.mock.Mock(status_code=200, close=lambda: None)
+
+        with unittest.mock.patch.object(http.session, "get", side_effect=fake_get):
+            self.assertEqual(http.ensure_route("https://api.xiaoheihe.cn/"), "http://sys-proxy:7890")
+
+    def test_manual_url_does_not_block_auto_switch(self):
+        """手填 URL 也不会挡住自动换路：直连不通时照样能退到系统代理。"""
         with unittest.mock.patch.object(
             http_client, "detect_system_proxy", return_value="http://sys-proxy:7890"
         ):
@@ -563,7 +616,9 @@ class TestPerPlatformProxy(unittest.TestCase):
                 {"proxy_url": "http://127.0.0.1:2222", "use_system_proxy": True},
                 CommonConfig(),
             )
-            self.assertEqual(pub.http.session.proxies.get("https"), "http://127.0.0.1:2222")
+        routes = [r[0] for r in pub.http._routes]
+        self.assertEqual(routes[:2], ["", "http://sys-proxy:7890"])
+        self.assertIn("http://127.0.0.1:2222", routes)
 
     def test_defaults_per_platform(self):
         """默认值就是“能直接用”：国内平台直连，e-hentai 走系统代理。"""

@@ -271,6 +271,27 @@ def _enabled_with_cookie(payload: dict[str, Any]) -> list[str]:
     return result
 
 
+def _filled_but_disabled(payload: dict[str, Any], targets: list[str]) -> list[str]:
+    """填了 Cookie 却没启用、因此不会发布的平台。
+
+    这是“明明点了发布却没发出去”最常见的原因：Cookie 齐、开关关着，
+    `_enabled_with_cookie` 直接跳过，页面上也不会有任何错误。
+    """
+    skipped = []
+    for key, cfg in build_app(payload).platforms.items():
+        if key in targets or key not in PLATFORM_CLASSES or cfg.enabled:
+            continue
+        required = REQUIRED_COOKIES.get(key, [])
+        filled = (
+            all(cfg.cookies.get(name) for name in required)
+            if required
+            else any(str(v or "").strip() for v in cfg.cookies.values())
+        )
+        if filled:
+            skipped.append(f"{PLATFORM_CLASSES[key].display_name}（{key}）")
+    return skipped
+
+
 # 漫画信息顶层字段（与 tkinter GUI BASE_FIELDS / composer.fields 对齐）
 WEB_META_FIELDS: list[tuple[str, str]] = [
     ("event", "展会"),
@@ -1629,6 +1650,14 @@ class WebHandler(BaseHTTPRequestHandler):
             self._json(400, {"error": "没有启用的平台或都未填 Cookie"})
             return
         state.ring.append("INFO", f"开始发布到：{', '.join(names)}（章节 {only or '全部'}）")
+        skipped = _filled_but_disabled(data.get("config") or {}, names)
+        if skipped:
+            state.ring.append(
+                "WARN",
+                "以下平台已填 Cookie 但「启用此平台」是关的，本次不会发布："
+                + "、".join(skipped)
+                + "（展开平台卡片打开开关后再发）",
+            )
         stale = _stale_account_warning(state, data.get("config") or {}, names)
         if stale:
             state.ring.append("WARN", stale)
