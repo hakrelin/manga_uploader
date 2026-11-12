@@ -31,6 +31,7 @@ platforms.xiaoheihe.cookies.cookie（整段文本），heybox_id 也直接
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import html
 import hmac
@@ -156,6 +157,30 @@ def _nonce() -> str:
 # 网页端请求签名用的固定盐（前端源码里的 FM 常量）：评论等接口要求 `_rnd` 参数
 _RND_SALT = "Z7mFG4tQp9Ws2LxB8H"
 
+# rnd=16（发帖等接口）用的固定 AES-256-GCM 密钥与 AAD，抄自网页端 aSe()：
+#   plaintext = JSON.stringify([_time, nonce, pathname])，pathname 以 "/" 结尾
+#   输出 = "16:" + base64url(iv(12) || ciphertext || tag(16))
+_RND16_KEY = base64.b64decode("HFFSTsqmvG3uGxPNXDQW+1VARfqgG4nT6LS1PX7F8NQ=")
+_RND16_AAD = b"heybox-rnd:v16"
+
+
+def _rnd16(path: str, timestamp: int, nonce: str) -> str:
+    """发帖等接口的 `_rnd=16:…`（网页端 rnd=16 分支，2026-11 实测）。
+
+    少了它，`/bbs/app/api/link/post` 会直接回「缺失参数」——这正是 11-12 小黑盒
+    一直发不出去的原因（body 字段早就对齐了，差的只是这个签名参数）。
+    """
+    from Crypto.Cipher import AES
+    from Crypto.Random import get_random_bytes
+
+    normalized = "/" + "/".join(p for p in path.split("/") if p) + "/"
+    plaintext = json.dumps([str(timestamp), nonce, normalized], separators=(",", ":"))
+    iv = get_random_bytes(12)
+    cipher = AES.new(_RND16_KEY, AES.MODE_GCM, nonce=iv, mac_len=16)
+    cipher.update(_RND16_AAD)
+    body, tag = cipher.encrypt_and_digest(plaintext.encode("utf-8"))
+    return "16:" + base64.urlsafe_b64encode(iv + body + tag).rstrip(b"=").decode()
+
 
 def _rnd(nonce: str, timestamp: int) -> str:
     """评论接口的 `_rnd` 参数（网页端 vEe 拦截器，2026-09 版实测一致）。
@@ -186,7 +211,7 @@ def _signed_url(
         "app": "heybox",
         "client_type": "web",
         "version": "999.0.4",
-        "web_version": "2.5",
+        "web_version": "3.0",
         "x_client_type": "web",
         "x_app": "heybox_website",
         "heybox_id": user_id,
@@ -201,9 +226,12 @@ def _signed_url(
         for key, value in extra.items():
             if value is not None:
                 params[key] = value
-    # 某些接口（评论/回复）要求 _rnd：调用方传 rnd="15" 时按网页端算法补上
-    if str(params.pop("rnd", "") or "") == "15":
+    # 某些接口要求 _rnd：评论用 rnd=15（HMAC），发帖用 rnd=16（AES-GCM）
+    rnd = str(params.pop("rnd", "") or "")
+    if rnd == "15":
         params["_rnd"] = _rnd(nonce, ts)
+    elif rnd == "16":
+        params["_rnd"] = _rnd16(path, ts, nonce)
     return f"{API}{path}?{urlencode(params)}"
 
 
@@ -413,6 +441,63 @@ class XiaoheihePublisher(BasePublisher):
             self.log.warning("正文超过服务端上限 %d 字，已截断", MAX_DESC_CHARS)
             return text[:MAX_DESC_CHARS]
         return text
+
+    # 发帖接口的“最小字段集”：站点报「缺失参数」时用它重试一次，
+    # 用来排除选填项（hashtags/声明/来源）本身被站点判成非法的情况。
+    _MINIMAL_POST_KEYS = (
+        "text", "title", "desc", "words_count",
+        "post_card_ids", "link_tag", "view_limit", "topic_ids",
+    )
+
+    def _post_link(self, body: dict) -> dict:
+        """POST /bbs/app/api/link/post；被拒「缺失参数」时自动用精简字段重试一次。
+
+        11-12 的现场：图片全传完、body 与 9 月成功时一致，却回「缺失参数」。
+        与其让用户盯着日志猜，不如先用完整字段发、失败再试最小字段集——
+        两次都失败就抛错，并把每次的请求体落到 output/debug 方便对照。
+        """
+        minimal = {k: body[k] for k in self._MINIMAL_POST_KEYS if k in body}
+        attempts = [("full", body)]
+        if minimal != body:
+            attempts.append(("minimal", minimal))
+        last_msg = ""
+        for name, payload_body in attempts:
+            resp = self.http.post(
+                # 发帖必须带 rnd=16 签名参数，否则服务端回「缺失参数」
+                self._signed(POST_URL, {"rnd": "16"}),
+                data=payload_body,
+                headers={"Referer": EDITOR_URL},
+            )
+            try:
+                payload = resp.json()
+            except ValueError as exc:
+                raise PublisherError(
+                    f"小黑盒 发布接口未返回 JSON：{resp.text[:200]}"
+                ) from exc
+            if payload.get("status") == "ok":
+                if name != "full":
+                    self.log.warning(
+                        "原请求被拒（%s），去掉声明/话题等选填字段后发布成功；"
+                        "发送字段：%s", last_msg, ",".join(sorted(payload_body)),
+                    )
+                return payload
+            last_msg = _api_error(payload)
+            self._dump_post_debug(f"post-failed-{name}", payload_body, payload)
+            self.log.warning(
+                "小黑盒 发帖被拒（%s）：%s｜发送字段：%s%s",
+                name, last_msg, ",".join(sorted(payload_body)),
+                "｜draft=" + str(payload_body.get("draft")) if "draft" in payload_body else "｜无 draft 字段",
+            )
+            if name == "full" and attempts[1:]:
+                if "缺失参数" in last_msg or "参数错误" in last_msg:
+                    continue  # 换精简字段重试
+            break
+        if "10006" in last_msg:
+            last_msg = (
+                f"{last_msg}（发帖频率过快，请间隔几分钟再试；"
+                "可在 config 里调大 common.interval_seconds）"
+            )
+        raise PublisherError(f"小黑盒 发布失败：{last_msg}")
 
     def _draft_ids(self) -> set[str]:
         """草稿箱里的 link_id 集合（只读一次，用来核对“到底发没发出去”）。
@@ -760,8 +845,9 @@ class XiaoheihePublisher(BasePublisher):
             silent_draft: list[str] = []  # 选了直接发布、站点却仍存成草稿的帖子
             hidden: list[str] = []        # 创建成功但对外不可见（审核中/仅自己可见）
             self.log.info(
-                "发布方式：%s",
+                "发布方式：%s（发帖时%s draft 字段）",
                 "先存草稿" if self._publish_draft() else "直接发布",
+                "带" if self._publish_draft() else "不带",
             )
             for index, group in enumerate(groups, 1):
                 try:
@@ -843,26 +929,7 @@ class XiaoheihePublisher(BasePublisher):
                         body.pop("draft", None)
                     if index == 1:
                         head_as_draft = as_draft
-                    resp = self.http.post(
-                        self._signed(POST_URL),
-                        data=body,
-                        headers={"Referer": EDITOR_URL},
-                    )
-                    try:
-                        payload = resp.json()
-                    except ValueError as exc:
-                        raise PublisherError(
-                            f"小黑盒 发布接口未返回 JSON：{resp.text[:200]}"
-                        ) from exc
-                    if payload.get("status") != "ok":
-                        msg = _api_error(payload)
-                        self._dump_post_debug("post-failed", body, payload)
-                        if "10006" in str(payload.get("msg") or ""):
-                            msg = (
-                                f"{msg}（发帖频率过快，请间隔几分钟再试；"
-                                "可在 config 里调大 common.interval_seconds）"
-                            )
-                        raise PublisherError(f"小黑盒 发布失败：{msg}")
+                    payload = self._post_link(body)
                     link_id = str(payload.get("link_id") or "").strip()
                     if not link_id:
                         self._dump_post_debug("post-no-id", body, payload)
@@ -1201,8 +1268,13 @@ class XiaoheihePublisher(BasePublisher):
         #    “SSLError: UNEXPECTED_EOF_WHILE_READING”，帖子最后就没东西发出去。
         #    所以先探一次这条域名走哪条路径能通，再用**当前生效的路径**上传；
         #    失败会自动换路径 + 重试，仍不行才报错并提示改用直连。
+        import logging as _logging
+
         from qcloud_cos import CosConfig, CosS3Client
         from qcloud_cos.cos_exception import CosServiceError
+
+        # SDK 默认按 INFO 打每条 put_object，62 页就是 120 多行噪音，压掉
+        _logging.getLogger("qcloud_cos").setLevel(_logging.WARNING)
 
         cos_host = f"{bucket}.cos.{region}.myqcloud.com"
         self.http.ensure_route(f"https://{cos_host}/")

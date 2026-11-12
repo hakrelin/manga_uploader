@@ -480,6 +480,63 @@ class XiaoheiheOverflowCommentTest(unittest.TestCase):
         self.assertEqual(proxies[-1], {"http": "http://sys-proxy:7890",
                                        "https": "http://sys-proxy:7890"})
 
+    def test_rnd16_signature_is_attached_to_post(self):
+        """发帖 URL 必须带 _rnd=16:…（缺了服务端回「缺失参数」，11-12 实测）。"""
+        pub = self._plain_publisher()
+        url = pub._signed(X.POST_URL, {"rnd": "16"})
+        self.assertIn("_rnd=16%3A", url)
+        self.assertIn("web_version=3.0", url)
+
+    def test_rnd16_token_can_be_decrypted(self):
+        """rnd16 是 AES-256-GCM(iv||ct||tag)，明文是 [_time, nonce, pathname]。"""
+        import base64
+        from Crypto.Cipher import AES
+
+        token = X._rnd16("/bbs/app/api/link/post", 1700000000, "A" * 32)
+        self.assertTrue(token.startswith("16:"))
+        raw = base64.urlsafe_b64decode(token[3:] + "=" * (-len(token[3:]) % 4))
+        iv, rest = raw[:12], raw[12:]
+        cipher = AES.new(X._RND16_KEY, AES.MODE_GCM, nonce=iv, mac_len=16)
+        cipher.update(b"heybox-rnd:v16")
+        plain = cipher.decrypt_and_verify(rest[:-16], rest[-16:])
+        self.assertEqual(json.loads(plain), ["1700000000", "A" * 32, "/bbs/app/api/link/post/"])
+
+    def test_retries_with_minimal_body_on_missing_param(self):
+        """站点回「缺失参数」时，去掉选填字段（声明/话题/来源）再试一次。"""
+        class _Once(_XhhHandler):
+            calls = 0
+
+            def do_POST(self):  # noqa: N802
+                path = self.path.split("?")[0]
+                if path != X.POST_URL:
+                    super().do_POST()
+                    return
+                length = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(length).decode("utf-8", "replace")
+                _Once.calls += 1
+                self.__class__.posts.append({"path": path, "query": self.path, "body": body})
+                if _Once.calls == 1:
+                    self._json({"status": "failed", "msg": "缺失参数"})
+                    return
+                self._json({"status": "ok", "msg": "", "link_id": 100001})
+
+        server = HTTPServer(("127.0.0.1", 0), _Once)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        orig = X.API
+        X.API = f"http://127.0.0.1:{server.server_address[1]}"
+        try:
+            result = self._run(self._publisher(), self._chapter(3))
+        finally:
+            X.API = orig
+            server.shutdown()
+        self.assertEqual(result.status, "ok", result.message)
+        self.assertEqual(_Once.calls, 2)
+        first = [p for p in _Once.posts if p["path"] == X.POST_URL][0]["body"]
+        second = [p for p in _Once.posts if p["path"] == X.POST_URL][1]["body"]
+        self.assertIn("declaration", first)   # 第一次带全字段
+        self.assertNotIn("declaration", second)  # 第二次精简
+        self.assertNotIn("draft=", second)
+
     def test_rnd_matches_captured_request(self):
         """评论接口的 _rnd 参数与网页端抓包逐字节一致（少了它必然失败）。"""
         self.assertEqual(
