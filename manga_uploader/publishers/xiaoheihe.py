@@ -443,6 +443,28 @@ class XiaoheihePublisher(BasePublisher):
         self._draft_ids_cache = ids
         return ids
 
+    def _link_hidden(self, link_id: str) -> bool:
+        """公开发布后回查帖子：查不到、或只是“仅自己可见”，就当作没真正公开。
+
+        返回 False 表示查不到结论（接口抖动/审核中不判死）。
+        """
+        try:
+            data = self.http.get_json(
+                self._signed("/bbs/app/link/tree", {"link_id": str(link_id)}),
+                headers={"Referer": f"{WEB}/app/bbs/link/{link_id}"},
+                retry=False,
+                timeout=15.0,
+            )
+        except Exception as exc:  # noqa: BLE001 - 只是核对
+            self.log.debug("回查帖子 %s 失败：%s", link_id, exc)
+            return False
+        if data.get("status") != "ok":
+            return False
+        link = (data.get("result") or {}).get("link")
+        if not link:
+            return True  # 帖子不存在（被吞/被删）
+        return bool(link.get("is_only_me_view", False))
+
     def _publish_draft(self) -> bool:
         """草稿开关：默认 true（只存草稿），兼容 config 里 true/false（bool 或字符串）。"""
         value = self.cfg.get("publish_draft", True)
@@ -736,6 +758,7 @@ class XiaoheihePublisher(BasePublisher):
             head_link_id = ""
             head_as_draft = False
             silent_draft: list[str] = []  # 选了直接发布、站点却仍存成草稿的帖子
+            hidden: list[str] = []        # 创建成功但对外不可见（审核中/仅自己可见）
             self.log.info(
                 "发布方式：%s",
                 "先存草稿" if self._publish_draft() else "直接发布",
@@ -811,8 +834,13 @@ class XiaoheihePublisher(BasePublisher):
                         body["hashtags"] = hashtags
                     # 需要评论区续图时不存草稿：草稿没法评论，按「仅自己可见」正式发布
                     as_draft = self._publish_draft() and not overflow_pages
-                    # draft 显式带上：不传时站点会按“存草稿”处理（接口照样回 ok）
-                    body["draft"] = 1 if as_draft else 0
+                    # 正式发布时**不要带 draft 字段**：站点把 draft=0 当参数异常，直接回
+                    # 「缺失参数」（2026-11-12 实测，report + xiaoheihe-post-*.json 佐证）；
+                    # 不传 draft 才是正常的公开投稿，只有草稿模式才显式带 draft=1。
+                    if as_draft:
+                        body["draft"] = 1
+                    else:
+                        body.pop("draft", None)
                     if index == 1:
                         head_as_draft = as_draft
                     resp = self.http.post(
@@ -851,6 +879,10 @@ class XiaoheihePublisher(BasePublisher):
                             "小黑盒 %s 明明选了直接发布，站点却建成了草稿", link_id
                         )
                         silent_draft.append(link_id)
+                    if not as_draft and self._link_hidden(link_id):
+                        # 接口回 ok、link_id 也有，但帖子查不到/仅自己可见
+                        self.log.warning("小黑盒 %s 已创建但对外不可见（可能在审核或仅自己可见）", link_id)
+                        hidden.append(link_id)
                     if as_draft:
                         # 草稿只存在于创作中心“草稿箱”，公开帖子链接打不开。
                         # 主动读一次草稿箱确认草稿真的在（而不是“建完即消失”）。
@@ -935,6 +967,23 @@ class XiaoheihePublisher(BasePublisher):
                     mode=mode,
                     pages=len(pages),
                     draft=self._publish_draft(),
+                    comments=comments_posted,
+                )
+            if hidden and not self._publish_draft():
+                return PublishResult.partial(
+                    self.key,
+                    chapter,
+                    url=published[0] if published else "",
+                    message=(
+                        "⚠ 内容已创建，但公开页面查不到或只是「仅自己可见」"
+                        f"（link_id={', '.join(hidden)}）："
+                        "多半在审核中，过几分钟看创作中心；若一直是仅自己可见，"
+                        "去创作中心把可见性改成公开。"
+                    ),
+                    urls=published,
+                    mode=mode,
+                    pages=len(pages),
+                    draft=False,
                     comments=comments_posted,
                 )
             if silent_draft and not self._publish_draft():
@@ -1108,9 +1157,15 @@ class XiaoheihePublisher(BasePublisher):
         )
         payload = resp.json()
         if payload.get("status") != "ok":
-            raise PublisherError(
-                f"小黑盒 获取上传信息失败：{_api_error(payload)}"
-            )
+            msg = _api_error(payload)
+            hint = ""
+            if "验证参数" in msg or "签名" in msg or "非法" in msg:
+                hint = (
+                    "（签名校验没过：多为 Cookie 不完整或设备号不匹配——"
+                    "点「粘贴整段 Cookie」重新贴一次完整头（要含 x_xhh_tokenid），"
+                    "device_id 留空，并确认系统时间是自动同步的）"
+                )
+            raise PublisherError(f"小黑盒 获取上传信息失败：{msg}{hint}")
         result = payload.get("result") or {}
         key = (result.get("keys") or [""])[0]
         bucket = str(result.get("bucket") or "")

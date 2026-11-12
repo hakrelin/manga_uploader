@@ -174,6 +174,12 @@ class TestEhentaiConnectErrors(unittest.TestCase):
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
+        # 这些用例断言的是“没有代理时的提示”，别让跑测试的机器上的系统代理影响结果
+        patcher = mock.patch(
+            "manga_uploader.http_client.detect_system_proxy", return_value=""
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.cfg = PlatformConfig(
             name="ehentai",
             cookies={"ipb_member_id": "1", "ipb_pass_hash": "h"},

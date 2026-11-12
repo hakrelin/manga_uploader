@@ -318,18 +318,25 @@ class XiaoheiheOverflowCommentTest(unittest.TestCase):
         self.assertIn("view_limit=3", post_calls[0]["body"])
         self.assertNotIn("draft=1", post_calls[0]["body"])
 
-    def test_publish_sends_explicit_draft_zero(self):
-        """选了直接发布时必须显式发 draft=0：不传时站点会默认存草稿（接口照样回 ok）。"""
+    def test_publish_omits_draft_field(self):
+        """直接发布时**不带 draft**：带 draft=0 站点会回「缺失参数」（2026-11-12 实测）。"""
         result = self._run(self._publisher(), self._chapter(3))
         self.assertEqual(result.status, "ok", result.message)
         body = [p for p in _XhhHandler.posts if p["path"] == X.POST_URL][0]["body"]
-        self.assertIn("draft=0", body)
+        self.assertNotIn("draft=", body)
 
     def test_draft_mode_sends_draft_one(self):
         result = self._run(self._publisher(publish_draft=True), self._chapter(3))
         self.assertEqual(result.status, "ok", result.message)
         body = [p for p in _XhhHandler.posts if p["path"] == X.POST_URL][0]["body"]
         self.assertIn("draft=1", body)
+
+    def test_ok_but_invisible_post_is_reported(self):
+        """接口回 ok，但回查帖子不可见（审核中/仅自己可见）时不能报纯成功。"""
+        with mock.patch.object(X.XiaoheihePublisher, "_link_hidden", return_value=True):
+            result = self._run(self._publisher(), self._chapter(3))
+        self.assertEqual(result.status, "partial", result.message)
+        self.assertIn("仅自己可见", result.message)
 
     def test_silent_draft_is_reported_not_ok(self):
         """站点把“直接发布”的内容塞进草稿箱时，不能报成功。"""
